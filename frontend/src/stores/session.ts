@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { queryClient } from '@/lib/queryClient'
 import type { Tables } from '@/types/database.types'
 import type { Role } from '@/types/domain'
 
@@ -62,10 +63,17 @@ export const useSessionStore = defineStore('session', () => {
     ready.value = true
 
     supabase.auth.onAuthStateChange((event, next) => {
+      const previousUserId = session.value?.user.id
       session.value = next
       if (!next) {
         profile.value = null
+        // Signed out in another tab, or the refresh token was revoked.
+        queryClient.clear()
         return
+      }
+      // A different user signed in without a reload — same leak, same fix.
+      if (previousUserId && previousUserId !== next.user.id) {
+        queryClient.clear()
       }
       // TOKEN_REFRESHED fires often; the profile hasn't changed.
       if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
@@ -107,6 +115,13 @@ export const useSessionStore = defineStore('session', () => {
     await supabase.auth.signOut()
     session.value = null
     profile.value = null
+    // Sign-out is an in-tab router.push, not a reload, so the queryClient
+    // singleton survives it. Account, recommendation and admin keys are NOT
+    // scoped by user id, so without this the next rep to sign in on a shared
+    // truck iPad is served the previous rep's cached revenue from cache with
+    // no network request at all. This is PRD acceptance criterion #1 failing
+    // on the client side of the boundary.
+    queryClient.clear()
   }
 
   return {

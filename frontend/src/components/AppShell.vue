@@ -81,9 +81,14 @@ async function signOut() {
           <SyncStatusBadge compact />
 
           <div ref="menuRef" class="relative">
+            <!-- The initials chip is aria-hidden and the name span is
+                 display:none below sm, so on a phone this button would compute
+                 to no accessible name at all — and it is the only route to
+                 Sign out. min-w-11 keeps it past 44px wide there too. -->
             <button
               type="button"
-              class="tap-target flex items-center gap-2 px-1"
+              class="tap-target flex min-w-11 items-center justify-center gap-2 px-2"
+              :aria-label="`Account menu — ${session.displayName}`"
               :aria-expanded="menuOpen"
               aria-haspopup="menu"
               @click="menuOpen = !menuOpen"

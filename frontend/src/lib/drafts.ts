@@ -46,9 +46,22 @@ export interface DraftRecord<T = unknown> {
   updatedAt: string
 }
 
-/** Draft keys are namespaced by kind so `listDrafts()` stays readable. */
-export function visitDraftKey(customerKey: string): string {
-  return `visit:${customerKey}`
+/**
+ * Draft keys are namespaced by kind so `listDrafts()` stays readable, and by
+ * user because IndexedDB is per-device, not per-account. Without the user
+ * segment the next rep to sign in on a shared truck iPad and open the same
+ * account resumes the previous rep's half-typed survey — and then saves it
+ * under their own name.
+ *
+ * `userId` is optional only so a signed-out caller cannot crash. A draft
+ * written without one is scoped to 'anon' and never read back by a signed-in
+ * session.
+ */
+export function visitDraftKey(
+  customerKey: string,
+  userId?: string | null,
+): string {
+  return `visit:${userId || 'anon'}:${customerKey}`
 }
 
 /**

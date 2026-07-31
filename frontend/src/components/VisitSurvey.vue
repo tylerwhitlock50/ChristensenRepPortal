@@ -59,10 +59,18 @@ const emit = defineEmits<{
   cancel: []
   /** Fires on every edit. Debounce it in the parent — this side is raw. */
   change: [values: VisitFormValues]
+  /** "Log another visit" — the parent should clear the photo strip. */
+  restart: []
 }>()
 
 defineSlots<{
-  /** Photo capture, dropped in just above Save. `visitId` is null until saved. */
+  /**
+   * Photo capture. Rendered ONCE, outside the saved/unsaved branches, so the
+   * picker instance survives the save — an in-flight upload and its Retry
+   * button must not be destroyed at the moment the rep taps Save.
+   * `visitId` is null until saved, then becomes the real id so the picker can
+   * attach it to rows it already inserted.
+   */
   photos?(props: { customerKey: string; visitId: number | null }): any
 }>()
 
@@ -227,36 +235,52 @@ const onSubmit = handleSubmit(async (values) => {
 
 function startAnother() {
   savedVisitId.value = null
+  retryActionId.value = null
   serverError.value = ''
   resetForm({ values: makeVisitFormValues() })
+  // The photo strip is one persistent instance now, so it still holds the
+  // previous visit's thumbnails. Only the parent owns that component.
+  emit('restart')
 }
+
+/**
+ * The action row created by a submit that then failed. Exposed so the parent's
+ * offline "save for later" path can reuse it instead of enqueueing a second
+ * one — reps cannot delete actions, so a duplicate double-counts coverage
+ * forever.
+ */
+defineExpose({ pendingActionId: retryActionId })
 </script>
 
 <template>
-  <!-- Saved: inline confirmation, never a modal (TECH_STACK §2.4) -->
-  <section
-    v-if="saved"
-    class="rounded-lg border border-emerald-200 bg-emerald-50 p-4"
-    role="status"
-  >
-    <h3 class="text-base font-semibold text-emerald-900">Visit saved</h3>
-    <p class="mt-1 text-sm text-emerald-800">
-      {{ visitTypeLabel(current.visit_type) }} ·
-      {{ shortDate(current.visit_date) }}. It counts toward coverage.
-    </p>
+  <!--
+    One root, and the photos slot lives OUTSIDE the saved/unsaved branch.
 
-    <div class="mt-3">
-      <slot name="photos" :customer-key="customerKey" :visit-id="savedVisitId" />
-    </div>
+    It used to be rendered inside each branch, which meant two different
+    component instances: tapping Save unmounted the form's PhotoPicker along
+    with any upload still in flight and any failed upload's Retry button, and
+    mounted a fresh empty one on the success panel. A rep on LTE could watch
+    a photo disappear with no explanation.
 
-    <div class="mt-4">
-      <AppButton variant="secondary" @click="startAnother">
-        Log another visit
-      </AppButton>
-    </div>
-  </section>
+    The submit button therefore sits outside the <form> too, associated by id
+    via the `form` attribute, so the photo strip can render between the fields
+    and the button without being inside either branch.
+  -->
+  <div class="space-y-5">
+    <!-- Saved: inline confirmation, never a modal (TECH_STACK §2.4) -->
+    <section
+      v-if="saved"
+      class="rounded-lg border border-emerald-200 bg-emerald-50 p-4"
+      role="status"
+    >
+      <h3 class="text-base font-semibold text-emerald-900">Visit saved</h3>
+      <p class="mt-1 text-sm text-emerald-800">
+        {{ visitTypeLabel(current.visit_type) }} ·
+        {{ shortDate(current.visit_date) }}. It counts toward coverage.
+      </p>
+    </section>
 
-  <form v-else class="space-y-5" novalidate @submit="onSubmit">
+  <form v-else :id="`${uid}-form`" class="space-y-5" novalidate @submit="onSubmit">
     <!-- Visit type + date: the only two things that are always answered -->
     <fieldset>
       <legend class="mb-2 text-sm font-medium text-zinc-700">
@@ -421,16 +445,24 @@ function startAnother() {
       </p>
     </div>
 
-    <!-- Photo capture is another agent's component; it drops in here. -->
-    <slot name="photos" :customer-key="customerKey" :visit-id="null" />
+    </form>
 
-    <p v-if="serverError" role="alert" class="text-sm text-red-700">
+    <!--
+      ONE picker instance for the whole lifecycle of this survey. `visitId` is
+      null while the form is open and becomes the real id on save, so the
+      picker can attach it to rows it already inserted (013_photo_updates.sql
+      grants the author the UPDATE needed to do that).
+    -->
+    <slot name="photos" :customer-key="customerKey" :visit-id="savedVisitId" />
+
+    <p v-if="serverError && !saved" role="alert" class="text-sm text-red-700">
       {{ serverError }}
     </p>
 
-    <div class="flex flex-col gap-2">
+    <div v-if="!saved" class="flex flex-col gap-2">
       <AppButton
         type="submit"
+        :form="`${uid}-form`"
         size="lg"
         block
         :loading="submitVisit.isPending.value"
@@ -441,5 +473,11 @@ function startAnother() {
         Cancel
       </AppButton>
     </div>
-  </form>
+
+    <div v-else>
+      <AppButton variant="secondary" @click="startAnother">
+        Log another visit
+      </AppButton>
+    </div>
+  </div>
 </template>

@@ -167,6 +167,33 @@ export async function uploadPhoto(input: UploadPhotoInput): Promise<Photo> {
 }
 
 /**
+ * Attach a visit to photos that were uploaded before the visit row existed.
+ *
+ * A rep photographs the endcap while filling in the survey, so those rows are
+ * inserted with visit_id = null; the id only exists once the survey saves.
+ * Without this the photo is never linked to the visit it documents.
+ *
+ * Needs the UPDATE policy added in 013_photo_updates.sql (author-only, scoped
+ * to accounts they can still see). Returns the rows it actually changed —
+ * callers should treat a short result as "some were not mine to update"
+ * rather than an error, because a photo is worth more than its link.
+ */
+export async function attachVisitToPhotos(
+  photoIds: number[],
+  visitId: number,
+): Promise<Photo[]> {
+  if (photoIds.length === 0) return []
+  const { data, error } = await supabase
+    .from('photos')
+    .update({ visit_id: visitId })
+    .in('id', photoIds)
+    .is('visit_id', null)
+    .select()
+  if (error) throw error
+  return data ?? []
+}
+
+/**
  * A time-limited URL for a private object. `getPublicUrl` returns a 400 for
  * this bucket — it is not public and must not become public.
  */

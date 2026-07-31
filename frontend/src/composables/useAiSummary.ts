@@ -141,7 +141,14 @@ export function useGenerateAiSummary() {
     onSuccess: (result, customerKey) => {
       // The function hands back the exact row the query reads, so seed the
       // cache instead of round-tripping PostgREST again on LTE.
-      qc.setQueryData(aiSummaryKey(customerKey), result.summary ?? null)
+      //
+      // Only when it actually returned one. 'insufficient_data' and 'cooldown'
+      // carry no summary, and writing null for those blanks a perfectly good
+      // row that is still in Postgres — which the 5-minute staleTime then
+      // refuses to refetch.
+      if (result.summary) {
+        qc.setQueryData(aiSummaryKey(customerKey), result.summary)
+      }
     },
   })
 }

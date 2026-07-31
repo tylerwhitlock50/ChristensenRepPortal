@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useOnline } from '@vueuse/core'
 import { useQueryClient } from '@tanstack/vue-query'
+import { useSessionStore } from '@/stores/session'
 import { useAccount } from '@/composables/useAccounts'
 import { useAccountRecommendations } from '@/composables/useRecommendations'
 import {
@@ -39,6 +40,7 @@ const key = computed(() => props.customerKey)
 
 const qc = useQueryClient()
 const online = useOnline()
+const session = useSessionStore()
 
 const account = useAccount(key)
 const recs = useAccountRecommendations(key)
@@ -127,7 +129,10 @@ const surveyOpen = ref(false)
 const savedVisitId = ref<number | null>(null)
 const queuedNotice = ref(false)
 
-const draftKey = computed(() => visitDraftKey(key.value))
+// Keyed by user as well as account: IndexedDB is per-device, so an unscoped
+// key hands the next rep on a shared phone the previous rep's draft.
+const survey = ref<InstanceType<typeof VisitSurvey> | null>(null)
+const draftKey = computed(() => visitDraftKey(key.value, session.user?.id))
 const {
   state: draftValues,
   restored: draftRestored,
@@ -194,7 +199,11 @@ async function saveVisitForLater() {
   offlineError.value = ''
   try {
     const values = makeVisitFormValues(draftValues.value)
+    const userId = session.user?.id
+    if (!userId) throw new Error('You are signed out. Sign in and try again.')
     await enqueue({
+      // Stamped so this never flushes under a different rep's JWT.
+      userId,
       customerKey: props.customerKey,
       visit: {
         customer_key: props.customerKey,
@@ -215,6 +224,12 @@ async function saveVisitForLater() {
         actionType: 'visit',
         note: values.comments,
         recommendationId: null,
+        // The day the rep was in the store, not the day the phone reconnected.
+        actionDate: values.visit_date,
+        // If an online submit already created an action before it failed,
+        // adopt it. A second one double-counts coverage and reps cannot
+        // delete actions.
+        existingActionId: survey.value?.pendingActionId ?? null,
       },
       photos: pendingSurveyPhotos.value,
     })
@@ -472,11 +487,13 @@ async function submitNote() {
         </p>
 
         <VisitSurvey
+          ref="survey"
           :customer-key="customerKey"
           :initial-values="draftValues"
           @change="onSurveyChange"
           @submitted="onVisitSubmitted"
           @cancel="closeSurvey"
+          @restart="picker?.reset()"
         >
           <template #photos="{ customerKey: photoKey, visitId }">
             <PhotoPicker

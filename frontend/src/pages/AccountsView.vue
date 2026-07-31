@@ -92,8 +92,20 @@ function place(a: { sold_to_city: string | null; sold_to_state: string | null })
             class="tap-target hover:bg-canvas flex flex-col justify-center gap-1 px-4 py-3.5"
           >
             <span class="flex items-baseline justify-between gap-3">
-              <span class="text-ink truncate text-[17px] font-semibold">
-                {{ a.customer_name || a.customer_key }}
+              <!-- The ID is the disambiguator — a book has many "GUN SHOP"s.
+                   It sits outside the truncating name span so a long name
+                   clips itself rather than the one field that tells two
+                   look-alike accounts apart. -->
+              <span class="flex min-w-0 items-baseline gap-1.5">
+                <span class="text-ink truncate text-[17px] font-semibold">
+                  {{ a.customer_name || a.customer_key }}
+                </span>
+                <span
+                  v-if="a.customer_name"
+                  class="text-muted shrink-0 text-[13px] font-medium"
+                >
+                  ({{ a.customer_key }})
+                </span>
               </span>
               <span
                 v-if="a.active_flag !== 'Y'"

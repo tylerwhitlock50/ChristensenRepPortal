@@ -19,6 +19,7 @@
 import { computed, onBeforeUnmount, ref, toRaw, watch } from 'vue'
 import { useOnline } from '@vueuse/core'
 import {
+  attachVisitToPhotos,
   compressPhoto,
   formatBytes,
   newPhotoId,
@@ -238,13 +239,59 @@ watch(online, (isOnline) => {
   void processAll()
 })
 
+/**
+ * The survey saves and `visitId` arrives. Anything already uploaded went in
+ * with visit_id = null, so link it now — otherwise a photo taken during the
+ * visit is never associated with it.
+ */
+watch(
+  () => props.visitId,
+  async (visitId, previous) => {
+    if (!visitId || previous === visitId) return
+    const orphans = items.value
+      .map((i) => i.row)
+      .filter((r): r is Photo => !!r && r.visit_id == null)
+    if (orphans.length === 0) return
+    try {
+      const updated = await attachVisitToPhotos(
+        orphans.map((r) => r.id),
+        visitId,
+      )
+      const byId = new Map(updated.map((r) => [r.id, r]))
+      for (const item of items.value) {
+        const next = item.row ? byId.get(item.row.id) : undefined
+        if (next) item.row = next
+      }
+    } catch {
+      // A photo that is stored but unlinked is a far better outcome than an
+      // error the rep cannot act on. Stay quiet; the image is safe.
+    }
+  },
+)
+
 function retry(item: LocalPhoto): void {
   item.status = 'ready'
   item.error = null
   void processAll()
 }
 
+/**
+ * Two-tap confirm, matching ContactsCard and TasksView. For a photo still in
+ * `failed` or `waiting` the in-memory blob is the ONLY copy — a mis-tap next
+ * to a 4px-away Retry button used to destroy it with no undo.
+ */
+const confirmingRemove = ref<string | null>(null)
+
+function askRemove(item: LocalPhoto): void {
+  confirmingRemove.value = item.id
+}
+
+function cancelRemove(): void {
+  confirmingRemove.value = null
+}
+
 function remove(item: LocalPhoto): void {
+  confirmingRemove.value = null
   URL.revokeObjectURL(item.previewUrl)
   items.value = items.value.filter((i) => i.id !== item.id)
 }
@@ -405,23 +452,47 @@ defineExpose({ reset, pendingPhotos })
             {{ sizeLabel(item) }}
           </p>
 
-          <div class="mt-1 flex flex-wrap gap-1">
+          <!--
+            Full-width stacked rows, not a wrapped inline pair. In a ~91px
+            grid cell these were 32px tall and 4px apart, and Remove is
+            destructive — a cold thumb aiming for Retry hit it instead.
+          -->
+          <div class="mt-1 flex flex-col gap-1">
             <button
               v-if="item.status === 'failed'"
               type="button"
-              class="text-ink min-h-8 text-[12px] font-semibold underline underline-offset-2"
+              class="tap-target text-ink w-full text-[13px] font-semibold underline underline-offset-2"
               @click="retry(item)"
             >
               Retry
             </button>
-            <button
-              v-if="item.status !== 'done' && item.status !== 'uploading'"
-              type="button"
-              class="text-muted min-h-8 text-[12px] underline underline-offset-2"
-              @click="remove(item)"
-            >
-              Remove
-            </button>
+
+            <template v-if="item.status !== 'done' && item.status !== 'uploading'">
+              <button
+                v-if="confirmingRemove !== item.id"
+                type="button"
+                class="tap-target text-muted w-full text-[13px] underline underline-offset-2"
+                @click="askRemove(item)"
+              >
+                Remove
+              </button>
+              <template v-else>
+                <button
+                  type="button"
+                  class="tap-target text-danger w-full text-[13px] font-semibold underline underline-offset-2"
+                  @click="remove(item)"
+                >
+                  Delete it
+                </button>
+                <button
+                  type="button"
+                  class="tap-target text-ink w-full text-[13px] underline underline-offset-2"
+                  @click="cancelRemove"
+                >
+                  Keep
+                </button>
+              </template>
+            </template>
           </div>
         </div>
       </li>

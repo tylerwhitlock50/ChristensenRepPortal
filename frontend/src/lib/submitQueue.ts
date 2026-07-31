@@ -24,8 +24,11 @@
 import { clear, createStore, del, entries, get, set } from 'idb-keyval'
 import { onMounted, shallowRef, watch, type Ref, type ShallowRef } from 'vue'
 import { useIntervalFn, useOnline } from '@vueuse/core'
+import { useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
 import { newPhotoId, uploadPhoto } from '@/lib/photos'
+import { qk } from '@/lib/queryClient'
+import { useSessionStore } from '@/stores/session'
 import type { TablesInsert } from '@/types/database.types'
 import type { ActionType, PhotoCategory } from '@/types/domain'
 
@@ -59,6 +62,14 @@ export interface QueuedPhoto {
 
 /** Everything needed to write one visit, offline, later, from cold storage. */
 export interface VisitSubmission {
+  /**
+   * Who wrote it. IndexedDB is per-device, not per-user, so without this a
+   * survey queued by one rep is flushed under the NEXT rep's JWT on a shared
+   * truck iPad — misattributing the visit in rep_execution_summary and
+   * account_coverage, or failing permanently if that rep doesn't share the
+   * account. The flush refuses anything that isn't the signed-in user's.
+   */
+  userId: string
   customerKey: string
   /** `action_id` is filled in by the queue if `action` is present. */
   visit: Omit<TablesInsert<'visits'>, 'action_id'>
@@ -67,6 +78,19 @@ export interface VisitSubmission {
     actionType: ActionType
     note?: string | null
     recommendationId?: number | null
+    /**
+     * The date the rep was in the store, NOT the date the phone reconnected.
+     * account_coverage and rep_execution_summary both key off
+     * actions.action_date, so letting it default to current_date at sync time
+     * drops the contact out of the month it happened in.
+     */
+    actionDate?: string | null
+    /**
+     * An actions row a failed online submit already created. Reuse it —
+     * inserting a second one double-counts coverage, and reps cannot delete
+     * actions (admin-only policy), so nobody in the field can clean it up.
+     */
+    existingActionId?: number | null
   } | null
   photos: QueuedPhoto[]
 }
@@ -94,6 +118,13 @@ export interface FlushResult {
   remaining: number
   /** False when the flush was skipped because the device is offline. */
   attempted: boolean
+  /**
+   * Accounts that actually landed. The caller invalidates these — without it
+   * the pending badge disappears while the account page still says "No
+   * surveys yet", which is precisely the "my survey vanished" experience this
+   * file exists to prevent.
+   */
+  customerKeys: string[]
 }
 
 /**
@@ -205,6 +236,13 @@ export function isStuck(item: QueuedSubmit): boolean {
 async function sendOne(item: QueuedSubmit): Promise<void> {
   const { payload } = item
 
+  // An action the online path already created before it failed. Adopting it
+  // is what stops the offline fallback from double-logging the same stop.
+  if (payload.action?.existingActionId != null && item.progress.actionId == null) {
+    item.progress.actionId = payload.action.existingActionId
+    await persist(item)
+  }
+
   if (payload.action && item.progress.actionId == null) {
     const { data, error } = await supabase
       .from('actions')
@@ -213,6 +251,10 @@ async function sendOne(item: QueuedSubmit): Promise<void> {
         action_type: payload.action.actionType,
         note: payload.action.note?.trim() || null,
         recommendation_id: payload.action.recommendationId ?? null,
+        // Explicit, never the current_date default — see VisitSubmission.
+        ...(payload.action.actionDate
+          ? { action_date: payload.action.actionDate }
+          : {}),
       })
       .select('id')
       .single()
@@ -256,19 +298,30 @@ async function sendOne(item: QueuedSubmit): Promise<void> {
  * like: concurrent calls share one in-flight run, and an offline device is a
  * no-op rather than a burst of doomed requests.
  */
-export async function flush(options?: { force?: boolean }): Promise<FlushResult> {
+export async function flush(options?: {
+  force?: boolean
+  /**
+   * Only send items this user queued. Always pass it from a signed-in
+   * context — see VisitSubmission.userId. Omitting it sends everything, which
+   * is only correct in a test.
+   */
+  userId?: string
+}): Promise<FlushResult> {
   if (inFlight) return inFlight
-  inFlight = runFlush(options?.force ?? false).finally(() => {
+  inFlight = runFlush(options?.force ?? false, options?.userId).finally(() => {
     inFlight = null
   })
   return inFlight
 }
 
-async function runFlush(force: boolean): Promise<FlushResult> {
+async function runFlush(
+  force: boolean,
+  userId?: string,
+): Promise<FlushResult> {
   await ensureHydrated()
 
   if (items.value.length === 0) {
-    return { sent: 0, failed: 0, remaining: 0, attempted: true }
+    return { sent: 0, failed: 0, remaining: 0, attempted: true, customerKeys: [] }
   }
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return {
@@ -276,6 +329,7 @@ async function runFlush(force: boolean): Promise<FlushResult> {
       failed: 0,
       remaining: items.value.length,
       attempted: false,
+      customerKeys: [],
     }
   }
 
@@ -283,14 +337,19 @@ async function runFlush(force: boolean): Promise<FlushResult> {
   lastFlushError.value = null
   let sent = 0
   let failed = 0
+  const customerKeys = new Set<string>()
 
   try {
     for (const item of [...items.value].sort(byQueuedAt)) {
       if (!dueNow(item, force)) continue
+      // Never send another user's work under this user's JWT. Left in the
+      // queue, not discarded — the original author may sign back in.
+      if (userId && item.payload.userId && item.payload.userId !== userId) continue
       try {
         await sendOne(item)
         await removeQueued(item.id)
         sent += 1
+        customerKeys.add(item.payload.customerKey)
       } catch (err) {
         failed += 1
         item.attempts += 1
@@ -310,7 +369,13 @@ async function runFlush(force: boolean): Promise<FlushResult> {
     isFlushing.value = false
   }
 
-  return { sent, failed, remaining: items.value.length, attempted: true }
+  return {
+    sent,
+    failed,
+    remaining: items.value.length,
+    attempted: true,
+    customerKeys: [...customerKeys],
+  }
 }
 
 function messageFor(err: unknown): string {
@@ -392,7 +457,8 @@ export interface UseSubmitQueue {
   isFlushing: ShallowRef<boolean>
   lastError: ShallowRef<string | null>
   online: Readonly<Ref<boolean>>
-  flush: typeof flush
+  /** Scoped to the signed-in user and invalidates whatever landed. */
+  flush: (options?: { force?: boolean }) => Promise<FlushResult>
   refresh: typeof refresh
   remove: typeof removeQueued
 }
@@ -408,10 +474,31 @@ export function useSubmitQueue(): UseSubmitQueue {
   const online = useOnline()
   const pending = shallowRef(items.value.length)
   const stuck = shallowRef(items.value.filter(isStuck).length)
+  const session = useSessionStore()
+  const qc = useQueryClient()
+
+  /**
+   * Every flush from a component goes through here so two things always
+   * happen: it is scoped to the signed-in user, and whatever landed is
+   * invalidated. Calling `flush()` bare from a component is the bug.
+   */
+  async function flushForUser(options?: { force?: boolean }) {
+    const result = await flush({
+      force: options?.force ?? false,
+      userId: session.user?.id,
+    })
+    for (const customerKey of result.customerKeys) {
+      void qc.invalidateQueries({ queryKey: qk.account.root(customerKey) })
+    }
+    if (result.customerKeys.length > 0) {
+      void qc.invalidateQueries({ queryKey: qk.me.needsAttention() })
+    }
+    return result
+  }
 
   const retry = useIntervalFn(
     () => {
-      if (online.value) void flush()
+      if (online.value) void flushForUser()
     },
     60_000,
     { immediate: false },
@@ -436,13 +523,13 @@ export function useSubmitQueue(): UseSubmitQueue {
     }
     if (items.value.length > 0) {
       retry.resume()
-      void flush({ force: true })
+      void flushForUser({ force: true })
     }
   })
 
   onMounted(() => {
     void refresh().then(() => {
-      if (online.value && items.value.length > 0) void flush()
+      if (online.value && items.value.length > 0) void flushForUser()
     })
   })
 
@@ -453,7 +540,7 @@ export function useSubmitQueue(): UseSubmitQueue {
     isFlushing,
     lastError: lastFlushError,
     online,
-    flush,
+    flush: flushForUser,
     refresh,
     remove: removeQueued,
   }

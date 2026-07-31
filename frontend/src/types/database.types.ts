@@ -4,10 +4,12 @@
  *
  *   supabase gen types typescript --project-id <ref> > src/types/database.types.ts
  *
- * Note: only the `public` schema is present. The `erp` schema will appear here
- * once it is added to Settings → API → Exposed schemas (see supabase/README.md
- * post-migration checklist). Until then, `erp` reads are typed loosely by hand
- * in src/types/erp.ts.
+ * Note: only the `public` schema is present. `erp` IS exposed to PostgREST,
+ * but `generate_typescript_types` still emits only the default schema, so
+ * `erp` reads stay typed by hand in src/types/erp.ts. Regenerate with the CLI
+ * and `--schema erp` if you want them generated.
+ *
+ * Last regenerated after migration 014.
  */
 
 export type Json =
@@ -153,6 +155,36 @@ export type Database = {
           phone?: string | null
           title?: string | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      job_runs: {
+        Row: {
+          error: string | null
+          finished_at: string | null
+          id: number
+          job_name: string
+          rows_affected: number | null
+          started_at: string
+          status: string
+        }
+        Insert: {
+          error?: string | null
+          finished_at?: string | null
+          id?: never
+          job_name: string
+          rows_affected?: number | null
+          started_at?: string
+          status?: string
+        }
+        Update: {
+          error?: string | null
+          finished_at?: string | null
+          id?: never
+          job_name?: string
+          rows_affected?: number | null
+          started_at?: string
+          status?: string
         }
         Relationships: []
       }
@@ -454,6 +486,69 @@ export type Database = {
         }
         Relationships: []
       }
+      v_account_recent_orders: {
+        Row: {
+          backlog_qty: number | null
+          bookings: number | null
+          customer_key: string | null
+          is_backlog_line: boolean | null
+          line_num: number | null
+          line_status_desc: string | null
+          order_date: string | null
+          order_id: string | null
+          order_qty: number | null
+          order_state: string | null
+          order_status_desc: string | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          promise_date: string | null
+        }
+        Relationships: []
+      }
+      v_account_recent_shipments: {
+        Row: {
+          actual_delivery_date: string | null
+          customer_key: string | null
+          invoice_id: string | null
+          line_num: number | null
+          order_id: string | null
+          packlist_id: string | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          promise_date: string | null
+          ship_date: string | null
+          shipment_state: string | null
+          shipped_qty: number | null
+          shipped_revenue: number | null
+          shipper_status_desc: string | null
+        }
+        Relationships: []
+      }
+      v_account_revenue_monthly: {
+        Row: {
+          customer_key: string | null
+          invoice_count: number | null
+          month: string | null
+          revenue: number | null
+        }
+        Relationships: []
+      }
+      v_account_summary: {
+        Row: {
+          backlog_qty: number | null
+          customer_key: string | null
+          last_invoice_date: string | null
+          last_order_date: string | null
+          open_order_count: number | null
+          open_order_value: number | null
+          revenue_prior_ytd: number | null
+          revenue_trailing_12m: number | null
+          revenue_ytd: number | null
+        }
+        Relationships: []
+      }
       v_user_accounts: {
         Row: {
           customer_key: string | null
@@ -466,13 +561,25 @@ export type Database = {
       generate_recommendations: {
         Args: never
         Returns: {
-          created: number
-          rule_key: string
+          out_created: number
+          out_rule_key: string
         }[]
       }
       has_account_access: { Args: { p_customer_key: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
+      log_job_run: {
+        Args: {
+          p_error?: string
+          p_job_name: string
+          p_rows: number
+          p_started_at?: string
+          p_status: string
+        }
+        Returns: undefined
+      }
       log_login: { Args: never; Returns: undefined }
+      my_customer_keys: { Args: never; Returns: string[] }
+      placeholder_rep_keys: { Args: never; Returns: string[] }
     }
     Enums: {
       [_ in never]: never
