@@ -264,14 +264,38 @@ async function fetchRevenueByMonth(
   return { series, source: 'fact_lines' }
 }
 
-function summariseRevenue(series: MonthlyRevenue[]) {
-  const last12 = series.slice(-12)
-  const prior12 = series.slice(-24, -12)
-  const sum = (rowsIn: MonthlyRevenue[]) =>
-    round(rowsIn.reduce((acc, r) => acc + r.revenue, 0))
+/**
+ * Align by CALENDAR month, never by array position.
+ *
+ * v_account_revenue_monthly omits months with no invoices ("Months with no
+ * invoices are simply absent"), so the series is sparse. Slicing it by index
+ * silently redefines the windows: a seasonal dealer invoicing in 8 of the last
+ * 24 months has all 8 rows counted as "trailing 12 months" and an empty prior
+ * window, so prior_12m_revenue is 0 and change_pct is null. With 18 present
+ * months it reports a large fake swing on a flat account.
+ *
+ * prompt.md tells the model these fields are literally the trailing twelve
+ * months and the twelve before that, so a wrong number here becomes a
+ * confident false statement in a rep's briefing.
+ */
+function summariseRevenue(series: MonthlyRevenue[], today = new Date()) {
+  const byMonth = new Map(series.map((r) => [r.month.slice(0, 7), r.revenue]))
 
-  const trailing = sum(last12)
-  const prior = sum(prior12)
+  // 24 calendar-month keys ending with the current month, newest first.
+  const monthKeys: string[] = []
+  const cursor = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1),
+  )
+  for (let i = 0; i < 24; i++) {
+    monthKeys.push(cursor.toISOString().slice(0, 7))
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1)
+  }
+
+  const sumWindow = (keys: string[]) =>
+    round(keys.reduce((acc, k) => acc + (byMonth.get(k) ?? 0), 0))
+
+  const trailing = sumWindow(monthKeys.slice(0, 12))
+  const prior = sumWindow(monthKeys.slice(12, 24))
   const changePct =
     prior > 0 ? Math.round(((trailing - prior) / prior) * 100) : null
 

@@ -1,5 +1,10 @@
 /*============================================================================
-  010_job_runs.sql
+  012_job_runs.sql
+  Renumbered from 010, which collided with 010_access_performance.sql. The
+  table was created out-of-band during ETL setup before it was captured as a
+  migration, so everything below is written to re-run safely against a
+  database that already has it.
+
   Purpose: Audit trail for every scheduled job — each ETL table load and
            each generate_recommendations() run writes a row. Surfaced on
            the admin dashboard so a failed overnight load is visible to
@@ -21,8 +26,11 @@ create table if not exists public.job_runs (
 alter table public.job_runs enable row level security;
 create index if not exists idx_job_runs_name on public.job_runs (job_name, started_at desc);
 
+-- Scalar subquery so is_admin() is an InitPlan evaluated once per query
+-- rather than once per row, matching 010_access_performance.sql.
+drop policy if exists "admin reads job runs" on public.job_runs;
 create policy "admin reads job runs" on public.job_runs
-  for select to authenticated using (public.is_admin());
+  for select to authenticated using ((select public.is_admin()));
 
 -- Log recommendation runs from inside the generator itself
 create or replace function public.log_job_run(
