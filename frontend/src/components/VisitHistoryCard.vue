@@ -35,19 +35,20 @@ const { data, isPending, error, refetch } = useAccountVisits(key, {
 
 const visits = computed<Visit[]>(() => data.value ?? [])
 
-type Tone = 'neutral' | 'high' | 'warn' | 'good' | 'info'
+/** Mirrors AppBadge's `tone` prop — those four fills are the whole vocabulary. */
+type Tone = 'late' | 'high' | 'good' | 'neutral'
 
 /** Empty shelves are the thing to notice from across the room. */
 function inventoryTone(level: string | null): Tone {
   switch (level) {
     case 'empty':
-      return 'high'
+      return 'late'
     case 'low':
-      return 'warn'
+      return 'high'
     case 'good':
       return 'good'
     case 'overstock':
-      return 'info'
+      return 'neutral'
     default:
       return 'neutral'
   }
@@ -99,7 +100,6 @@ function ratings(visit: Visit): Rating[] {
             <AppBadge
               v-if="visit.inventory_level"
               :tone="inventoryTone(visit.inventory_level)"
-              dot
             >
               {{ inventoryLevelLabel(visit.inventory_level) }} stock
             </AppBadge>

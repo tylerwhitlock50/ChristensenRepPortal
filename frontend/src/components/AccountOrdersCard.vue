@@ -89,7 +89,7 @@ const shipments = computed(() => shipmentsQuery.data.value ?? [])
                   {{ money(row.bookings) }}
                 </td>
                 <td class="py-2.5 whitespace-nowrap">
-                  <AppBadge v-if="row.is_backlog_line" tone="warn">
+                  <AppBadge v-if="row.is_backlog_line" tone="high">
                     Open {{ count(row.backlog_qty) }}
                   </AppBadge>
                   <span v-else class="text-muted">
