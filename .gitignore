@@ -1,0 +1,42 @@
+# --- Secrets / environment -------------------------------------------------
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+
+# --- Node / frontend --------------------------------------------------------
+node_modules/
+dist/
+.vite/
+.vercel/
+*.local
+coverage/
+
+# --- Python / ETL -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+
+# --- Supabase CLI -----------------------------------------------------------
+supabase/.temp/
+supabase/.branches/
+
+# --- Editors / OS -----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Claude Code local state ------------------------------------------------
+.claude/settings.local.json
+
+# --- Logs / scratch ---------------------------------------------------------
+*.log
+tmp/
+scratch/

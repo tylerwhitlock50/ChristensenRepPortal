@@ -1,0 +1,142 @@
+"""
+SQL Server bi.vw_* -> Supabase Postgres erp.* push.
+
+Truncate-and-load, one transaction per table, so readers never see a
+half-loaded table. Runs the recommendation generator after the last load.
+
+Usage:
+    python push_to_supabase.py            # all tables in views.yml
+    python push_to_supabase.py dim_customer fact_invoice_line   # subset
+
+Environment (see .env.example):
+    MSSQL_CONN   ODBC connection string to the SQL Server instance (VECA)
+    PG_CONN      Postgres connection string to Supabase
+                 (use the direct/session pooler connection, role: postgres)
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import re
+import sys
+import time
+from datetime import datetime, timezone
+
+import pyodbc
+import psycopg
+import yaml
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BATCH_ROWS = 50_000
+
+
+def load_config() -> dict:
+    with open(os.path.join(HERE, "views.yml"), encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def to_snake(name: str, overrides: dict[str, str]) -> str:
+    if name in overrides:
+        return overrides[name]
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s)
+    return s.lower()
+
+
+def csv_field(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "t" if v else "f"
+    s = str(v)
+    if any(c in s for c in (",", '"', "\n", "\r")):
+        s = '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def log_job_run(pg, job_name, started_at, status, rows=None, error=None):
+    try:
+        with pg.transaction():
+            pg.execute(
+                "select public.log_job_run(%s, %s, %s, %s, %s)",
+                (job_name, status, rows, error, started_at),
+            )
+    except Exception as exc:  # audit failure must not fail the load itself
+        print(f"job_runs logging failed for {job_name}: {exc}", file=sys.stderr)
+
+
+def push_table(ms, pg, source_view: str, target_table: str, overrides: dict) -> int:
+    cur = ms.cursor()
+    cur.execute(f"SELECT * FROM {source_view}")
+    src_cols = [to_snake(d[0], overrides) for d in cur.description]
+    col_list = ", ".join(f'"{c}"' for c in src_cols)
+
+    total = 0
+    with pg.transaction():
+        pcur = pg.cursor()
+        pcur.execute(f"TRUNCATE TABLE {target_table}")
+        copy_sql = (
+            f"COPY {target_table} ({col_list}) "
+            f"FROM STDIN WITH (FORMAT csv, NULL '')"
+        )
+        with pcur.copy(copy_sql) as copy:
+            while True:
+                rows = cur.fetchmany(BATCH_ROWS)
+                if not rows:
+                    break
+                buf = io.StringIO()
+                for row in rows:
+                    buf.write(",".join(csv_field(v) for v in row) + "\n")
+                copy.write(buf.getvalue())
+                total += len(rows)
+    return total
+
+
+def main() -> int:
+    cfg = load_config()
+    overrides = cfg.get("column_map") or {}
+    only = {a.lower() for a in sys.argv[1:]}
+
+    tables = [
+        t for t in cfg["tables"]
+        if not only or t["target_table"].split(".")[-1] in only
+    ]
+    if not tables:
+        print(f"No tables matched {sorted(only)}", file=sys.stderr)
+        return 2
+
+    ms = pyodbc.connect(os.environ["MSSQL_CONN"])
+    pg = psycopg.connect(os.environ["PG_CONN"])
+
+    failed = False
+    for t in tables:
+        started = time.monotonic()
+        started_at = datetime.now(timezone.utc)
+        job_name = f"etl:{t['target_table']}"
+        try:
+            n = push_table(ms, pg, t["source_view"], t["target_table"], overrides)
+            log_job_run(pg, job_name, started_at, "success", n)
+            print(f"{t['target_table']}: {n} rows in {time.monotonic() - started:.1f}s")
+        except Exception as exc:  # keep loading the rest; report at the end
+            failed = True
+            log_job_run(pg, job_name, started_at, "error", None, str(exc))
+            print(f"{t['target_table']}: FAILED — {exc}", file=sys.stderr)
+
+    if not failed and not only:
+        for sql in cfg.get("post_load_sql") or []:
+            with pg.transaction():
+                res = pg.execute(sql).fetchall()
+            print(f"post_load: {sql} -> {res}")
+
+    ms.close()
+    pg.close()
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

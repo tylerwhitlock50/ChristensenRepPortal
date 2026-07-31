@@ -1,0 +1,47 @@
+# Source view → Supabase landing table mapping.
+# Columns are pushed positionally-by-name: the SQL Server view's PascalCase
+# column FooBarID lands in snake_case foo_bar_id (see column_map exceptions).
+# Load pattern: TRUNCATE + COPY inside one transaction per table.
+
+tables:
+  - source_view: bi.vw_DimCustomer
+    target_table: erp.dim_customer
+  - source_view: bi.vw_DimShipTo
+    target_table: erp.dim_ship_to
+  - source_view: bi.vw_DimSalesRep
+    target_table: erp.dim_sales_rep
+  - source_view: bi.vw_DimPart
+    target_table: erp.dim_part
+  - source_view: bi.vw_FactOrderLine
+    target_table: erp.fact_order_line
+  - source_view: bi.vw_FactInvoiceLine
+    target_table: erp.fact_invoice_line
+  - source_view: bi.vw_FactShipmentLine
+    target_table: erp.fact_shipment_line
+  - source_view: bi.vw_FactInventoryOnHand
+    target_table: erp.fact_inventory_on_hand
+
+# Generated columns in the target (order_date, ship_date, …) are computed by
+# Postgres — the ETL must NOT include them in the column list.
+
+# PascalCase → snake_case exceptions the naive splitter gets wrong:
+column_map:
+  SICCode: sic_code
+  UPC: upc
+  RMAID: rma_id
+  COGSAmount: cogs_amount
+  COGSMaterial: cogs_material
+  COGSLabor: cogs_labor
+  COGSBurden: cogs_burden
+  COGSService: cogs_service
+  FFLLicenseNumber: ffl_license_number
+  FFLExpirationRaw: ffl_expiration_raw
+  ARTermsRuleID: ar_terms_rule_id
+  ARPaymentMethodID: ar_payment_method_id
+  ARActiveFlag: ar_active_flag
+  MRPRequiredFlag: mrp_required_flag
+  QtyAvailableMRP: qty_available_mrp
+
+# After the last table loads successfully, run:
+post_load_sql:
+  - "select public.generate_recommendations();"

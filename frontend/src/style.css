@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+
+/*
+  Field-tool design constraints (TECH_STACK.md §2.4):
+    - minimum 44px touch targets
+    - no hover-only affordances
+    - no horizontal scroll
+    - high contrast; reps read this on a phone in a parking lot
+
+  Light-only by design. Sunlight readability beats a dark theme for the
+  primary use case, and a single theme is one less thing to get wrong.
+*/
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* Semantic aliases over the stock zinc/amber ramp, so a rebrand is one edit */
+  --color-ink: var(--color-zinc-900);
+  --color-muted: var(--color-zinc-500);
+  --color-line: var(--color-zinc-200);
+  --color-surface: #ffffff;
+  --color-canvas: var(--color-zinc-50);
+  --color-brand: var(--color-amber-600);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* Never let a wide table or long account name scroll the page sideways */
+    overflow-x: hidden;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100svh;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Stops iOS Safari zooming the page when a rep taps a form field */
+    font-size: 16px;
+  }
+
+  /* Visible focus everywhere — reps tab through the survey with a glove on */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+@layer components {
+  /* The one shared primitive worth a class: every tappable row/button. */
+  .tap-target {
+    @apply min-h-11 touch-manipulation select-none;
+  }
+}

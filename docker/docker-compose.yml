@@ -1,0 +1,9 @@
+# Run the ETL push on demand (or from any scheduler that can `docker compose run`):
+#   docker compose -f docker/docker-compose.yml run --rm etl
+services:
+  etl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.etl
+    env_file:
+      - ../etl/.env
