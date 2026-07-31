@@ -33,7 +33,10 @@ const shipments = computed(() => shipmentsQuery.data.value ?? [])
 </script>
 
 <template>
-  <div class="grid gap-4 lg:grid-cols-2">
+  <!-- grid-cols-1 matters: it makes the track minmax(0,1fr), so the cards can
+       shrink below the tables' min-w and the overflow-x-auto wrappers scroll
+       instead of the whole card getting clipped at the phone edge. -->
+  <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
     <AppCard title="Recent orders" hint="Last 20 lines">
       <AsyncState
         :loading="ordersQuery.isPending.value"

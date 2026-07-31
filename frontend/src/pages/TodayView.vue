@@ -33,7 +33,9 @@ const awaitingOutcome = computed(
   () => items.value.filter((r) => r.status === 'acted').length,
 )
 
-const firstName = computed(() => session.displayName.split(' ')[0])
+// displayName falls back to the email when the profile has no full_name;
+// an address has no spaces, so strip the domain before taking the first word.
+const firstName = computed(() => session.displayName.split('@')[0].split(' ')[0])
 
 /* ---- my follow-ups ------------------------------------------------------
    The rep's own reminders, under the recommendations sales ops sent them.
@@ -86,7 +88,7 @@ function taskAccount(task: Task): string {
       <p class="font-label text-muted text-xs font-semibold tracking-[0.16em] uppercase">
         {{ format(new Date(), 'EEEE, MMMM d') }}
       </p>
-      <h1 class="u-display mt-1 text-[34px]">Morning, {{ firstName }}</h1>
+      <h1 class="u-display mt-1 text-[34px] wrap-anywhere">Morning, {{ firstName }}</h1>
     </header>
 
     <div class="bg-line border-line grid grid-cols-3 gap-px border">
