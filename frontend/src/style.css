@@ -1,27 +1,37 @@
 @import 'tailwindcss';
 
 /*
-  Field-tool design constraints (TECH_STACK.md §2.4):
-    - minimum 44px touch targets
-    - no hover-only affordances
-    - no horizontal scroll
-    - high contrast; reps read this on a phone in a parking lot
+  Field-tool design constraints (TECH_STACK.md §2.4 + Rep Portal Design System):
+    - every tappable thing is 48px tall — gloves, trucks, cold hands
+    - one green (brand) button per view; everything else is an outline or link
+    - no modals; panels open inline and keep their context
+    - square corners on structure, 2px on controls; nothing pill-shaped
+    - ember (--color-accent) means late — never decorative
+    - spacing on a 4px grid: 4 · 8 · 12 · 16 · 24 · 32 · 48
 
   Light-only by design. Sunlight readability beats a dark theme for the
   primary use case, and a single theme is one less thing to get wrong.
 */
 
 @theme {
-  --font-sans:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-sans: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Barlow Condensed', 'Barlow', sans-serif;
+  --font-label: 'Barlow Semi Condensed', 'Barlow', sans-serif;
 
-  /* Semantic aliases over the stock zinc/amber ramp, so a rebrand is one edit */
-  --color-ink: var(--color-zinc-900);
-  --color-muted: var(--color-zinc-500);
-  --color-line: var(--color-zinc-200);
+  --color-ink: #12130f;
+  --color-ink-2: #3a3d35;
+  --color-muted: #6e6a61;
+  --color-line: #dfdbd2;
+  --color-line-2: #c6c2b8;
   --color-surface: #ffffff;
-  --color-canvas: var(--color-zinc-50);
-  --color-brand: var(--color-amber-600);
+  --color-canvas: #f4f2ed;
+  --color-brand: #1f3a2e; /* one CTA per view */
+  --color-brand-hi: #274a3a;
+  --color-accent: #c9662a; /* late / needs you */
+  --color-danger: #8e1f14;
+
+  --radius-control: 2px; /* everything */
+  --spacing-tap: 3rem; /* 48px */
 }
 
 @layer base {
@@ -58,9 +68,34 @@
   }
 }
 
-@layer components {
-  /* The one shared primitive worth a class: every tappable row/button. */
-  .tap-target {
-    @apply min-h-11 touch-manipulation select-none;
-  }
+/* Every tappable row/button: 48px floor. */
+@utility tap-target {
+  @apply min-h-12 touch-manipulation select-none;
+}
+
+/* Screen titles and big numbers: condensed caps, tight leading. */
+@utility u-display {
+  @apply font-display font-bold uppercase tracking-[0.02em] leading-[1.02];
+}
+
+/* Eyebrows, table headers, badges: semi-condensed caps. */
+@utility u-label {
+  @apply font-label text-muted text-[13px] font-semibold tracking-[0.14em] uppercase;
+}
+
+@utility btn {
+  @apply tap-target font-label inline-flex items-center justify-center rounded-[2px] px-5 font-semibold tracking-[0.12em] uppercase;
+}
+@utility btn-primary {
+  @apply btn bg-brand text-canvas hover:bg-brand-hi;
+}
+@utility btn-secondary {
+  @apply btn border-ink text-ink hover:bg-ink hover:text-canvas border-[1.5px];
+}
+@utility btn-ghost {
+  @apply btn border-line text-muted hover:text-ink hover:border-ink border;
+}
+
+@utility field {
+  @apply tap-target bg-surface border-line-2 focus:border-brand focus:ring-3 focus:ring-brand/15 w-full rounded-[2px] border px-3.5 text-base outline-none;
 }

@@ -1,29 +1,48 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useOnline } from '@vueuse/core'
+import { useQueryClient } from '@tanstack/vue-query'
 import { useAccount } from '@/composables/useAccounts'
 import { useAccountRecommendations } from '@/composables/useRecommendations'
 import {
   useAccountActions,
   useAddNote,
-  useContacts,
   useLogAccountAction,
   useNotes,
 } from '@/composables/useAccountData'
+import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
+import AccountSummaryCard from '@/components/AccountSummaryCard.vue'
+import AccountRevenueChart from '@/components/AccountRevenueChart.vue'
+import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
+import ContactsCard from '@/components/ContactsCard.vue'
+import VisitSurvey from '@/components/VisitSurvey.vue'
+import VisitHistoryCard from '@/components/VisitHistoryCard.vue'
+import PhotoPicker from '@/components/PhotoPicker.vue'
+import { useDraft, visitDraftKey } from '@/lib/drafts'
+import { enqueue, type QueuedPhoto } from '@/lib/submitQueue'
+import {
+  isVisitFormEmpty,
+  makeVisitFormValues,
+  type VisitFormValues,
+} from '@/lib/visitSchema'
+import { qk } from '@/lib/queryClient'
 import { ACTION_LABELS, ACTION_TYPES, type ActionType } from '@/types/domain'
 import { daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
 const key = computed(() => props.customerKey)
 
+const qc = useQueryClient()
+const online = useOnline()
+
 const account = useAccount(key)
 const recs = useAccountRecommendations(key)
 const notes = useNotes(key)
-const contacts = useContacts(key)
 const actions = useAccountActions(key)
 
 const openRecs = computed(
@@ -41,6 +60,37 @@ const place = computed(() => {
     .filter((v) => v && v !== '—')
     .join(', ')
 })
+
+/* ---- AI summary ---------------------------------------------------------
+   Cached row first, always. The button is an explicit choice — nothing fires
+   a generation on mount, and an account with too little history says so
+   instead of inventing a paragraph.
+------------------------------------------------------------------------- */
+const ai = useAiSummary(key)
+const generate = useGenerateAiSummary()
+const aiNotice = ref('')
+const aiError = ref('')
+
+async function runSummary() {
+  aiNotice.value = ''
+  aiError.value = ''
+  try {
+    const result = await generate.mutateAsync(props.customerKey)
+    if (result.status === 'insufficient_data') {
+      aiNotice.value =
+        result.message ??
+        "There isn't enough activity on this account to summarize yet. Log a visit or a call and try again."
+    } else if (result.status === 'cooldown') {
+      const mins = Math.max(1, Math.ceil((result.retry_after_seconds ?? 60) / 60))
+      aiNotice.value = `Just refreshed. You can regenerate in about ${mins} minute${mins === 1 ? '' : 's'}.`
+    } else if (result.status === 'cached') {
+      aiNotice.value = 'Nothing has changed since the last summary.'
+    }
+  } catch (e) {
+    aiError.value =
+      (e as Error).message || 'Could not build the summary right now.'
+  }
+}
 
 /* ---- log a contact ------------------------------------------------------ */
 const logging = ref(false)
@@ -61,6 +111,125 @@ async function submitLog() {
     logging.value = false
   } catch (e) {
     logError.value = (e as Error).message || 'Could not save that.'
+  }
+}
+
+/* ---- visit survey -------------------------------------------------------
+   The survey owns its own form and its own submit; this page owns the panel,
+   the draft on disk, and the offline escape hatch.
+
+   Draft: every edit comes back out through `change`, goes into `useDraft`
+   (debounced, IndexedDB) and goes back in through `initialValues` after a
+   restore. It is deleted in exactly two places — a successful save and a
+   successful enqueue.
+------------------------------------------------------------------------- */
+const surveyOpen = ref(false)
+const savedVisitId = ref<number | null>(null)
+const queuedNotice = ref(false)
+
+const draftKey = computed(() => visitDraftKey(key.value))
+const {
+  state: draftValues,
+  restored: draftRestored,
+  restoring: draftRestoring,
+  discard: discardDraft,
+} = useDraft<VisitFormValues>(draftKey, {
+  initial: () => makeVisitFormValues(),
+})
+
+/** An unfinished survey only counts if the rep actually answered something. */
+const hasDraft = computed(
+  () =>
+    draftRestored.value &&
+    !draftRestoring.value &&
+    !isVisitFormEmpty(makeVisitFormValues(draftValues.value)),
+)
+
+function onSurveyChange(values: VisitFormValues) {
+  draftValues.value = values
+}
+
+function openSurvey() {
+  savedVisitId.value = null
+  queuedNotice.value = false
+  offlineError.value = ''
+  surveyOpen.value = true
+}
+
+async function onVisitSubmitted(visitId: number) {
+  savedVisitId.value = visitId
+  // The survey stays open on its own "Visit saved" panel so photos can be
+  // attached to the real visit id; only the draft goes away here.
+  await discardDraft()
+  pendingSurveyPhotos.value = []
+}
+
+function closeSurvey() {
+  surveyOpen.value = false
+  savedVisitId.value = null
+}
+
+/* Photos taken inside the survey. Online they upload themselves; offline the
+   picker holds them and they travel with the queued survey. */
+const picker = ref<InstanceType<typeof PhotoPicker> | null>(null)
+const pendingSurveyPhotos = ref<QueuedPhoto[]>([])
+
+function onSurveyPhotosPending(photos: QueuedPhoto[]) {
+  pendingSurveyPhotos.value = photos
+}
+
+function invalidateAccount() {
+  void qc.invalidateQueries({ queryKey: qk.account.root(props.customerKey) })
+}
+
+/* Offline escape hatch (TECH_STACK §2.5). The survey's own Save posts straight
+   to Postgres and will fail on a dead cell; this parks the whole thing —
+   answers and photo blobs — in IndexedDB and lets the queue send it later.
+   Nothing is ever dropped, so the rep can walk out of the store. */
+const offlineSaving = ref(false)
+const offlineError = ref('')
+
+async function saveVisitForLater() {
+  offlineSaving.value = true
+  offlineError.value = ''
+  try {
+    const values = makeVisitFormValues(draftValues.value)
+    await enqueue({
+      customerKey: props.customerKey,
+      visit: {
+        customer_key: props.customerKey,
+        visit_type: values.visit_type,
+        visit_date: values.visit_date,
+        inventory_level: values.inventory_level,
+        store_condition: values.store_condition,
+        display_quality: values.display_quality,
+        staff_knowledge: values.staff_knowledge,
+        store_traffic: values.store_traffic,
+        competitor_promos: values.competitor_promos,
+        competition_seen: [...values.competition_seen],
+        comments: values.comments?.trim() || null,
+      },
+      // Coverage counts actions, not visits — queue both or the stop never
+      // happened as far as the execution report is concerned.
+      action: {
+        actionType: 'visit',
+        note: values.comments,
+        recommendationId: null,
+      },
+      photos: pendingSurveyPhotos.value,
+    })
+    // Reset the picker before the panel closes: those blobs are the queue's
+    // now, and letting the picker upload them too would double-post them.
+    picker.value?.reset()
+    pendingSurveyPhotos.value = []
+    await discardDraft()
+    surveyOpen.value = false
+    queuedNotice.value = true
+  } catch (e) {
+    offlineError.value =
+      (e as Error).message || 'Could not save that on this phone.'
+  } finally {
+    offlineSaving.value = false
   }
 }
 
@@ -85,24 +254,7 @@ async function submitNote() {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <RouterLink
-      :to="{ name: 'accounts' }"
-      class="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"
-    >
-      <svg
-        class="size-4"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        aria-hidden="true"
-      >
-        <path d="M15 18l-6-6 6-6" />
-      </svg>
-      All accounts
-    </RouterLink>
-
+  <div class="space-y-5">
     <AsyncState
       :loading="account.isPending.value"
       :error="account.error.value"
@@ -112,27 +264,29 @@ async function submitNote() {
       :rows="2"
       @retry="account.refetch()"
     >
-      <header>
-        <h1 class="text-2xl font-semibold tracking-tight text-zinc-900">
-          {{ title }}
-        </h1>
-        <p class="mt-1 text-sm text-zinc-500">
+      <!-- Facts up top: ink header, full-bleed past the page gutter. -->
+      <header class="bg-ink text-canvas -mx-4 -mt-5 px-4 pt-4 pb-5">
+        <RouterLink
+          :to="{ name: 'accounts' }"
+          class="font-label text-xs font-semibold tracking-[0.14em] text-[#8E8A80] uppercase hover:text-canvas"
+        >
+          ← All accounts
+        </RouterLink>
+        <h1 class="u-display mt-3 text-[32px]">{{ title }}</h1>
+        <p class="mt-1 text-sm text-[#8E8A80]">
           {{ customerKey }}<template v-if="place"> · {{ place }}</template>
+          <template v-if="account.data.value?.territory">
+            · {{ account.data.value.territory }}
+          </template>
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
-          <AppBadge
-            v-if="account.data.value?.active_flag === 'Y'"
-            tone="good"
-          >
+          <AppBadge v-if="account.data.value?.active_flag === 'Y'" tone="good">
             Active
           </AppBadge>
           <AppBadge v-else tone="neutral">Inactive</AppBadge>
-          <AppBadge v-if="account.data.value?.territory" tone="neutral">
-            {{ account.data.value.territory }}
-          </AppBadge>
           <span
             v-if="account.data.value?.assigned_sales_rep_name"
-            class="text-sm text-zinc-500"
+            class="text-sm text-[#8E8A80]"
           >
             Rep: {{ account.data.value.assigned_sales_rep_name }}
           </span>
@@ -140,102 +294,108 @@ async function submitNote() {
       </header>
 
       <!--
-        The mini-dashboard (current vs prior-year revenue, 12-month order
-        history, charts) is deliberately absent: it needs the public.v_* rollup
-        views from TECH_STACK §3.3. Aggregating erp facts in the browser would
-        ship thousands of rows to a phone.
+        ERP facts straight off dim_customer. This strip stays even though
+        AccountSummaryCard repeats "Last order": the card needs the v_account_*
+        rollup views (migration 011), and until those are applied this is the
+        only account history on the page.
       -->
-      <dl class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div class="rounded-xl border border-zinc-200 bg-white p-3">
-          <dt class="text-xs text-zinc-500">Last order</dt>
-          <dd class="mt-0.5 font-medium text-zinc-900">
+      <dl class="bg-line border-line -mx-4 grid grid-cols-2 gap-px border-b sm:grid-cols-4">
+        <div class="bg-surface px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+            Last order
+          </dt>
+          <dd class="u-display mt-0.5 text-xl">
             {{ daysAgo(account.data.value?.last_order_date) }}
           </dd>
         </div>
-        <div class="rounded-xl border border-zinc-200 bg-white p-3">
-          <dt class="text-xs text-zinc-500">Customer since</dt>
-          <dd class="mt-0.5 font-medium text-zinc-900">
+        <div class="bg-surface px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+            Customer since
+          </dt>
+          <dd class="u-display mt-0.5 text-xl">
             {{ shortDate(account.data.value?.account_open_date) }}
           </dd>
         </div>
-        <div class="rounded-xl border border-zinc-200 bg-white p-3">
-          <dt class="text-xs text-zinc-500">Yearly goal</dt>
-          <dd class="mt-0.5 font-medium text-zinc-900">
+        <div class="bg-surface px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+            Goal
+          </dt>
+          <dd class="u-display mt-0.5 text-xl">
             {{ money(account.data.value?.yearly_sales_goal) }}
           </dd>
         </div>
-        <div class="rounded-xl border border-zinc-200 bg-white p-3">
-          <dt class="text-xs text-zinc-500">Credit</dt>
-          <dd class="mt-0.5 font-medium text-zinc-900">
+        <div class="bg-surface px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+            Credit
+          </dt>
+          <dd class="u-display mt-0.5 text-xl">
             {{ humanize(account.data.value?.credit_status) }}
           </dd>
         </div>
       </dl>
     </AsyncState>
 
-    <!-- Log a contact -->
-    <AppCard title="Log a contact">
-      <div v-if="!logging">
-        <p class="mb-3 text-sm text-zinc-600">
-          Record a call, visit, or email against this account.
-        </p>
-        <AppButton @click="logging = true">Log a contact</AppButton>
-      </div>
-      <div v-else>
-        <fieldset>
-          <legend class="mb-2 text-sm font-medium text-zinc-700">
-            What did you do?
-          </legend>
-          <div class="flex flex-wrap gap-2">
-            <button
-              v-for="t in ACTION_TYPES"
-              :key="t"
-              type="button"
-              class="tap-target rounded-lg border px-3 text-sm font-medium"
-              :class="
-                actionType === t
-                  ? 'border-zinc-900 bg-zinc-900 text-white'
-                  : 'border-zinc-300 bg-white text-zinc-700'
-              "
-              :aria-pressed="actionType === t"
-              @click="actionType = t"
-            >
-              {{ ACTION_LABELS[t] }}
-            </button>
-          </div>
-        </fieldset>
-        <textarea
-          v-model="actionNote"
-          rows="3"
-          placeholder="What came out of it? (optional)"
-          class="mt-3 w-full rounded-lg border border-zinc-300 p-3 text-sm outline-none focus:border-zinc-900"
-        />
-        <p v-if="logError" role="alert" class="mt-2 text-sm text-red-700">
-          {{ logError }}
-        </p>
-        <div class="mt-3 flex gap-2">
-          <AppButton :loading="logMutation.isPending.value" @click="submitLog">
-            Save
-          </AppButton>
-          <AppButton variant="ghost" @click="logging = false">Cancel</AppButton>
+    <!-- Mini-dashboard: every number below is aggregated in Postgres. -->
+    <AccountSummaryCard :customer-key="customerKey" />
+    <AccountRevenueChart :customer-key="customerKey" />
+
+    <!-- AI summary — cached copy first, regeneration on request only. -->
+    <AppCard>
+      <template #header>
+        <h2 class="u-label text-ink">The story so far</h2>
+        <AppButton
+          variant="ghost"
+          :loading="generate.isPending.value"
+          @click="runSummary"
+        >
+          {{ ai.hasSummary.value ? 'Regenerate' : 'Summarize' }}
+        </AppButton>
+      </template>
+
+      <AsyncState
+        :loading="ai.isPending.value"
+        :error="ai.error.value"
+        :rows="2"
+        @retry="ai.refetch()"
+      >
+        <div>
+          <template v-if="ai.hasSummary.value">
+            <p class="text-ink-2 text-[15px] leading-relaxed whitespace-pre-wrap">
+              {{ ai.summary.value?.content }}
+            </p>
+            <p class="text-muted mt-2 text-xs">{{ ai.asOf.value }}</p>
+          </template>
+          <p v-else class="text-muted text-[15px] leading-relaxed">
+            No summary yet. Tap Summarize and we'll read this account's numbers,
+            recent orders and your notes back to you in a few sentences.
+          </p>
+
+          <p v-if="aiNotice" class="text-muted mt-3 text-sm">{{ aiNotice }}</p>
+          <p
+            v-if="aiError"
+            role="alert"
+            class="text-danger mt-3 text-sm font-medium"
+          >
+            {{ aiError }}
+          </p>
         </div>
-      </div>
+      </AsyncState>
     </AppCard>
 
     <!-- Open recommendations -->
     <section class="space-y-3">
-      <h2 class="text-sm font-semibold tracking-wide text-zinc-500 uppercase">
+      <h2 class="font-label text-muted text-xs font-semibold tracking-[0.18em] uppercase">
         Needs attention
       </h2>
       <AsyncState
         :loading="recs.isPending.value"
         :error="recs.error.value"
         :empty="openRecs.length === 0"
-        empty-title="Nothing open on this account"
+        empty-title="Nothing open here"
         :rows="1"
         @retry="recs.refetch()"
       >
-        <div class="space-y-3">
+        <div class="-space-y-px">
           <RecommendationCard
             v-for="rec in openRecs"
             :key="rec.id"
@@ -246,43 +406,122 @@ async function submitNote() {
       </AsyncState>
     </section>
 
-    <!-- Contacts -->
-    <AppCard title="Contacts" :hint="`${contacts.data.value?.length ?? 0}`">
-      <AsyncState
-        :loading="contacts.isPending.value"
-        :error="contacts.error.value"
-        :empty="(contacts.data.value?.length ?? 0) === 0"
-        empty-title="No contacts yet"
-        empty-body="Add the buyer's name and number so the next person has it."
-        :rows="2"
-        @retry="contacts.refetch()"
-      >
-        <ul class="divide-y divide-zinc-100">
-          <li
-            v-for="c in contacts.data.value"
-            :key="c.id"
-            class="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+    <!-- Log a contact — the 10-second path. The full survey is below it. -->
+    <div v-if="!logging">
+      <AppButton variant="secondary" block @click="logging = true">
+        Log a contact
+      </AppButton>
+    </div>
+    <AppCard v-else title="Log a contact">
+      <fieldset>
+        <legend class="u-label mb-2">What did you do?</legend>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="t in ACTION_TYPES"
+            :key="t"
+            type="button"
+            class="inline-flex min-h-11 items-center rounded-[2px] px-4 text-[15px] font-semibold"
+            :class="
+              actionType === t
+                ? 'bg-ink text-canvas'
+                : 'border-line-2 text-ink-2 border bg-transparent'
+            "
+            :aria-pressed="actionType === t"
+            @click="actionType = t"
           >
-            <div class="min-w-0">
-              <p class="truncate font-medium text-zinc-900">
-                {{ c.name }}
-                <AppBadge v-if="c.is_primary" tone="info">Primary</AppBadge>
-              </p>
-              <p class="truncate text-sm text-zinc-500">
-                {{ [c.title, c.phone, c.email].filter(Boolean).join(' · ') }}
-              </p>
-            </div>
-            <a
-              v-if="c.phone"
-              :href="`tel:${c.phone}`"
-              class="tap-target inline-flex items-center rounded-lg border border-zinc-300 px-3 text-sm font-medium"
-            >
-              Call
-            </a>
-          </li>
-        </ul>
-      </AsyncState>
+            {{ ACTION_LABELS[t] }}
+          </button>
+        </div>
+      </fieldset>
+      <textarea
+        v-model="actionNote"
+        rows="3"
+        placeholder="What came out of it? (optional)"
+        class="field mt-3 h-auto p-3.5"
+      />
+      <p v-if="logError" role="alert" class="text-danger mt-2 text-sm font-medium">
+        {{ logError }}
+      </p>
+      <div class="mt-3 flex gap-2">
+        <AppButton variant="primary" :loading="logMutation.isPending.value" @click="submitLog">
+          Save
+        </AppButton>
+        <AppButton variant="ghost" @click="logging = false">Cancel</AppButton>
+      </div>
     </AppCard>
+
+    <!-- Visit survey — the one green button on this view. Opens inline. -->
+    <section class="space-y-3">
+      <template v-if="!surveyOpen">
+        <AppButton variant="primary" size="lg" block @click="openSurvey">
+          Log a visit
+        </AppButton>
+        <p v-if="hasDraft" class="text-muted text-sm">
+          You have an unfinished survey saved on this phone — opening it picks
+          up where you left off.
+        </p>
+        <p v-if="queuedNotice" role="status" class="text-ink text-sm font-medium">
+          Saved on this phone. It'll sync by itself when you're back online.
+        </p>
+      </template>
+
+      <AppCard v-else title="Visit survey">
+        <p v-if="!online" class="text-accent mb-3 text-sm font-medium">
+          You're offline. Fill it in anyway — use "Save on this phone" at the
+          bottom and it sends itself when the signal comes back.
+        </p>
+
+        <VisitSurvey
+          :customer-key="customerKey"
+          :initial-values="draftValues"
+          @change="onSurveyChange"
+          @submitted="onVisitSubmitted"
+          @cancel="closeSurvey"
+        >
+          <template #photos="{ customerKey: photoKey, visitId }">
+            <PhotoPicker
+              ref="picker"
+              :customer-key="photoKey"
+              :visit-id="visitId"
+              :auto-upload="online"
+              @pending="onSurveyPhotosPending"
+              @uploaded="invalidateAccount"
+            />
+          </template>
+        </VisitSurvey>
+
+        <!-- Offline: park the whole survey, photos included. -->
+        <div v-if="!online && savedVisitId === null" class="mt-4">
+          <AppButton
+            variant="secondary"
+            block
+            :loading="offlineSaving"
+            @click="saveVisitForLater"
+          >
+            Save on this phone
+          </AppButton>
+          <p
+            v-if="offlineError"
+            role="alert"
+            class="text-danger mt-2 text-sm font-medium"
+          >
+            {{ offlineError }}
+          </p>
+        </div>
+
+        <!-- The survey's success panel has no way out of its own; this is it. -->
+        <div v-if="savedVisitId !== null" class="mt-4">
+          <AppButton variant="ghost" block @click="closeSurvey">
+            Done
+          </AppButton>
+        </div>
+      </AppCard>
+    </section>
+
+    <!-- Orders and shipments, straight off the rollup views. -->
+    <AccountOrdersCard :customer-key="customerKey" />
+
+    <ContactsCard :customer-key="customerKey" />
 
     <!-- Notes -->
     <AppCard title="Notes">
@@ -293,13 +532,14 @@ async function submitNote() {
           v-model="noteBody"
           rows="3"
           placeholder="Add a note…"
-          class="w-full rounded-lg border border-zinc-300 p-3 text-sm outline-none focus:border-zinc-900"
+          class="field h-auto p-3.5"
         />
-        <p v-if="noteError" role="alert" class="mt-2 text-sm text-red-700">
+        <p v-if="noteError" role="alert" class="text-danger mt-2 text-sm font-medium">
           {{ noteError }}
         </p>
         <AppButton
           type="submit"
+          variant="secondary"
           class="mt-2"
           :disabled="!noteBody.trim()"
           :loading="addNote.isPending.value"
@@ -317,17 +557,20 @@ async function submitNote() {
         @retry="notes.refetch()"
       >
         <ul class="space-y-3">
-          <li
-            v-for="n in notes.data.value"
-            :key="n.id"
-            class="rounded-lg bg-zinc-50 p-3"
-          >
-            <p class="text-sm whitespace-pre-wrap text-zinc-800">{{ n.body }}</p>
-            <p class="mt-1 text-xs text-zinc-500">{{ daysAgo(n.created_at) }}</p>
+          <li v-for="n in notes.data.value" :key="n.id" class="bg-canvas p-3">
+            <p class="text-ink-2 text-[15px] whitespace-pre-wrap">{{ n.body }}</p>
+            <p class="text-muted mt-1 text-xs">{{ daysAgo(n.created_at) }}</p>
           </li>
         </ul>
       </AsyncState>
     </AppCard>
+
+    <!-- Photos that aren't tied to a survey — an endcap on the way past. -->
+    <AppCard title="Photos">
+      <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
+    </AppCard>
+
+    <VisitHistoryCard :customer-key="customerKey" />
 
     <!-- Activity -->
     <AppCard title="Activity">
@@ -340,20 +583,17 @@ async function submitNote() {
         :rows="2"
         @retry="actions.refetch()"
       >
-        <ul class="space-y-3">
+        <ul class="space-y-4">
           <li v-for="a in actions.data.value" :key="a.id" class="flex gap-3">
-            <span
-              class="mt-1.5 size-2 shrink-0 rounded-full bg-zinc-300"
-              aria-hidden="true"
-            />
+            <span class="bg-line-2 w-0.5 shrink-0 self-stretch" aria-hidden="true" />
             <div class="min-w-0">
-              <p class="text-sm font-medium text-zinc-900">
+              <p class="text-ink text-[15px] font-semibold">
                 {{ ACTION_LABELS[a.action_type as ActionType] ?? a.action_type }}
-                <span class="font-normal text-zinc-500">
+                <span class="text-muted font-normal">
                   · {{ shortDate(a.action_date) }}
                 </span>
               </p>
-              <p v-if="a.note" class="text-sm whitespace-pre-wrap text-zinc-600">
+              <p v-if="a.note" class="text-ink-2 text-[15px] whitespace-pre-wrap">
                 {{ a.note }}
               </p>
             </div>

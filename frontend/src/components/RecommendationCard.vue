@@ -41,10 +41,17 @@ const overdue = computed(() => {
   return d != null && d < 0
 })
 
-const priorityTone = computed(() => {
-  if (overdue.value) return 'high'
+const badgeTone = computed(() => {
+  if (overdue.value) return 'late'
   const p = props.rec.priority as RecPriority
-  return p === 'high' ? 'high' : p === 'low' ? 'neutral' : 'warn'
+  return p === 'high' ? 'high' : 'neutral'
+})
+
+/* Ember rail = late, ink rail = acted/needs outcome, hairline otherwise. */
+const rail = computed(() => {
+  if (overdue.value) return 'bg-accent'
+  if (props.rec.status === 'acted') return 'bg-ink'
+  return 'bg-line-2'
 })
 
 const label = computed(() => props.accountName || props.rec.customer_key)
@@ -93,154 +100,154 @@ async function submitClose(status: 'closed' | 'dismissed') {
 </script>
 
 <template>
-  <article class="rounded-xl border border-zinc-200 bg-white">
-    <div class="p-4">
-      <div class="mb-2 flex flex-wrap items-center gap-2">
-        <AppBadge :tone="priorityTone" dot>
-          {{ overdue ? dueLabel(rec.due_date) : rec.priority }}
-        </AppBadge>
-        <AppBadge v-if="rec.status === 'acted'" tone="info">
-          Acted — needs outcome
-        </AppBadge>
-        <AppBadge v-if="rec.source === 'admin'" tone="neutral">
-          From sales ops
-        </AppBadge>
-        <span
-          v-if="rec.due_date && !overdue"
-          class="text-xs text-zinc-500"
-        >
-          {{ dueLabel(rec.due_date) }}
-        </span>
-      </div>
-
-      <h3 class="text-base font-semibold text-zinc-900">{{ rec.title }}</h3>
-      <p v-if="rec.reason" class="mt-1 text-sm leading-relaxed text-zinc-600">
-        {{ rec.reason }}
-      </p>
-
-      <RouterLink
-        v-if="!hideAccountLink"
-        :to="{ name: 'account', params: { customerKey: rec.customer_key } }"
-        class="mt-2 inline-block text-sm font-medium text-zinc-900 underline underline-offset-2"
-      >
-        {{ label }}
-      </RouterLink>
-    </div>
-
-    <!-- Inline panels, never a modal (TECH_STACK §2.4) -->
-    <div v-if="panel === 'act'" class="border-t border-zinc-100 p-4">
-      <fieldset>
-        <legend class="mb-2 text-sm font-medium text-zinc-700">
-          What did you do?
-        </legend>
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="t in ACTION_TYPES"
-            :key="t"
-            type="button"
-            class="tap-target rounded-lg border px-3 text-sm font-medium"
-            :class="
-              actionType === t
-                ? 'border-zinc-900 bg-zinc-900 text-white'
-                : 'border-zinc-300 bg-white text-zinc-700'
-            "
-            :aria-pressed="actionType === t"
-            @click="actionType = t"
+  <article class="border-line bg-surface flex border">
+    <span class="w-[3px] shrink-0" :class="rail" aria-hidden="true" />
+    <div class="min-w-0 flex-1">
+      <div class="p-4">
+        <div class="mb-2 flex flex-wrap items-center gap-2">
+          <AppBadge :tone="badgeTone">
+            {{ overdue ? dueLabel(rec.due_date) : rec.priority }}
+          </AppBadge>
+          <AppBadge v-if="rec.status === 'acted'" tone="good">
+            Acted — needs outcome
+          </AppBadge>
+          <AppBadge v-if="rec.source === 'admin'" tone="neutral">
+            From sales ops
+          </AppBadge>
+          <span
+            v-if="rec.due_date && !overdue"
+            class="font-label text-muted text-xs tracking-[0.08em]"
           >
-            {{ ACTION_LABELS[t] }}
-          </button>
+            {{ dueLabel(rec.due_date) }}
+          </span>
         </div>
-      </fieldset>
 
-      <label class="mt-3 block">
-        <span class="mb-1 block text-sm font-medium text-zinc-700">
-          Note <span class="font-normal text-zinc-500">(optional)</span>
-        </span>
-        <textarea
-          v-model="note"
-          rows="3"
-          class="w-full rounded-lg border border-zinc-300 p-3 text-sm outline-none focus:border-zinc-900"
-          placeholder="What came out of it?"
-        />
-      </label>
+        <h3 class="text-ink text-[17px] font-semibold">{{ rec.title }}</h3>
+        <p v-if="rec.reason" class="text-ink-2 mt-1 text-[15px] leading-relaxed">
+          {{ rec.reason }}
+        </p>
 
-      <p v-if="errorMessage" role="alert" class="mt-2 text-sm text-red-700">
-        {{ errorMessage }}
-      </p>
-
-      <div class="mt-3 flex gap-2">
-        <AppButton :loading="logAction.isPending.value" @click="submitAction">
-          Save
-        </AppButton>
-        <AppButton variant="ghost" @click="reset">Cancel</AppButton>
+        <RouterLink
+          v-if="!hideAccountLink"
+          :to="{ name: 'account', params: { customerKey: rec.customer_key } }"
+          class="text-ink mt-2 inline-block text-[15px] font-semibold underline underline-offset-4"
+        >
+          {{ label }}
+        </RouterLink>
       </div>
-    </div>
 
-    <div v-else-if="panel === 'close'" class="border-t border-zinc-100 p-4">
-      <fieldset>
-        <legend class="mb-2 text-sm font-medium text-zinc-700">
-          What was the outcome?
-        </legend>
-        <div class="grid gap-2 sm:grid-cols-2">
-          <button
-            v-for="o in REC_OUTCOMES"
-            :key="o"
-            type="button"
-            class="tap-target rounded-lg border px-3 text-left text-sm font-medium"
-            :class="
-              outcome === o
-                ? 'border-zinc-900 bg-zinc-900 text-white'
-                : 'border-zinc-300 bg-white text-zinc-700'
-            "
-            :aria-pressed="outcome === o"
-            @click="outcome = o"
+      <!-- Inline panels, never a modal (TECH_STACK §2.4) -->
+      <div v-if="panel === 'act'" class="border-line border-t p-4">
+        <fieldset>
+          <legend class="u-label mb-2">What did you do?</legend>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="t in ACTION_TYPES"
+              :key="t"
+              type="button"
+              class="inline-flex min-h-11 items-center rounded-[2px] px-4 text-[15px] font-semibold"
+              :class="
+                actionType === t
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="actionType === t"
+              @click="actionType = t"
+            >
+              {{ ACTION_LABELS[t] }}
+            </button>
+          </div>
+        </fieldset>
+
+        <label class="mt-3 block">
+          <span class="u-label mb-1.5 block">
+            Note <span class="normal-case">(optional)</span>
+          </span>
+          <textarea
+            v-model="note"
+            rows="3"
+            class="field h-auto p-3.5"
+            placeholder="What came out of it?"
+          />
+        </label>
+
+        <p v-if="errorMessage" role="alert" class="text-danger mt-2 text-sm font-medium">
+          {{ errorMessage }}
+        </p>
+
+        <div class="mt-3 flex gap-2">
+          <AppButton
+            variant="primary"
+            :loading="logAction.isPending.value"
+            @click="submitAction"
           >
-            {{ OUTCOME_LABELS[o] }}
-          </button>
+            Save
+          </AppButton>
+          <AppButton variant="ghost" @click="reset">Cancel</AppButton>
         </div>
-      </fieldset>
-
-      <label class="mt-3 block">
-        <span class="mb-1 block text-sm font-medium text-zinc-700">
-          Note <span class="font-normal text-zinc-500">(optional)</span>
-        </span>
-        <textarea
-          v-model="note"
-          rows="2"
-          class="w-full rounded-lg border border-zinc-300 p-3 text-sm outline-none focus:border-zinc-900"
-        />
-      </label>
-
-      <p v-if="errorMessage" role="alert" class="mt-2 text-sm text-red-700">
-        {{ errorMessage }}
-      </p>
-
-      <div class="mt-3 flex flex-wrap gap-2">
-        <AppButton
-          :loading="resolve.isPending.value"
-          :disabled="!outcome"
-          @click="submitClose('closed')"
-        >
-          Close it out
-        </AppButton>
-        <AppButton
-          variant="secondary"
-          :disabled="!outcome"
-          @click="submitClose('dismissed')"
-        >
-          Dismiss
-        </AppButton>
-        <AppButton variant="ghost" @click="reset">Cancel</AppButton>
       </div>
-    </div>
 
-    <div v-else class="flex gap-2 border-t border-zinc-100 p-3">
-      <AppButton variant="secondary" @click="panel = 'act'">
-        Log action
-      </AppButton>
-      <AppButton variant="ghost" @click="panel = 'close'">
-        Close with outcome
-      </AppButton>
+      <div v-else-if="panel === 'close'" class="border-line border-t p-4">
+        <fieldset>
+          <legend class="u-label mb-2">What was the outcome?</legend>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <button
+              v-for="o in REC_OUTCOMES"
+              :key="o"
+              type="button"
+              class="inline-flex min-h-11 items-center rounded-[2px] px-4 text-left text-[15px] font-semibold"
+              :class="
+                outcome === o
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="outcome === o"
+              @click="outcome = o"
+            >
+              {{ OUTCOME_LABELS[o] }}
+            </button>
+          </div>
+        </fieldset>
+
+        <label class="mt-3 block">
+          <span class="u-label mb-1.5 block">
+            Note <span class="normal-case">(optional)</span>
+          </span>
+          <textarea v-model="note" rows="2" class="field h-auto p-3.5" />
+        </label>
+
+        <p v-if="errorMessage" role="alert" class="text-danger mt-2 text-sm font-medium">
+          {{ errorMessage }}
+        </p>
+
+        <div class="mt-3 flex flex-wrap gap-2">
+          <AppButton
+            variant="primary"
+            :loading="resolve.isPending.value"
+            :disabled="!outcome"
+            @click="submitClose('closed')"
+          >
+            Close it out
+          </AppButton>
+          <AppButton
+            variant="secondary"
+            :disabled="!outcome"
+            @click="submitClose('dismissed')"
+          >
+            Dismiss
+          </AppButton>
+          <AppButton variant="ghost" @click="reset">Cancel</AppButton>
+        </div>
+      </div>
+
+      <div v-else class="border-line flex gap-2 border-t p-3">
+        <AppButton variant="secondary" @click="panel = 'act'">
+          Log action
+        </AppButton>
+        <AppButton variant="ghost" @click="panel = 'close'">
+          Close out
+        </AppButton>
+      </div>
     </div>
   </article>
 </template>

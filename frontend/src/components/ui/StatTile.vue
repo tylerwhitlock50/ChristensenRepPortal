@@ -1,4 +1,9 @@
 <script setup lang="ts">
+/**
+ * Sits in a 1px-gap grid on a line-colored background — the parent provides
+ * the shared hairline (`grid gap-px bg-line border border-line`), so the tile
+ * itself is just white fill. No rounded boxes floating on canvas.
+ */
 defineProps<{
   label: string
   value: string | number
@@ -8,16 +13,16 @@ defineProps<{
 </script>
 
 <template>
-  <div class="rounded-xl border border-zinc-200 bg-white p-4">
-    <p class="text-xs font-medium tracking-wide text-zinc-500 uppercase">
+  <div class="bg-surface px-3 py-2.5">
+    <p class="font-label text-muted text-[11px] font-semibold tracking-[0.14em] uppercase">
       {{ label }}
     </p>
     <p
-      class="mt-1 text-2xl font-semibold tabular-nums"
-      :class="tone === 'alert' ? 'text-red-600' : 'text-zinc-900'"
+      class="u-display mt-1 text-3xl tabular-nums"
+      :class="tone === 'alert' ? 'text-accent' : 'text-ink'"
     >
       {{ value }}
     </p>
-    <p v-if="sub" class="mt-0.5 text-xs text-zinc-500">{{ sub }}</p>
+    <p v-if="sub" class="text-muted mt-0.5 text-xs">{{ sub }}</p>
   </div>
 </template>

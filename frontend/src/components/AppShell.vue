@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import { useSessionStore } from '@/stores/session'
+import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 
 const session = useSessionStore()
 const router = useRouter()
+const route = useRoute()
 
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
@@ -14,12 +16,24 @@ onClickOutside(menuRef, () => (menuOpen.value = false))
 const nav = computed(() => {
   const items = [
     { to: { name: 'today' }, label: 'Today', icon: 'today' },
+    { to: { name: 'tasks' }, label: 'Tasks', icon: 'tasks' },
     { to: { name: 'accounts' }, label: 'Accounts', icon: 'accounts' },
   ]
   if (session.isAdmin) {
     items.push({ to: { name: 'admin' }, label: 'Execution', icon: 'admin' })
   }
   return items
+})
+
+// Execution is the only route that widens past 1024px — ops sits at a desk.
+const wide = computed(() => route.name === 'admin')
+
+const initials = computed(() => {
+  const parts = (session.displayName || '?').trim().split(/\s+/)
+  return parts
+    .slice(0, 2)
+    .map((p) => p.charAt(0).toUpperCase())
+    .join('')
 })
 
 async function signOut() {
@@ -30,93 +44,105 @@ async function signOut() {
 </script>
 
 <template>
-  <div class="min-h-svh bg-zinc-50">
-    <header
-      class="sticky top-0 z-30 border-b border-zinc-200 bg-white/95 backdrop-blur"
-    >
+  <div class="bg-canvas min-h-svh">
+    <!-- Ink header, 56px: orange tick + wordmark left, initials right. -->
+    <header class="bg-ink text-canvas sticky top-0 z-30">
       <div
-        class="mx-auto flex h-14 max-w-5xl items-center justify-between gap-3 px-4"
+        class="mx-auto flex h-14 items-center justify-between gap-3 px-4"
+        :class="wide ? 'max-w-7xl' : 'max-w-5xl'"
       >
-        <RouterLink
-          :to="{ name: 'today' }"
-          class="flex items-center gap-2 font-semibold tracking-tight text-zinc-900"
-        >
-          <span class="size-2.5 rounded-sm bg-amber-500" aria-hidden="true" />
-          Rep Portal
-        </RouterLink>
-
-        <!-- Inline nav from md up; the bottom bar handles small screens -->
-        <nav class="hidden items-center gap-1 md:flex" aria-label="Main">
-          <RouterLink
-            v-for="item in nav"
-            :key="item.label"
-            :to="item.to"
-            class="tap-target inline-flex items-center rounded-lg px-3 text-sm font-medium text-zinc-600 hover:bg-zinc-100"
-            active-class="bg-zinc-100 text-zinc-900"
-          >
-            {{ item.label }}
-          </RouterLink>
-        </nav>
-
-        <div ref="menuRef" class="relative">
-          <button
-            type="button"
-            class="tap-target flex items-center gap-2 rounded-lg px-2 text-sm text-zinc-700 hover:bg-zinc-100"
-            :aria-expanded="menuOpen"
-            aria-haspopup="menu"
-            @click="menuOpen = !menuOpen"
-          >
+        <div class="flex items-center gap-6">
+          <RouterLink :to="{ name: 'today' }" class="flex items-center gap-2.5">
+            <span class="bg-accent block h-4 w-[3px]" aria-hidden="true" />
             <span
-              class="grid size-8 place-items-center rounded-full bg-zinc-900 text-xs font-semibold text-white"
-              aria-hidden="true"
+              class="font-display text-canvas text-[17px] font-bold tracking-[0.18em] uppercase"
             >
-              {{ (session.displayName || '?').charAt(0).toUpperCase() }}
+              Rep Portal
             </span>
-            <span class="hidden max-w-32 truncate sm:block">
-              {{ session.displayName }}
-            </span>
-          </button>
+          </RouterLink>
 
-          <div
-            v-if="menuOpen"
-            role="menu"
-            class="absolute right-0 mt-1 w-56 rounded-xl border border-zinc-200 bg-white p-1 shadow-lg"
-          >
-            <div class="px-3 py-2">
-              <p class="truncate text-sm font-medium text-zinc-900">
-                {{ session.displayName }}
-              </p>
-              <p class="truncate text-xs text-zinc-500">
-                {{ session.user?.email }}
-              </p>
-              <p class="mt-1 text-xs text-zinc-500 capitalize">
-                {{ session.role }}
-                <template v-if="session.profile?.sales_rep_key">
-                  · {{ session.profile.sales_rep_key }}
-                </template>
-              </p>
-            </div>
-            <hr class="my-1 border-zinc-100" />
+          <!-- Inline nav from md up; the bottom bar handles small screens -->
+          <nav class="hidden items-center gap-5 md:flex" aria-label="Main">
+            <RouterLink
+              v-for="item in nav"
+              :key="item.label"
+              :to="item.to"
+              class="font-label border-b-2 border-transparent pt-0.5 pb-0.5 text-[13px] font-semibold tracking-[0.14em] text-[#8E8A80] uppercase hover:text-canvas"
+              active-class="!text-canvas !border-accent"
+            >
+              {{ item.label }}
+            </RouterLink>
+          </nav>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <!-- The whole sync UI budget (§2.5): renders nothing until a survey
+               is actually waiting, and then it is visible on every screen. -->
+          <SyncStatusBadge compact />
+
+          <div ref="menuRef" class="relative">
             <button
               type="button"
-              role="menuitem"
-              class="tap-target w-full rounded-lg px-3 text-left text-sm text-zinc-700 hover:bg-zinc-100"
-              @click="signOut"
+              class="tap-target flex items-center gap-2 px-1"
+              :aria-expanded="menuOpen"
+              aria-haspopup="menu"
+              @click="menuOpen = !menuOpen"
             >
-              Sign out
+              <span
+                class="bg-ink-2 text-canvas font-label grid size-8 place-items-center text-sm font-semibold"
+                aria-hidden="true"
+              >
+                {{ initials }}
+              </span>
+              <span class="hidden max-w-32 truncate text-sm text-[#C9C5BB] sm:block">
+                {{ session.displayName }}
+              </span>
             </button>
+
+            <div
+              v-if="menuOpen"
+              role="menu"
+              class="border-line bg-surface text-ink absolute right-0 mt-2 w-56 border shadow-lg"
+            >
+              <div class="border-line border-b px-3 py-2.5">
+                <p class="truncate text-sm font-semibold">
+                  {{ session.displayName }}
+                </p>
+                <p class="text-muted truncate text-xs">
+                  {{ session.user?.email }}
+                </p>
+                <p class="text-muted mt-1 text-xs capitalize">
+                  {{ session.role }}
+                  <template v-if="session.profile?.sales_rep_key">
+                    · {{ session.profile.sales_rep_key }}
+                  </template>
+                </p>
+              </div>
+              <button
+                type="button"
+                role="menuitem"
+                class="tap-target font-label w-full px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase hover:bg-canvas"
+                @click="signOut"
+              >
+                Sign out
+              </button>
+            </div>
           </div>
         </div>
       </div>
     </header>
 
     <!-- pb clears the fixed bottom nav on phones -->
-    <main class="mx-auto max-w-5xl px-4 pt-4 pb-28 md:pb-10">
+    <main
+      class="mx-auto px-4 pt-5 pb-28 md:pb-10"
+      :class="wide ? 'max-w-7xl' : 'max-w-5xl'"
+    >
       <slot />
     </main>
 
+    <!-- Bottom bar stays on phones — 66px, 2px top rule marks the active tab. -->
     <nav
-      class="fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+      class="border-line bg-surface fixed inset-x-0 bottom-0 z-30 border-t pb-[env(safe-area-inset-bottom)] md:hidden"
       aria-label="Main"
     >
       <div class="mx-auto flex max-w-5xl">
@@ -124,8 +150,8 @@ async function signOut() {
           v-for="item in nav"
           :key="item.label"
           :to="item.to"
-          class="tap-target flex flex-1 flex-col items-center justify-center gap-1 py-2 text-xs font-medium text-zinc-500"
-          active-class="text-zinc-900"
+          class="font-label flex min-h-[66px] flex-1 flex-col items-center justify-center gap-1 border-t-2 border-transparent text-xs font-semibold tracking-[0.1em] text-[#8E8A80] uppercase"
+          active-class="!text-ink !border-ink -mt-px"
         >
           <svg
             class="size-5"
@@ -139,8 +165,14 @@ async function signOut() {
           >
             <template v-if="item.icon === 'today'">
               <path d="M9 11l3 3 5-6" />
-              <rect x="3" y="4" width="18" height="17" rx="2" />
+              <rect x="3" y="4" width="18" height="17" rx="0" />
               <path d="M8 2v4M16 2v4" />
+            </template>
+            <!-- Checklist: three rules and a tick, distinct from Today's
+                 calendar at a glance and at 20px. -->
+            <template v-else-if="item.icon === 'tasks'">
+              <path d="M4 6h9M4 12h9M4 18h6" />
+              <path d="M16 16l2.2 2.2L22 14" />
             </template>
             <template v-else-if="item.icon === 'accounts'">
               <path d="M3 21h18" />

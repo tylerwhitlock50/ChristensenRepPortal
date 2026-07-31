@@ -34,35 +34,42 @@ function place(a: { sold_to_city: string | null; sold_to_state: string | null })
 <template>
   <div class="space-y-4">
     <header class="flex items-baseline justify-between gap-3">
-      <h1 class="text-2xl font-semibold tracking-tight text-zinc-900">
-        Accounts
-      </h1>
-      <span v-if="total" class="text-sm text-zinc-500 tabular-nums">
-        {{ fmtCount(total) }}
+      <h1 class="u-display text-[34px]">Accounts</h1>
+      <span
+        v-if="total"
+        class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums"
+      >
+        {{ fmtCount(total) }} in book
       </span>
     </header>
 
-    <div class="space-y-2">
+    <div class="space-y-2.5">
       <label class="block">
         <span class="sr-only">Search accounts</span>
         <input
           v-model="search"
           type="search"
-          placeholder="Search by name, city, or number"
+          placeholder="Name, city, or customer #"
           autocapitalize="none"
           spellcheck="false"
-          class="tap-target w-full rounded-lg border border-zinc-300 bg-white px-3 outline-none focus:border-zinc-900"
+          class="field"
         />
       </label>
 
-      <label class="tap-target flex items-center gap-2 text-sm text-zinc-600">
-        <input
-          v-model="activeOnly"
-          type="checkbox"
-          class="size-4 rounded border-zinc-300"
-        />
-        Active accounts only
-      </label>
+      <!-- Filter chip, not a checkbox — thumb-sized, glove-proof. -->
+      <button
+        type="button"
+        class="font-label inline-flex h-9 items-center px-3 text-[13px] font-semibold tracking-[0.1em] uppercase"
+        :class="
+          activeOnly
+            ? 'bg-ink text-canvas'
+            : 'border-line-2 text-ink-2 border bg-transparent'
+        "
+        :aria-pressed="activeOnly"
+        @click="activeOnly = !activeOnly"
+      >
+        Active only
+      </button>
     </div>
 
     <AsyncState
@@ -78,33 +85,27 @@ function place(a: { sold_to_city: string | null; sold_to_state: string | null })
       :rows="6"
       @retry="refetch()"
     >
-      <ul
-        class="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-zinc-200 bg-white"
-      >
+      <ul class="divide-line border-line bg-surface divide-y border">
         <li v-for="a in rows" :key="a.customer_key">
           <RouterLink
             :to="{ name: 'account', params: { customerKey: a.customer_key } }"
-            class="tap-target flex items-center gap-3 px-4 py-3 hover:bg-zinc-50"
+            class="tap-target hover:bg-canvas flex flex-col justify-center gap-1 px-4 py-3.5"
           >
-            <div class="min-w-0 flex-1">
-              <p class="truncate font-medium text-zinc-900">
+            <span class="flex items-baseline justify-between gap-3">
+              <span class="text-ink truncate text-[17px] font-semibold">
                 {{ a.customer_name || a.customer_key }}
-              </p>
-              <p class="truncate text-sm text-zinc-500">
-                <template v-if="place(a)">{{ place(a) }} · </template>
-                Last order {{ daysAgo(a.last_order_date) }}
-              </p>
-            </div>
-            <svg
-              class="size-4 shrink-0 text-zinc-400"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              aria-hidden="true"
-            >
-              <path d="M9 18l6-6-6-6" />
-            </svg>
+              </span>
+              <span
+                v-if="a.active_flag !== 'Y'"
+                class="border-line text-muted font-label shrink-0 border px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.1em] uppercase"
+              >
+                Inactive
+              </span>
+            </span>
+            <span class="text-muted truncate text-sm">
+              <template v-if="place(a)">{{ place(a) }} · </template>
+              Last order {{ daysAgo(a.last_order_date) }}
+            </span>
           </RouterLink>
         </li>
       </ul>
@@ -112,7 +113,7 @@ function place(a: { sold_to_city: string | null; sold_to_state: string | null })
       <!-- Always says how much of the result set is on screen; a paged list
            that just stops is indistinguishable from a complete one. -->
       <div class="mt-4 text-center">
-        <p class="text-sm text-zinc-500 tabular-nums">
+        <p class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums">
           Showing {{ fmtCount(rows.length) }} of {{ fmtCount(total) }}
         </p>
         <AppButton

@@ -30,38 +30,32 @@ const message = computed(() => {
 </script>
 
 <template>
+  <!-- Skeletons are flat blocks at the real row height — no shimmer. -->
   <div v-if="loading" class="space-y-2" aria-busy="true" aria-live="polite">
     <span class="sr-only">Loading</span>
-    <div
-      v-for="i in rows"
-      :key="i"
-      class="h-16 animate-pulse rounded-lg bg-zinc-100"
-    />
+    <div v-for="i in rows" :key="i" class="h-16 bg-[#E6E3DC]" />
   </div>
 
+  <!-- Error gets the ember rail and a Retry button. -->
   <div
     v-else-if="error"
     role="alert"
-    class="rounded-lg border border-red-200 bg-red-50 p-4"
+    class="border-line bg-surface border-l-accent border border-l-[3px] p-4"
   >
-    <p class="text-sm font-medium text-red-900">Couldn't load this</p>
-    <p class="mt-1 text-sm text-red-800">{{ message }}</p>
-    <AppButton
-      variant="secondary"
-      size="md"
-      class="mt-3"
-      @click="$emit('retry')"
-    >
+    <p class="text-ink text-[17px] font-semibold">Couldn't load this</p>
+    <p class="text-ink-2 mt-1 text-[15px] leading-relaxed">{{ message }}</p>
+    <AppButton variant="secondary" size="md" class="mt-3" @click="$emit('retry')">
       Try again
     </AppButton>
   </div>
 
+  <!-- Empty states: a headline in display caps and one sentence. -->
   <div v-else-if="empty" class="px-4 py-10 text-center">
-    <p class="text-sm font-medium text-zinc-900">{{ emptyTitle }}</p>
-    <p v-if="emptyBody" class="mx-auto mt-1 max-w-xs text-sm text-zinc-500">
+    <p class="u-display text-ink text-2xl">{{ emptyTitle }}</p>
+    <p v-if="emptyBody" class="text-muted mx-auto mt-2 max-w-xs text-[15px] leading-relaxed">
       {{ emptyBody }}
     </p>
-    <div class="mt-4">
+    <div class="mt-5">
       <slot name="empty-action" />
     </div>
   </div>

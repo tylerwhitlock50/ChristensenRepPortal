@@ -1,28 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+/**
+ * Solid fills read further away than dots, so there is no `dot` prop.
+ * `late` (ember) is reserved for overdue — never decorative, never more
+ * than one per card.
+ */
 const props = withDefaults(
   defineProps<{
-    tone?: 'neutral' | 'high' | 'warn' | 'good' | 'info'
-    dot?: boolean
+    tone?: 'late' | 'high' | 'good' | 'neutral'
   }>(),
-  { tone: 'neutral', dot: false },
+  { tone: 'neutral' },
 )
 
 const tones = {
-  neutral: 'bg-zinc-100 text-zinc-700 ring-zinc-200',
-  high: 'bg-red-50 text-red-700 ring-red-200',
-  warn: 'bg-amber-50 text-amber-800 ring-amber-200',
-  good: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-  info: 'bg-blue-50 text-blue-700 ring-blue-200',
-} as const
-
-const dots = {
-  neutral: 'bg-zinc-400',
-  high: 'bg-red-500',
-  warn: 'bg-amber-500',
-  good: 'bg-emerald-500',
-  info: 'bg-blue-500',
+  late: 'bg-accent text-[#20100A] px-2.5 py-[5px]',
+  high: 'bg-ink text-canvas px-2.5 py-[5px]',
+  good: 'bg-[#E6EBE5] text-brand px-2.5 py-[5px]',
+  neutral: 'border border-line text-muted px-2 py-1',
 } as const
 
 const classes = computed(() => tones[props.tone])
@@ -30,15 +25,9 @@ const classes = computed(() => tones[props.tone])
 
 <template>
   <span
-    class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset"
+    class="font-label inline-flex items-center gap-1.5 text-[13px] font-semibold tracking-[0.1em] uppercase"
     :class="classes"
   >
-    <span
-      v-if="dot"
-      class="size-1.5 rounded-full"
-      :class="dots[tone]"
-      aria-hidden="true"
-    />
     <slot />
   </span>
 </template>

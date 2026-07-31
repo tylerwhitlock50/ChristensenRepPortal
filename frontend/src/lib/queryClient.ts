@@ -9,6 +9,25 @@ import { QueryClient } from '@tanstack/vue-query'
  *   ['account', customerKey, 'recommendations']
  *   ['me', 'needs-attention']
  *   ['admin', 'coverage', { from, to }]
+ *
+ * Everything under `account` is a suffix of `qk.account.root(key)`, so one
+ * `invalidateQueries({ queryKey: qk.account.root(key) })` after a write clears
+ * the whole account page — summary, revenue, visits, the AI summary, the lot.
+ *
+ * DUPLICATES, ON PURPOSE (for now): several feature composables were written
+ * before this registry could be edited and define their own identical copies.
+ * They are the ones actually in use; the entries here are the canonical shape
+ * and must stay byte-identical to them:
+ *
+ *   qk.account.visits        = visitsQueryKey()      src/composables/useVisits.ts
+ *   qk.account.aiSummary     = aiSummaryKey()        src/composables/useAiSummary.ts
+ *   qk.account.summary       ┐ accountMetricsKeys    src/composables/useAccountMetrics.ts
+ *   qk.account.revenueMonthly┘ (also reuses .orders / .shipments below)
+ *   qk.tasks.*               = taskKeys              src/composables/useTasks.ts
+ *
+ * When one of those files is next touched, re-point it at `qk` and delete its
+ * local const. Changing a key here without changing it there breaks
+ * invalidation silently, so change both or neither.
  */
 export const qk = {
   me: {
@@ -26,6 +45,21 @@ export const qk = {
     notes: (key: string) => ['account', key, 'notes'] as const,
     contacts: (key: string) => ['account', key, 'contacts'] as const,
     activity: (key: string) => ['account', key, 'activity'] as const,
+    visits: (key: string) => ['account', key, 'visits'] as const,
+    photos: (key: string) => ['account', key, 'photos'] as const,
+    aiSummary: (key: string) => ['account', key, 'ai-summary'] as const,
+    summary: (key: string) => ['account', key, 'summary'] as const,
+    revenueMonthly: (key: string) => ['account', key, 'revenue-monthly'] as const,
+  },
+  /**
+   * Personal follow-ups. Scoped by user id so signing in as someone else on a
+   * shared truck iPad can't read the previous rep's cached list.
+   */
+  tasks: {
+    root: () => ['tasks'] as const,
+    mine: (userId: string) => ['tasks', 'mine', userId] as const,
+    forAccount: (userId: string, key: string) =>
+      ['tasks', 'account', userId, key] as const,
   },
   admin: {
     execution: () => ['admin', 'execution'] as const,

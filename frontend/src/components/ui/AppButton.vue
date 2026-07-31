@@ -11,7 +11,8 @@ const props = withDefaults(
     type?: 'button' | 'submit'
   }>(),
   {
-    variant: 'primary',
+    // Secondary by default — primary (the one green) is rationed to one per view.
+    variant: 'secondary',
     size: 'md',
     block: false,
     loading: false,
@@ -21,21 +22,22 @@ const props = withDefaults(
 )
 
 const variants = {
-  primary: 'bg-zinc-900 text-white hover:bg-zinc-800 active:bg-zinc-950',
+  primary: 'bg-brand text-canvas hover:bg-brand-hi active:bg-brand',
   secondary:
-    'bg-white text-zinc-900 border border-zinc-300 hover:bg-zinc-50 active:bg-zinc-100',
-  ghost: 'bg-transparent text-zinc-700 hover:bg-zinc-100 active:bg-zinc-200',
-  danger: 'bg-red-600 text-white hover:bg-red-700 active:bg-red-800',
+    'bg-transparent text-ink border-[1.5px] border-ink hover:bg-ink hover:text-canvas',
+  ghost: 'bg-transparent text-muted border border-line hover:text-ink hover:border-ink',
+  danger: 'bg-danger text-canvas hover:opacity-90',
 } as const
 
-// min-h-11 = 44px, the field-UI floor from TECH_STACK §2.4.
+// 48px is the field-UI floor; lg is the 52px full-width form action.
 const sizes = {
-  md: 'min-h-11 px-4 text-sm',
+  md: 'min-h-12 px-4 text-[15px]',
   lg: 'min-h-13 px-5 text-base',
 } as const
 
 const classes = computed(() => [
-  'tap-target inline-flex items-center justify-center gap-2 rounded-lg font-medium',
+  'tap-target inline-flex items-center justify-center gap-2 rounded-[2px]',
+  'font-label font-semibold uppercase tracking-[0.12em]',
   'transition-colors disabled:opacity-50 disabled:pointer-events-none',
   variants[props.variant],
   sizes[props.size],
@@ -50,27 +52,26 @@ const classes = computed(() => [
     :disabled="disabled || loading"
     :aria-busy="loading || undefined"
   >
-    <svg
-      v-if="loading"
-      class="size-4 animate-spin"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle
-        class="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        stroke-width="4"
-      />
-      <path
-        class="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-      />
-    </svg>
-    <slot />
+    <!-- Loading swaps the label for a 2px bar, never a spinner — the button
+         must stay 48px tall so the layout doesn't jump. -->
+    <span v-if="loading" class="relative block h-0.5 w-10 overflow-hidden bg-current/25">
+      <span class="btn-load-bar absolute inset-y-0 w-1/2 bg-current" />
+      <span class="sr-only">Working</span>
+    </span>
+    <slot v-else />
   </button>
 </template>
+
+<style scoped>
+.btn-load-bar {
+  animation: btn-load 1s linear infinite;
+}
+@keyframes btn-load {
+  from {
+    left: -50%;
+  }
+  to {
+    left: 100%;
+  }
+}
+</style>

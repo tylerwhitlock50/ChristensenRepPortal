@@ -28,6 +28,12 @@ const router = createRouter({
       meta: { title: 'Today' },
     },
     {
+      path: '/tasks',
+      name: 'tasks',
+      component: () => import('@/pages/TasksView.vue'),
+      meta: { title: 'Tasks' },
+    },
+    {
       path: '/accounts',
       name: 'accounts',
       component: () => import('@/pages/AccountsView.vue'),

@@ -11,22 +11,25 @@ withDefaults(
 </script>
 
 <template>
-  <section class="rounded-xl border border-zinc-200 bg-white">
+  <!-- No shadow, no radius: 1px line, white fill, uppercase label title. -->
+  <section class="border-line bg-surface border">
     <header
       v-if="title || $slots.header"
-      class="flex items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3"
+      class="border-line flex items-center justify-between gap-3 border-b px-4 py-3"
     >
       <slot name="header">
-        <h2 class="text-sm font-semibold tracking-tight text-zinc-900">
+        <h2 class="u-label text-ink">
           {{ title }}
         </h2>
-        <span v-if="hint" class="text-xs text-zinc-500">{{ hint }}</span>
+        <span v-if="hint" class="font-label text-muted text-xs tracking-[0.08em]">
+          {{ hint }}
+        </span>
       </slot>
     </header>
     <div :class="padded ? 'p-4' : ''">
       <slot />
     </div>
-    <footer v-if="$slots.footer" class="border-t border-zinc-100 px-4 py-3">
+    <footer v-if="$slots.footer" class="border-line border-t px-4 py-3">
       <slot name="footer" />
     </footer>
   </section>
