@@ -315,6 +315,11 @@ watch(
   },
   { immediate: true },
 )
+
+// The router reuses this component across /accounts/:customerKey changes, so
+// without this a survey opened for account A (and its mission id) would still
+// be open on account B and stamp the wrong recommendation.
+watch(key, () => closeSurvey())
 </script>
 
 <template>
