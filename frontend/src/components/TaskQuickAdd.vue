@@ -66,13 +66,13 @@ async function submit() {
         enterkeyhint="done"
         autocapitalize="sentences"
         :placeholder="placeholder"
-        class="tap-target min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-base outline-none focus:border-zinc-900"
+        class="tap-target min-w-0 flex-1 rounded-[2px] border border-line-2 bg-surface px-3 py-2 text-base outline-none focus:border-brand"
       />
 
       <button
         v-if="withDueDate && !showDate"
         type="button"
-        class="tap-target shrink-0 rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-700"
+        class="tap-target shrink-0 rounded-[2px] border border-line-2 bg-surface px-3 text-sm font-medium text-ink-2"
         @click="showDate = true"
       >
         Due date
@@ -84,25 +84,25 @@ async function submit() {
     </div>
 
     <div v-if="withDueDate && showDate" class="mt-2 flex items-center gap-2">
-      <label :for="`${uid}-due`" class="text-sm font-medium text-zinc-700">
+      <label :for="`${uid}-due`" class="text-sm font-medium text-ink-2">
         Due
       </label>
       <input
         :id="`${uid}-due`"
         v-model="dueDate"
         type="date"
-        class="tap-target min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-base outline-none focus:border-zinc-900"
+        class="tap-target min-w-0 flex-1 rounded-[2px] border border-line-2 bg-surface px-3 py-2 text-base outline-none focus:border-brand"
       />
       <button
         type="button"
-        class="tap-target shrink-0 px-2 text-sm font-medium text-zinc-500"
+        class="tap-target shrink-0 px-2 text-sm font-medium text-muted"
         @click="clearDueDate"
       >
         Clear
       </button>
     </div>
 
-    <p v-if="errorMessage" role="alert" class="mt-2 text-sm text-red-700">
+    <p v-if="errorMessage" role="alert" class="mt-2 text-sm text-danger">
       {{ errorMessage }}
     </p>
   </form>

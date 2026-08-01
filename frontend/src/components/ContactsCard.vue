@@ -79,8 +79,8 @@ function telHref(phone: string): string {
   <AppCard padded>
     <template #header>
       <div>
-        <h2 class="text-sm font-semibold tracking-tight text-zinc-900">Contacts</h2>
-        <p class="text-xs text-zinc-500">
+        <h2 class="text-sm font-semibold tracking-tight text-ink">Contacts</h2>
+        <p class="text-xs text-muted">
           {{ rows.length === 1 ? '1 person' : `${rows.length} people` }}
         </p>
       </div>
@@ -110,7 +110,7 @@ function telHref(phone: string): string {
         <AppButton @click="startAdd">Add the first contact</AppButton>
       </template>
 
-      <ul class="divide-y divide-zinc-100">
+      <ul class="divide-y divide-line">
         <li v-for="c in rows" :key="c.id" class="py-3 first:pt-0 last:pb-0">
           <!-- Edit replaces the row, so the rep never loses their place -->
           <ContactForm
@@ -125,14 +125,14 @@ function telHref(phone: string): string {
           <template v-else>
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
-                <p class="flex flex-wrap items-center gap-2 font-medium text-zinc-900">
+                <p class="flex flex-wrap items-center gap-2 font-medium text-ink">
                   <span class="truncate">{{ c.name }}</span>
                   <AppBadge v-if="c.is_primary" tone="neutral">Primary</AppBadge>
                 </p>
-                <p v-if="subtitle(c)" class="mt-0.5 text-sm break-words text-zinc-500">
+                <p v-if="subtitle(c)" class="mt-0.5 text-sm break-words text-muted">
                   {{ subtitle(c) }}
                 </p>
-                <p v-if="c.notes" class="mt-1 text-sm whitespace-pre-wrap text-zinc-600">
+                <p v-if="c.notes" class="mt-1 text-sm whitespace-pre-wrap text-ink-2">
                   {{ c.notes }}
                 </p>
               </div>
@@ -140,7 +140,7 @@ function telHref(phone: string): string {
               <a
                 v-if="c.phone"
                 :href="telHref(c.phone)"
-                class="tap-target inline-flex shrink-0 items-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-900"
+                class="tap-target inline-flex shrink-0 items-center rounded-[2px] border border-line-2 bg-surface px-3 text-sm font-medium text-ink"
               >
                 Call
               </a>
@@ -150,13 +150,13 @@ function telHref(phone: string): string {
               <a
                 v-if="c.email"
                 :href="`mailto:${c.email}`"
-                class="tap-target inline-flex items-center px-1 text-sm font-medium text-zinc-700 underline underline-offset-2"
+                class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
               >
                 Email
               </a>
               <button
                 type="button"
-                class="tap-target inline-flex items-center px-1 text-sm font-medium text-zinc-700 underline underline-offset-2"
+                class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                 @click="startEdit(c)"
               >
                 Edit
@@ -164,7 +164,7 @@ function telHref(phone: string): string {
               <button
                 v-if="canDelete && confirmingDeleteId !== c.id"
                 type="button"
-                class="tap-target inline-flex items-center px-1 text-sm font-medium text-red-700 underline underline-offset-2"
+                class="tap-target inline-flex items-center px-1 text-sm font-medium text-danger underline underline-offset-2"
                 @click="askDelete(c)"
               >
                 Delete
@@ -174,12 +174,12 @@ function telHref(phone: string): string {
             <!-- Two-tap confirm, inline. -->
             <div
               v-if="confirmingDeleteId === c.id"
-              class="mt-2 rounded-lg border border-red-200 bg-red-50 p-3"
+              class="border-line border-l-danger bg-surface mt-2 border border-l-[3px] p-3"
             >
-              <p class="text-sm text-red-900">
+              <p class="text-ink text-sm">
                 Delete {{ c.name }}? This can't be undone.
               </p>
-              <p v-if="deleteError" role="alert" class="mt-1 text-sm text-red-800">
+              <p v-if="deleteError" role="alert" class="text-danger mt-1 text-sm">
                 {{ deleteError }}
               </p>
               <div class="mt-2 flex gap-2">
