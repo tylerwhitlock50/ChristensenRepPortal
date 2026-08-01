@@ -59,7 +59,7 @@ function place(a: { sold_to_city: string | null; sold_to_state: string | null })
       <!-- Filter chip, not a checkbox — thumb-sized, glove-proof. -->
       <button
         type="button"
-        class="font-label inline-flex h-9 items-center px-3 text-[13px] font-semibold tracking-[0.1em] uppercase"
+        class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
         :class="
           activeOnly
             ? 'bg-ink text-canvas'
