@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useOnline } from '@vueuse/core'
 import { useQueryClient } from '@tanstack/vue-query'
 import { useSessionStore } from '@/stores/session'
@@ -147,6 +148,16 @@ const surveyOpen = ref(false)
 const savedVisitId = ref<number | null>(null)
 const queuedNotice = ref(false)
 
+/**
+ * Set when the survey was reached from a mission's "Do the visit survey"
+ * button (?survey=<recommendation id>). It rides the action insert, which
+ * fires trg_action_marks_acted and advances the mission — online and via
+ * the offline queue alike.
+ */
+const surveyRecommendationId = ref<number | null>(null)
+const surveySection = ref<HTMLElement | null>(null)
+const route = useRoute()
+
 // Keyed by user as well as account: IndexedDB is per-device, so an unscoped
 // key hands the next rep on a shared phone the previous rep's draft.
 const survey = ref<InstanceType<typeof VisitSurvey> | null>(null)
@@ -190,6 +201,7 @@ async function onVisitSubmitted(visitId: number) {
 function closeSurvey() {
   surveyOpen.value = false
   savedVisitId.value = null
+  surveyRecommendationId.value = null
 }
 
 /* Photos taken inside the survey. Online they upload themselves; offline the
@@ -241,7 +253,8 @@ async function saveVisitForLater() {
       action: {
         actionType: 'visit',
         note: values.comments,
-        recommendationId: null,
+        // Carries the mission this survey clears, if it came from one.
+        recommendationId: surveyRecommendationId.value,
         // The day the rep was in the store, not the day the phone reconnected.
         actionDate: values.visit_date,
         // If an online submit already created an action before it failed,
@@ -284,6 +297,24 @@ async function submitNote() {
     noteError.value = (e as Error).message || 'Could not save that note.'
   }
 }
+
+/* ---- mission deep link --------------------------------------------------
+   "Do the visit survey" on a mission card lands here as ?survey=<rec id>.
+   Declared last: the immediate run calls openSurvey(), which touches refs
+   declared through the whole of this setup block.
+------------------------------------------------------------------------- */
+watch(
+  () => route.query.survey,
+  async (raw) => {
+    const id = Number(Array.isArray(raw) ? raw[0] : raw)
+    if (!Number.isFinite(id) || id <= 0) return
+    surveyRecommendationId.value = id
+    if (!surveyOpen.value) openSurvey()
+    await nextTick()
+    surveySection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -485,7 +516,7 @@ async function submitNote() {
     </AppCard>
 
     <!-- Visit survey — the one green button on this view. Opens inline. -->
-    <section class="space-y-3">
+    <section ref="surveySection" class="scroll-mt-16 space-y-3">
       <template v-if="!surveyOpen">
         <AppButton variant="primary" size="lg" block @click="openSurvey">
           Log a visit
@@ -508,6 +539,7 @@ async function submitNote() {
         <VisitSurvey
           ref="survey"
           :customer-key="customerKey"
+          :recommendation-id="surveyRecommendationId"
           :initial-values="draftValues"
           @change="onSurveyChange"
           @submitted="onVisitSubmitted"

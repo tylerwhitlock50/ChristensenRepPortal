@@ -2,9 +2,10 @@
 import { computed, ref } from 'vue'
 import { format } from 'date-fns'
 import { useSessionStore } from '@/stores/session'
-import { useNeedsAttention } from '@/composables/useRecommendations'
+import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useAccountNames } from '@/composables/useAccounts'
 import { useMyTasks, useToggleTask, type Task } from '@/composables/useTasks'
+import MissionBanner from '@/components/MissionBanner.vue'
 import NextActionCard from '@/components/NextActionCard.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
 import TaskQuickAdd from '@/components/TaskQuickAdd.vue'
@@ -32,6 +33,25 @@ const overdue = computed(
 const awaitingOutcome = computed(
   () => items.value.filter((r) => r.status === 'acted').length,
 )
+
+/* ---- missions -----------------------------------------------------------
+   Admin-directed work gets a banner above everything else — a rep signing
+   in must see it before the rest of the list. The cards themselves are in
+   the ranked feed below, so "See them" scrolls to the list.
+------------------------------------------------------------------------- */
+const missions = computed(() => items.value.filter((r) => isMission(r)))
+const missionsOverdue = computed(
+  () =>
+    missions.value.filter((r) => {
+      const d = daysUntilDue(r.due_date)
+      return d != null && d < 0
+    }).length,
+)
+
+const listEl = ref<HTMLElement | null>(null)
+function scrollToList() {
+  listEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 // displayName falls back to the email when the profile has no full_name;
 // an address has no spaces, so strip the domain before taking the first word.
@@ -91,6 +111,12 @@ function taskAccount(task: Task): string {
       <h1 class="u-display mt-1 text-[34px] wrap-anywhere">Morning, {{ firstName }}</h1>
     </header>
 
+    <MissionBanner
+      :open="missions.length"
+      :overdue="missionsOverdue"
+      @show="scrollToList"
+    />
+
     <div class="bg-line border-line grid grid-cols-3 gap-px border">
       <StatTile label="To do" :value="items.length" />
       <StatTile
@@ -109,7 +135,7 @@ function taskAccount(task: Task): string {
       empty-body="Nothing needs attention right now. New recommendations land overnight — go home."
       @retry="refetch()"
     >
-      <div class="space-y-5">
+      <div ref="listEl" class="scroll-mt-16 space-y-5">
         <NextActionCard
           v-if="first"
           :rec="first"

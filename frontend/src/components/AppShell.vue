@@ -3,11 +3,31 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import { useSessionStore } from '@/stores/session'
+import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
+import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
 const router = useRouter()
 const route = useRoute()
+
+/* Open-mission count on the Today tab. Shares the Today page's query key, so
+   when Today has loaded this costs nothing extra. Gated off for admins: their
+   unscoped needs-attention select is the whole company's list, and the shell
+   must not fire that on every page. */
+const needsAttention = useNeedsAttention({
+  enabled: computed(() => session.isSignedIn && !session.isAdmin),
+})
+const missionCount = computed(
+  () => (needsAttention.data.value ?? []).filter((r) => isMission(r)).length,
+)
+const missionsLate = computed(() =>
+  (needsAttention.data.value ?? []).some((r) => {
+    if (!isMission(r)) return false
+    const d = daysUntilDue(r.due_date)
+    return d != null && d < 0
+  }),
+)
 
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
@@ -71,6 +91,14 @@ async function signOut() {
               active-class="!text-canvas !border-accent"
             >
               {{ item.label }}
+              <span
+                v-if="item.icon === 'today' && missionCount > 0"
+                class="ml-1 inline-grid min-w-5 place-items-center px-1 py-0.5 text-[11px] leading-none font-bold"
+                :class="missionsLate ? 'bg-accent text-[#20100A]' : 'bg-canvas text-ink'"
+                :aria-label="`${missionCount} open missions`"
+              >
+                {{ missionCount }}
+              </span>
             </RouterLink>
           </nav>
         </div>
@@ -155,9 +183,17 @@ async function signOut() {
           v-for="item in nav"
           :key="item.label"
           :to="item.to"
-          class="font-label flex min-h-[66px] flex-1 flex-col items-center justify-center gap-1 border-t-2 border-transparent text-xs font-semibold tracking-[0.1em] text-[#8E8A80] uppercase"
+          class="font-label relative flex min-h-[66px] flex-1 flex-col items-center justify-center gap-1 border-t-2 border-transparent text-xs font-semibold tracking-[0.1em] text-[#8E8A80] uppercase"
           active-class="!text-ink !border-ink -mt-px"
         >
+          <span
+            v-if="item.icon === 'today' && missionCount > 0"
+            class="absolute top-2 left-1/2 ml-1.5 inline-grid min-w-5 place-items-center px-1 py-0.5 text-[11px] leading-none font-bold"
+            :class="missionsLate ? 'bg-accent text-[#20100A]' : 'bg-ink text-canvas'"
+            :aria-label="`${missionCount} open missions`"
+          >
+            {{ missionCount }}
+          </span>
           <svg
             class="size-5"
             viewBox="0 0 24 24"
