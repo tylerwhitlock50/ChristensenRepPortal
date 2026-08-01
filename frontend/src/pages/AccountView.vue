@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useOnline } from '@vueuse/core'
 import { useQueryClient } from '@tanstack/vue-query'
@@ -20,7 +20,14 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
 import AccountSummaryCard from '@/components/AccountSummaryCard.vue'
-import AccountRevenueChart from '@/components/AccountRevenueChart.vue'
+/**
+ * chart.js is roughly two thirds of this route's bundle, and this is the page
+ * a rep opens standing in a store on LTE. Async-loaded so the numbers, orders
+ * and the visit survey paint without waiting on the charting library.
+ */
+const AccountRevenueChart = defineAsyncComponent(
+  () => import('@/components/AccountRevenueChart.vue'),
+)
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
 import VisitSurvey from '@/components/VisitSurvey.vue'
