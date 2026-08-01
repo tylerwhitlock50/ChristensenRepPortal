@@ -73,3 +73,14 @@ export type PhotoCategory = (typeof PHOTO_CATEGORIES)[number]
 
 export const TASK_STATUSES = ['open', 'done', 'cancelled'] as const
 export type TaskStatus = (typeof TASK_STATUSES)[number]
+
+/** Mission scope options — mission_batches.scope_type (016_missions_admin.sql). */
+export const MISSION_SCOPES = ['all', 'vendor', 'rep', 'custom'] as const
+export type MissionScope = (typeof MISSION_SCOPES)[number]
+
+export const MISSION_SCOPE_LABELS: Record<MissionScope, string> = {
+  all: 'All accounts',
+  vendor: 'A rep group',
+  rep: 'One rep',
+  custom: 'Hand-picked',
+}
