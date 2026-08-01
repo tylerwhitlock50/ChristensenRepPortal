@@ -48,9 +48,37 @@ const router = createRouter({
     },
     {
       path: '/admin',
-      name: 'admin',
-      component: () => import('@/pages/AdminView.vue'),
-      meta: { adminOnly: true, title: 'Execution' },
+      component: () => import('@/pages/admin/AdminLayout.vue'),
+      // adminOnly on the parent covers every child — vue-router merges parent
+      // meta into to.meta, so the guard below keeps working unchanged.
+      meta: { adminOnly: true },
+      redirect: { name: 'admin-execution' },
+      children: [
+        {
+          path: 'execution',
+          name: 'admin-execution',
+          component: () => import('@/pages/admin/AdminExecutionView.vue'),
+          meta: { title: 'Execution' },
+        },
+        {
+          path: 'users',
+          name: 'admin-users',
+          component: () => import('@/pages/admin/AdminUsersView.vue'),
+          meta: { title: 'Users' },
+        },
+        {
+          path: 'missions',
+          name: 'admin-missions',
+          component: () => import('@/pages/admin/AdminMissionsView.vue'),
+          meta: { title: 'Missions' },
+        },
+        {
+          path: 'activity',
+          name: 'admin-activity',
+          component: () => import('@/pages/admin/AdminActivityView.vue'),
+          meta: { title: 'Activity' },
+        },
+      ],
     },
     {
       path: '/:pathMatch(.*)*',

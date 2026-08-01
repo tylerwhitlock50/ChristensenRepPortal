@@ -9,7 +9,9 @@
  * `erp` reads stay typed by hand in src/types/erp.ts. Regenerate with the CLI
  * and `--schema erp` if you want them generated.
  *
- * Last regenerated after migration 014.
+ * Last regenerated after migration 014; hand-extended for 016 (missions,
+ * profiles.email) — regenerate when database access is available and diff
+ * against this file.
  */
 
 export type Json =
@@ -206,6 +208,42 @@ export type Database = {
         }
         Relationships: []
       }
+      mission_batches: {
+        Row: {
+          created_at: string
+          created_by: string
+          description: string | null
+          due_date: string | null
+          id: number
+          requires_visit: boolean
+          scope_type: string
+          scope_value: string | null
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          description?: string | null
+          due_date?: string | null
+          id?: never
+          requires_visit?: boolean
+          scope_type: string
+          scope_value?: string | null
+          title: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          description?: string | null
+          due_date?: string | null
+          id?: never
+          requires_visit?: boolean
+          scope_type?: string
+          scope_value?: string | null
+          title?: string
+        }
+        Relationships: []
+      }
       notes: {
         Row: {
           body: string
@@ -267,6 +305,7 @@ export type Database = {
         Row: {
           active: boolean
           created_at: string
+          email: string | null
           full_name: string
           rep_group_vendor_id: string | null
           role: string
@@ -276,6 +315,7 @@ export type Database = {
         Insert: {
           active?: boolean
           created_at?: string
+          email?: string | null
           full_name?: string
           rep_group_vendor_id?: string | null
           role?: string
@@ -285,6 +325,7 @@ export type Database = {
         Update: {
           active?: boolean
           created_at?: string
+          email?: string | null
           full_name?: string
           rep_group_vendor_id?: string | null
           role?: string
@@ -295,6 +336,7 @@ export type Database = {
       }
       recommendations: {
         Row: {
+          batch_id: number | null
           closed_at: string | null
           closed_by: string | null
           created_at: string
@@ -306,12 +348,14 @@ export type Database = {
           outcome_note: string | null
           priority: string
           reason: string | null
+          requires_visit: boolean
           rule_key: string | null
           source: string
           status: string
           title: string
         }
         Insert: {
+          batch_id?: number | null
           closed_at?: string | null
           closed_by?: string | null
           created_at?: string
@@ -323,12 +367,14 @@ export type Database = {
           outcome_note?: string | null
           priority?: string
           reason?: string | null
+          requires_visit?: boolean
           rule_key?: string | null
           source?: string
           status?: string
           title: string
         }
         Update: {
+          batch_id?: number | null
           closed_at?: string | null
           closed_by?: string | null
           created_at?: string
@@ -340,6 +386,7 @@ export type Database = {
           outcome_note?: string | null
           priority?: string
           reason?: string | null
+          requires_visit?: boolean
           rule_key?: string | null
           source?: string
           status?: string
@@ -471,6 +518,26 @@ export type Database = {
         }
         Relationships: []
       }
+      mission_batch_progress: {
+        Row: {
+          acted_count: number | null
+          batch_id: number | null
+          closed_count: number | null
+          created_at: string | null
+          created_by: string | null
+          description: string | null
+          dismissed_count: number | null
+          due_date: string | null
+          open_count: number | null
+          overdue_count: number | null
+          requires_visit: boolean | null
+          scope_type: string | null
+          scope_value: string | null
+          title: string | null
+          total: number | null
+        }
+        Relationships: []
+      }
       rep_execution_summary: {
         Row: {
           actions_last_30d: number | null
@@ -549,6 +616,41 @@ export type Database = {
         }
         Relationships: []
       }
+      v_mission_detail: {
+        Row: {
+          batch_id: number | null
+          closed_at: string | null
+          customer_key: string | null
+          customer_name: string | null
+          due_date: string | null
+          id: number | null
+          outcome: string | null
+          outcome_note: string | null
+          priority: string | null
+          rep_names: string | null
+          requires_visit: boolean | null
+          status: string | null
+          title: string | null
+        }
+        Relationships: []
+      }
+      v_rep_activity: {
+        Row: {
+          actions_30d: number | null
+          active: boolean | null
+          email: string | null
+          full_name: string | null
+          last_action_date: string | null
+          last_login_at: string | null
+          logins_30d: number | null
+          open_missions: number | null
+          overdue_missions: number | null
+          sales_rep_key: string | null
+          user_id: string | null
+          vendor_id: string | null
+        }
+        Relationships: []
+      }
       v_user_accounts: {
         Row: {
           customer_key: string | null
@@ -558,6 +660,24 @@ export type Database = {
       }
     }
     Functions: {
+      create_mission: {
+        Args: {
+          p_title: string
+          p_reason?: string | null
+          p_priority?: string
+          p_due_date?: string | null
+          p_requires_visit?: boolean
+          p_scope_type?: string
+          p_scope_value?: string | null
+          p_customer_keys?: string[] | null
+          p_active_only?: boolean
+          p_dry_run?: boolean
+        }
+        Returns: {
+          batch_id: number | null
+          created_count: number
+        }[]
+      }
       generate_recommendations: {
         Args: never
         Returns: {

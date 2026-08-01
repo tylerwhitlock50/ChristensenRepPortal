@@ -65,6 +65,11 @@ export const qk = {
     execution: () => ['admin', 'execution'] as const,
     coverage: (range: { from: string; to: string }) =>
       ['admin', 'coverage', range] as const,
+    users: () => ['admin', 'users'] as const,
+    missions: () => ['admin', 'missions'] as const,
+    missionDetail: (batchId: number) => ['admin', 'missions', batchId] as const,
+    activity: () => ['admin', 'activity'] as const,
+    salesReps: () => ['admin', 'sales-reps'] as const,
   },
 } as const
 

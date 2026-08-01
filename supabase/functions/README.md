@@ -1,12 +1,13 @@
 # supabase/functions
 
-Two Supabase Edge Functions (Deno + TypeScript). Exactly two, because
+Three Supabase Edge Functions (Deno + TypeScript). Exactly three, because
 TECH_STACK §3.2 admits only code that holds a secret or needs `service_role`:
 
 | Function | Why it can't be client-side |
 |---|---|
 | `ai-account-summary` | Holds `ANTHROPIC_API_KEY` |
 | `admin-create-user` | Needs `service_role` to create auth users and set passwords (PRD: no self-signup) |
+| `admin-update-user` | Needs `service_role` to set passwords and ban/unban sign-in on deactivate |
 
 Everything else — reads, writes, photo upload/download — goes straight to
 PostgREST and Storage with the user's JWT. If a third candidate appears, the
@@ -21,7 +22,9 @@ functions/
 ├── ai-account-summary/
 │   ├── index.ts             the flow in TECH_STACK §5.1, in order
 │   └── prompt.md            THE prompt — versioned file, not a string literal
-└── admin-create-user/
+├── admin-create-user/
+│   └── index.ts
+└── admin-update-user/
     └── index.ts
 ```
 
@@ -32,7 +35,7 @@ Set these once per project (`dev` and `prod` are separate projects — §8):
 | Secret | Used by | Notes |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | `ai-account-summary` | Edge Function secrets **only**. Never in Vercel, never in the frontend bundle. |
-| `SUPABASE_SERVICE_ROLE_KEY` | `admin-create-user` | Auto-injected by the platform on deploy; set explicitly only for `supabase functions serve`. |
+| `SUPABASE_SERVICE_ROLE_KEY` | `admin-create-user`, `admin-update-user` | Auto-injected by the platform on deploy; set explicitly only for `supabase functions serve`. |
 | `SUPABASE_URL` | both | Auto-injected. |
 | `SUPABASE_ANON_KEY` | both | Auto-injected. Used to build the caller-scoped client that then carries the user's `Authorization` header. |
 
@@ -57,6 +60,7 @@ supabase link --project-ref <project-ref>
 
 supabase functions deploy ai-account-summary --no-verify-jwt
 supabase functions deploy admin-create-user  --no-verify-jwt
+supabase functions deploy admin-update-user  --no-verify-jwt
 ```
 
 **Why `--no-verify-jwt`.** The gateway's built-in check rejects the browser's
@@ -65,8 +69,8 @@ verify the caller themselves and do strictly more than the gateway would:
 
 - `ai-account-summary` resolves the user from their JWT and then asks Postgres
   `has_account_access(customer_key)` **as that user**.
-- `admin-create-user` resolves the user and then calls `is_admin()` **as that
-  user**, before `service_role` is constructed at all.
+- `admin-create-user` and `admin-update-user` resolve the user and then call
+  `is_admin()` **as that user**, before `service_role` is constructed at all.
 
 An unauthenticated request reaches the function and gets a `401` from our own
 code. If you prefer the gateway check, drop the flag and handle the preflight
@@ -193,3 +197,29 @@ quietly behind.
 one: `sales_rep_key` for a rep, plus `rep_group_vendor_id` for a rep-group
 principal. There is no bulk account-assignment exercise — ownership comes from
 `erp.dim_customer.assigned_sales_rep_id` (TECH_STACK §3.4).
+
+## admin-update-user
+
+**Request** `POST` — `user_id` plus at least one of `password` / `active`:
+
+```json
+{ "user_id": "uuid", "password": "at least 12 characters", "active": false }
+```
+
+**Response** `200` with `{ user_id, updated, warnings }`.
+
+- `password` → `auth.admin.updateUserById` sets the new password.
+- `active: false` → an auth ban (~100 years) blocks refresh and future
+  sign-ins, then `profiles.active = false`. If the profile write fails the
+  ban is reverted so auth and profile can't disagree. `warnings` notes that
+  the current access token survives up to ~an hour and that explicit
+  `account_assignments` grant rows keep working until removed.
+- `active: true` → lifts the ban and restores `profiles.active`.
+
+**Rejections:** `not_admin` (403), `invalid_user_id` / `weak_password` /
+`nothing_to_do` / `cannot_deactivate_self` (400), `user_not_found` (404).
+
+Profile fields (name, role, `sales_rep_key`, `rep_group_vendor_id`) are NOT
+handled here — the admin edits them with a plain client-side `profiles`
+update under the `"admin manages profiles"` policy; the placeholder-rep-key
+rule is enforced in the database (migration 016).

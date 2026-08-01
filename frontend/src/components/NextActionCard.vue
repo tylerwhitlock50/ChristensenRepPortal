@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import {
+  friendlyRecError,
+  isMission,
   useLogAction,
   useResolveRecommendation,
   type Recommendation,
@@ -42,6 +44,16 @@ const overdue = computed(() => {
 
 const label = computed(() => props.accountName || props.rec.customer_key)
 
+/* Visit-required missions clear via the survey, not the close panel. */
+const needsSurvey = computed(
+  () => !!props.rec.requires_visit && props.rec.status === 'open',
+)
+const surveyTo = computed(() => ({
+  name: 'account' as const,
+  params: { customerKey: props.rec.customer_key },
+  query: { survey: String(props.rec.id) },
+}))
+
 function reset() {
   panel.value = 'none'
   note.value = ''
@@ -60,7 +72,7 @@ async function submitAction() {
     })
     reset()
   } catch (e) {
-    errorMessage.value = (e as Error).message || 'Could not save that.'
+    errorMessage.value = friendlyRecError(e)
   }
 }
 
@@ -80,7 +92,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
     })
     reset()
   } catch (e) {
-    errorMessage.value = (e as Error).message || 'Could not save that.'
+    errorMessage.value = friendlyRecError(e)
   }
 }
 </script>
@@ -100,6 +112,18 @@ async function submitClose(status: 'closed' | 'dismissed') {
         >
           Do this first
         </span>
+        <span
+          v-if="isMission(rec)"
+          class="font-label border border-[#4A4D44] px-2 py-1 text-xs font-semibold tracking-[0.12em] uppercase"
+        >
+          Mission
+        </span>
+        <span
+          v-if="rec.requires_visit"
+          class="font-label text-xs font-semibold tracking-[0.14em] text-[#8E8A80] uppercase"
+        >
+          Visit survey required
+        </span>
       </div>
 
       <h2 class="u-display mt-3 text-3xl">{{ rec.title }}</h2>
@@ -114,7 +138,21 @@ async function submitClose(status: 'closed' | 'dismissed') {
         {{ label }}
       </RouterLink>
 
-      <div v-if="panel === 'none'" class="mt-4 flex gap-2">
+      <!-- Visit-required missions: the survey IS the way through. -->
+      <div v-if="panel === 'none' && needsSurvey" class="mt-4 flex gap-2">
+        <RouterLink :to="surveyTo" class="btn-primary flex-1 text-[15px]">
+          Do the visit survey
+        </RouterLink>
+        <button
+          type="button"
+          class="tap-target font-label rounded-[2px] border border-[#4A4D44] px-4 text-[15px] font-semibold tracking-[0.12em] uppercase hover:border-canvas"
+          @click="panel = 'act'"
+        >
+          Log action
+        </button>
+      </div>
+
+      <div v-else-if="panel === 'none'" class="mt-4 flex gap-2">
         <AppButton variant="primary" class="flex-1" @click="panel = 'act'">
           Log action
         </AppButton>

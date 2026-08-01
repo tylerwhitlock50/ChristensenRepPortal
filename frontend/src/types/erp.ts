@@ -26,6 +26,13 @@ export interface DimCustomerRow {
   credit_status: string | null
 }
 
+export interface DimSalesRepRow {
+  sales_rep_key: string
+  sales_rep_name: string | null
+  vendor_id: string | null
+  is_placeholder_rep: boolean | null
+}
+
 export interface FactInvoiceLineRow {
   invoice_id: string
   invoice_line_no: number

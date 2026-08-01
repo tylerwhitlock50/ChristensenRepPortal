@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import {
+  friendlyRecError,
+  isMission,
   useLogAction,
   useResolveRecommendation,
   type Recommendation,
@@ -56,6 +58,18 @@ const rail = computed(() => {
 
 const label = computed(() => props.accountName || props.rec.customer_key)
 
+/* A visit-required mission is cleared by the survey, not the plain close
+   panel — the DB trigger enforces it, this just routes the rep to the right
+   path first. Once it's 'acted' (a survey happened) close opens as usual. */
+const needsSurvey = computed(
+  () => !!props.rec.requires_visit && props.rec.status === 'open',
+)
+const surveyTo = computed(() => ({
+  name: 'account' as const,
+  params: { customerKey: props.rec.customer_key },
+  query: { survey: String(props.rec.id) },
+}))
+
 function reset() {
   panel.value = 'none'
   note.value = ''
@@ -74,7 +88,7 @@ async function submitAction() {
     })
     reset()
   } catch (e) {
-    errorMessage.value = (e as Error).message || 'Could not save that.'
+    errorMessage.value = friendlyRecError(e)
   }
 }
 
@@ -94,7 +108,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
     })
     reset()
   } catch (e) {
-    errorMessage.value = (e as Error).message || 'Could not save that.'
+    errorMessage.value = friendlyRecError(e)
   }
 }
 </script>
@@ -111,8 +125,9 @@ async function submitClose(status: 'closed' | 'dismissed') {
           <AppBadge v-if="rec.status === 'acted'" tone="good">
             Acted — needs outcome
           </AppBadge>
-          <AppBadge v-if="rec.source === 'admin'" tone="neutral">
-            From sales ops
+          <AppBadge v-if="isMission(rec)" tone="neutral">Mission</AppBadge>
+          <AppBadge v-if="rec.requires_visit" tone="neutral">
+            Visit survey required
           </AppBadge>
           <span
             v-if="rec.due_date && !overdue"
@@ -238,6 +253,17 @@ async function submitClose(status: 'closed' | 'dismissed') {
           </AppButton>
           <AppButton variant="ghost" @click="reset">Cancel</AppButton>
         </div>
+      </div>
+
+      <!-- A visit-required mission routes to the survey; the DB would reject
+           a surveyless close anyway, so don't offer it. -->
+      <div v-else-if="needsSurvey" class="border-line flex gap-2 border-t p-3">
+        <RouterLink :to="surveyTo" class="btn-primary text-[15px]">
+          Do the visit survey
+        </RouterLink>
+        <AppButton variant="ghost" @click="panel = 'act'">
+          Log action
+        </AppButton>
       </div>
 
       <div v-else class="border-line flex gap-2 border-t p-3">

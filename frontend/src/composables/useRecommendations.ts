@@ -7,6 +7,27 @@ import type { ActionType, RecOutcome, RecPriority } from '@/types/domain'
 
 export type Recommendation = Tables<'recommendations'>
 
+/**
+ * A "mission" is an admin-created recommendation — directed work from sales
+ * ops, as opposed to the nightly rule engine's suggestions. The UI names and
+ * badges them differently; the lifecycle is identical.
+ */
+export function isMission(rec: Pick<Recommendation, 'source'>): boolean {
+  return rec.source === 'admin'
+}
+
+/**
+ * Postgres raises bare error codes (016_missions_admin.sql); reps get a
+ * sentence. Anything unrecognized passes through untouched.
+ */
+export function friendlyRecError(e: unknown): string {
+  const message = (e as Error)?.message ?? ''
+  if (message.includes('mission_requires_visit')) {
+    return 'This mission needs a completed visit survey before it can be closed. Log a visit first.'
+  }
+  return message || 'Could not save that.'
+}
+
 const PRIORITY_RANK: Record<RecPriority, number> = { high: 0, normal: 1, low: 2 }
 
 /** Highest priority first, then soonest due, then oldest. */
@@ -27,9 +48,13 @@ export function sortForRep(rows: Recommendation[]): Recommendation[] {
 /**
  * The home screen list: everything still owed an outcome. RLS scopes this to
  * the rep's book, so no user filter is needed.
+ *
+ * `enabled` exists for AppShell's mission badge: an admin's unscoped select
+ * is the whole company's list and must not be fired from the shell.
  */
-export function useNeedsAttention() {
+export function useNeedsAttention(options?: { enabled?: MaybeRef<boolean> }) {
   return useQuery({
+    enabled: computed(() => unref(options?.enabled) ?? true),
     queryKey: qk.me.needsAttention(),
     queryFn: async (): Promise<Recommendation[]> => {
       const { data, error } = await supabase

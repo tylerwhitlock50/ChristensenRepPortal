@@ -15,7 +15,13 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `007_rls_policies.sql` | All RLS policies — reps see only assigned accounts; erp is select-only |
 | `008_recommendation_engine.sql` | `generate_recommendations()` — nightly job, rules driven by `rule_settings.params` |
 | `009_storage.sql` | Private `account-photos` bucket + path-based RLS (`<customer_key>/<file>`) |
-| `010_job_runs.sql` | `job_runs` audit table + `log_job_run()` — written by the ETL and the recommendation job |
+| `010_access_performance.sql` | `my_customer_keys()` / `placeholder_rep_keys()`, policy rewrite for performance |
+| `011_account_views.sql` | Account list/summary/revenue/orders/shipments views (`security_invoker`) |
+| `012_job_runs.sql` | `job_runs` audit table + `log_job_run()` — written by the ETL and the recommendation job |
+| `013_photo_updates.sql` | Author UPDATE grant so photos can attach to a just-saved visit |
+| `014_erp_column_drift.sql` | ERP landing-table column drift fixes |
+| `015_account_last_order_date.sql` | `v_account_list` with harmonized `last_order_date` |
+| `016_missions_admin.sql` | Missions: `mission_batches`, `recommendations.requires_visit`/`batch_id`, visit-required close trigger, `create_mission()` bulk RPC with dry-run, progress/detail/activity views, `profiles.email` mirror, profile placeholder guard, login-events + `v_user_accounts` cleanups |
 
 ## Applying
 
