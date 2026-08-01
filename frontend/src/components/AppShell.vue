@@ -34,19 +34,21 @@ const menuRef = ref<HTMLElement | null>(null)
 onClickOutside(menuRef, () => (menuOpen.value = false))
 
 const nav = computed(() => {
-  const items = [
+  const items: { to: string | { name: string }; label: string; icon: string }[] = [
     { to: { name: 'today' }, label: 'Today', icon: 'today' },
     { to: { name: 'tasks' }, label: 'Tasks', icon: 'tasks' },
     { to: { name: 'accounts' }, label: 'Accounts', icon: 'accounts' },
   ]
   if (session.isAdmin) {
-    items.push({ to: { name: 'admin' }, label: 'Execution', icon: 'admin' })
+    // Path, not name: linking the parent keeps the item active on every
+    // /admin/* child tab.
+    items.push({ to: '/admin', label: 'Admin', icon: 'admin' })
   }
   return items
 })
 
-// Execution is the only route that widens past 1024px — ops sits at a desk.
-const wide = computed(() => route.name === 'admin')
+// Admin is the only section that widens past 1024px — ops sits at a desk.
+const wide = computed(() => route.path.startsWith('/admin'))
 
 const initials = computed(() => {
   const parts = (session.displayName || '?').trim().split(/\s+/)
