@@ -442,6 +442,19 @@ async function buildContext(client: SupabaseClient, customerKey: string) {
   const noteRows = rows(noteRes, 'notes') as Array<Record<string, unknown>>
   const visit = (visitRes.data ?? null) as Record<string, unknown> | null
 
+  // Same harmonization as v_account_list/v_account_summary (migration 015):
+  // dim_customer.last_order_date is unmaintained in the ERP and mostly NULL,
+  // so take the newest date we actually saw in order history when it's later.
+  // recentOrders is sorted newest-first; ISO dates compare as strings.
+  const dimLastOrder = (customer.last_order_date as string | null) ?? null
+  const factLastOrder = recentOrders[0]?.order_date ?? null
+  const lastOrderDate =
+    dimLastOrder && factLastOrder
+      ? dimLastOrder > factLastOrder
+        ? dimLastOrder
+        : factLastOrder
+      : (factLastOrder ?? dimLastOrder)
+
   const context = {
     account: {
       name: customer.customer_name ?? null,
@@ -452,7 +465,7 @@ async function buildContext(client: SupabaseClient, customerKey: string) {
       territory: customer.territory ?? null,
       active: customer.active_flag ?? null,
       account_open_date: customer.account_open_date ?? null,
-      last_order_date: customer.last_order_date ?? null,
+      last_order_date: lastOrderDate,
       yearly_sales_goal: customer.yearly_sales_goal
         ? round(customer.yearly_sales_goal)
         : null,
