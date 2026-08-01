@@ -1,11 +1,23 @@
 import { computed, unref, type MaybeRef } from 'vue'
 import { useInfiniteQuery, useQuery } from '@tanstack/vue-query'
-import { erp, isSchemaNotExposed } from '@/lib/supabase'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { erp, isSchemaNotExposed, supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
+import { isViewMissing } from '@/composables/useAccountMetrics'
 import type { DimCustomerRow } from '@/types/erp'
 
 const LIST_COLUMNS =
   'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, territory, last_order_date, active_flag'
+
+/**
+ * The list reads public.v_account_list (migration 015), not erp.dim_customer:
+ * same columns, but last_order_date is derived from order history instead of
+ * the ERP's unmaintained CUSTOMER.LAST_ORDER_DATE field, which is NULL for
+ * most accounts and made the list say "Last order never" for accounts with
+ * plenty of orders. Untyped handle for the same reason as useAccountMetrics —
+ * the view postdates the generated types.
+ */
+const db = supabase as unknown as SupabaseClient
 
 export const ACCOUNTS_PAGE_SIZE = 50
 
@@ -52,22 +64,31 @@ export function useAccountSearch(
       const page = pageParam as number
       const from = page * ACCOUNTS_PAGE_SIZE
 
-      // Built as one expression so the query-builder type doesn't need to be
-      // re-narrowed on each conditional filter.
-      const base = erp.from('dim_customer').select(LIST_COLUMNS, { count: 'exact' })
-      const scoped = active.value ? base.eq('active_flag', 'Y') : base
-      const filtered = term.value
-        ? scoped.or(
-            `customer_name.ilike.*${term.value}*,` +
-              `customer_key.ilike.*${term.value}*,` +
-              `sold_to_city.ilike.*${term.value}*`,
-          )
-        : scoped
+      const runPage = (relation: 'v_account_list' | 'dim_customer') => {
+        const client =
+          relation === 'v_account_list' ? db : (erp as unknown as SupabaseClient)
+        // Built as one expression so the query-builder type doesn't need to be
+        // re-narrowed on each conditional filter.
+        const base = client.from(relation).select(LIST_COLUMNS, { count: 'exact' })
+        const scoped = active.value ? base.eq('active_flag', 'Y') : base
+        const filtered = term.value
+          ? scoped.or(
+              `customer_name.ilike.*${term.value}*,` +
+                `customer_key.ilike.*${term.value}*,` +
+                `sold_to_city.ilike.*${term.value}*`,
+            )
+          : scoped
+        return filtered
+          .order('customer_name', { ascending: true })
+          .range(from, from + ACCOUNTS_PAGE_SIZE - 1)
+      }
 
-      const { data, error, count } = await filtered
-        .order('customer_name', { ascending: true })
-        .range(from, from + ACCOUNTS_PAGE_SIZE - 1)
-
+      let { data, error, count } = await runPage('v_account_list')
+      if (error && isViewMissing(error)) {
+        // 015 not applied yet — fall back to the raw ERP column so the page
+        // keeps working; its last_order_date is just the stale field.
+        ;({ data, error, count } = await runPage('dim_customer'))
+      }
       if (error) throw error
       return {
         rows: (data ?? []) as unknown as DimCustomerRow[],

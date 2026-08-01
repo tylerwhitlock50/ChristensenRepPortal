@@ -12,6 +12,7 @@ import {
   useNotes,
 } from '@/composables/useAccountData'
 import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
+import { useAccountSummary } from '@/composables/useAccountMetrics'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -43,7 +44,24 @@ const online = useOnline()
 const session = useSessionStore()
 
 const account = useAccount(key)
+// Same query AccountSummaryCard runs — vue-query dedupes it, so this costs
+// nothing extra. Here it feeds the "Last order" tile below.
+const summary = useAccountSummary(key)
 const recs = useAccountRecommendations(key)
+
+/**
+ * dim_customer.last_order_date is the ERP's unmaintained field — NULL for
+ * most accounts, which made this tile say "never" right above a Performance
+ * card showing a real last-order date. Prefer the order-history-derived date
+ * from v_account_summary so the two always agree; the raw field is only the
+ * fallback while the summary is loading or migration 011/015 isn't applied.
+ */
+const lastOrderDate = computed(
+  () =>
+    summary.data.value?.last_order_date ??
+    account.data.value?.last_order_date ??
+    null,
+)
 const notes = useNotes(key)
 const actions = useAccountActions(key)
 
@@ -309,10 +327,11 @@ async function submitNote() {
       </header>
 
       <!--
-        ERP facts straight off dim_customer. This strip stays even though
-        AccountSummaryCard repeats "Last order": the card needs the v_account_*
-        rollup views (migration 011), and until those are applied this is the
-        only account history on the page.
+        ERP facts straight off dim_customer — except "Last order", which
+        prefers the order-history-derived date (see lastOrderDate above).
+        This strip stays even though AccountSummaryCard repeats "Last order":
+        the card needs the v_account_* rollup views (migration 011), and until
+        those are applied this is the only account history on the page.
       -->
       <dl class="bg-line border-line -mx-4 grid grid-cols-2 gap-px border-b sm:grid-cols-4">
         <div class="bg-surface px-3 py-2.5">
@@ -320,7 +339,7 @@ async function submitNote() {
             Last order
           </dt>
           <dd class="u-display mt-0.5 text-xl">
-            {{ daysAgo(account.data.value?.last_order_date) }}
+            {{ daysAgo(lastOrderDate) }}
           </dd>
         </div>
         <div class="bg-surface px-3 py-2.5">
