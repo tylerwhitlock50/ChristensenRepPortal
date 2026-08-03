@@ -27,10 +27,23 @@ import {
  * UPS tracking. The ERP feed currently only carries waybills on old
  * shipments (see 018's header) — the column renders whenever data exists.
  *
- * Horizontal scroll lives on the table wrapper only. The page itself never
- * scrolls sideways (html has overflow-x: hidden in style.css); a table that
- * shoves the whole layout off-screen is the fastest way to make a rep put
- * the phone away.
+ * ── Phones get lists, not tables ──────────────────────────────────────────
+ * Every table here carries a min-width (34rem for the headers, 30rem for the
+ * lines) so its columns stay readable. On a 390px phone that means the rep
+ * reads two of five columns and has to drag the rest into view — inside the
+ * modal too, where the sheet is already the width of the screen. Scrolling
+ * sideways was contained, but containment is not the same as usable.
+ *
+ * So below `sm` each table has a stacked-list twin showing the same fields in
+ * reading order, and the table is `hidden sm:block`. This is the pattern
+ * DataGrid already uses for the admin grids (its `card` slot) — same reason,
+ * same breakpoint. The markup is duplicated rather than generated because the
+ * four documents want genuinely different summaries, and a component that
+ * could render all four would be harder to read than both versions are.
+ *
+ * Horizontal scroll still lives on the table wrapper only, for the tablet and
+ * desktop widths where the table survives. The page itself never scrolls
+ * sideways (html has overflow-x: hidden in style.css).
  */
 const props = defineProps<{ customerKey: string }>()
 
@@ -82,7 +95,40 @@ function upsTrackUrl(trackingNumber: string): string {
         :rows="3"
         @retry="ordersQuery.refetch()"
       >
-        <div class="overflow-x-auto">
+        <!-- Phone: one tappable row per order. The whole row is the button —
+             a nested link would be invalid inside it, and everything a rep
+             might tap through to is in the drill-in a tap away. -->
+        <ul class="divide-line divide-y sm:hidden">
+          <li v-for="row in orders" :key="row.order_id">
+            <button
+              type="button"
+              class="tap-target hover:bg-canvas flex w-full flex-col items-start gap-1 py-2.5 text-left"
+              :aria-label="`Order ${row.order_id}, ${shortDate(row.order_date)} — show lines`"
+              @click="openOrderId = row.order_id"
+            >
+              <span class="flex w-full items-baseline justify-between gap-3">
+                <span class="text-ink truncate font-semibold tabular-nums">
+                  {{ row.order_id }}
+                </span>
+                <span class="u-display text-ink shrink-0 text-lg tabular-nums">
+                  {{ money(row.bookings) }}
+                </span>
+              </span>
+              <span class="text-muted text-[13px] tabular-nums">
+                {{ shortDate(row.order_date) }} · {{ count(row.line_count) }} lines ·
+                {{ count(row.order_qty) }} pcs
+              </span>
+              <AppBadge v-if="row.open_line_count > 0" tone="high">
+                Open {{ count(row.backlog_qty) }}
+              </AppBadge>
+              <span v-else class="text-muted text-[13px]">
+                {{ humanize(row.order_state ?? row.order_status_desc) }}
+              </span>
+            </button>
+          </li>
+        </ul>
+
+        <div class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
               The 20 most recent orders for this account — select one for its lines
@@ -153,7 +199,41 @@ function upsTrackUrl(trackingNumber: string): string {
         :rows="3"
         @retry="shipmentsQuery.refetch()"
       >
-        <div class="overflow-x-auto">
+        <!-- Phone: same shape as the orders list. The tracking link is NOT
+             here — an <a> inside the row button would be invalid interactive
+             nesting, and the drill-in renders it as a proper link one tap
+             away, next to ship-via and the order numbers. -->
+        <ul class="divide-line divide-y sm:hidden">
+          <li v-for="row in shipments" :key="row.packlist_id">
+            <button
+              type="button"
+              class="tap-target hover:bg-canvas flex w-full flex-col items-start gap-1 py-2.5 text-left"
+              :aria-label="`Packlist ${row.packlist_id}, ${shortDate(row.ship_date)} — show lines`"
+              @click="openPacklistId = row.packlist_id"
+            >
+              <span class="flex w-full items-baseline justify-between gap-3">
+                <span class="text-ink truncate font-semibold tabular-nums">
+                  {{ row.packlist_id }}
+                </span>
+                <span class="u-display text-ink shrink-0 text-lg tabular-nums">
+                  {{ money(row.shipped_revenue) }}
+                </span>
+              </span>
+              <span class="text-muted text-[13px] tabular-nums">
+                {{ shortDate(row.ship_date) }} · {{ count(row.shipped_qty) }} pcs
+                <template v-if="row.tracking_number"> · tracked</template>
+              </span>
+              <AppBadge v-if="row.actual_delivery_date" tone="good">
+                Delivered {{ shortDate(row.actual_delivery_date) }}
+              </AppBadge>
+              <span v-else class="text-muted text-[13px]">
+                {{ humanize(row.shipment_state ?? row.shipper_status_desc) }}
+              </span>
+            </button>
+          </li>
+        </ul>
+
+        <div class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
               The 20 most recent shipments for this account — select one for its
@@ -235,15 +315,21 @@ function upsTrackUrl(trackingNumber: string): string {
     "
     @update:open="openOrderId = null"
   >
-    <p v-if="openOrder && openOrder.open_line_count > 0" class="mb-3 text-sm">
+    <!-- flex-wrap, not an inline span: at phone width "next promise" and its
+         date were breaking across lines with the badge, so the phrase read as
+         two unrelated fragments. -->
+    <div
+      v-if="openOrder && openOrder.open_line_count > 0"
+      class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+    >
       <AppBadge tone="high">
         {{ count(openOrder.open_line_count) }} open —
         {{ count(openOrder.backlog_qty) }} pcs / {{ money(openOrder.backlog_amount) }}
       </AppBadge>
-      <span v-if="openOrder.next_promise_date" class="text-muted ml-2">
+      <span v-if="openOrder.next_promise_date" class="text-muted whitespace-nowrap">
         next promise {{ shortDate(openOrder.next_promise_date) }}
       </span>
-    </p>
+    </div>
     <AsyncState
       :loading="orderLinesQuery.isPending.value"
       :error="orderLinesQuery.error.value"
@@ -256,7 +342,36 @@ function upsTrackUrl(trackingNumber: string): string {
       :rows="3"
       @retry="orderLinesQuery.refetch()"
     >
-      <div class="overflow-x-auto">
+      <!-- Phone: the part first, then what was ordered against it. The
+           description wraps here instead of truncating at 16rem — in a sheet
+           this narrow the truncation was hiding most of the part name, and
+           there is nothing to the right competing for the space. -->
+      <ul class="divide-line divide-y sm:hidden">
+        <li v-for="line in orderLines" :key="line.line_num" class="py-2.5">
+          <p class="text-ink font-medium">
+            {{ line.part_id ?? line.part_key ?? '—' }}
+          </p>
+          <p v-if="line.part_description" class="text-muted text-[13px]">
+            {{ line.part_description }}
+          </p>
+          <p class="text-ink-2 mt-1 text-[13px] tabular-nums">
+            {{ count(line.order_qty) }} pcs · {{ money(line.bookings) }}
+            <template v-if="line.promise_date">
+              · promise {{ shortDate(line.promise_date) }}
+            </template>
+          </p>
+          <p class="mt-1">
+            <AppBadge v-if="line.is_backlog_line" tone="high">
+              Open {{ count(line.backlog_qty) }}
+            </AppBadge>
+            <span v-else class="text-muted text-[13px]">
+              {{ humanize(line.line_status_desc) }}
+            </span>
+          </p>
+        </li>
+      </ul>
+
+      <div class="hidden overflow-x-auto sm:block">
         <table class="w-full min-w-[30rem] border-collapse text-sm">
           <thead>
             <tr class="border-line border-b">
@@ -356,7 +471,23 @@ function upsTrackUrl(trackingNumber: string): string {
       :rows="3"
       @retry="shipmentLinesQuery.refetch()"
     >
-      <div class="overflow-x-auto">
+      <!-- Phone: same shape as the order lines. -->
+      <ul class="divide-line divide-y sm:hidden">
+        <li v-for="line in shipmentLines" :key="line.line_num" class="py-2.5">
+          <p class="text-ink font-medium">
+            {{ line.part_id ?? line.part_key ?? '—' }}
+          </p>
+          <p v-if="line.part_description" class="text-muted text-[13px]">
+            {{ line.part_description }}
+          </p>
+          <p class="text-ink-2 mt-1 text-[13px] tabular-nums">
+            {{ count(line.shipped_qty) }} pcs · {{ money(line.shipped_revenue) }}
+            <template v-if="line.order_id"> · order {{ line.order_id }}</template>
+          </p>
+        </li>
+      </ul>
+
+      <div class="hidden overflow-x-auto sm:block">
         <table class="w-full min-w-[30rem] border-collapse text-sm">
           <thead>
             <tr class="border-line border-b">
