@@ -9,7 +9,8 @@ import { qk } from '@/lib/queryClient'
  * The account mini-dashboard read path (PRD §7).
  *
  * Every query here hits a `public.v_account_*` view from
- * supabase/migrations/011_account_views.sql. Those views do the aggregation
+ * supabase/migrations/011_account_views.sql or 018_account_header_views.sql
+ * (header grain + modal line detail). Those views do the aggregation
  * in Postgres on purpose — fact_invoice_line is ~529k rows and
  * fact_order_line ~501k, so summing them in the browser is not an option
  * (TECH_STACK §3.3). Nothing in this file reduces a fact table.
@@ -49,8 +50,12 @@ export const accountMetricsKeys = {
   summary: (key: string) => [...qk.account.root(key), 'summary'] as const,
   revenueMonthly: (key: string) =>
     [...qk.account.root(key), 'revenue-monthly'] as const,
-  recentOrders: (key: string) => qk.account.orders(key),
-  recentShipments: (key: string) => qk.account.shipments(key),
+  orderHeaders: (key: string) => qk.account.orders(key),
+  shipmentHeaders: (key: string) => qk.account.shipments(key),
+  orderLines: (key: string, orderId: string) =>
+    [...qk.account.orders(key), orderId] as const,
+  shipmentLines: (key: string, packlistId: string) =>
+    [...qk.account.shipments(key), packlistId] as const,
 }
 
 /* ----------------------------------------------------------------- rows */
@@ -75,14 +80,47 @@ export interface AccountRevenueMonthRow {
   invoice_count: number
 }
 
-export interface AccountRecentOrderRow {
+/** One row per ORDER — lines rolled up in public.v_account_recent_order_headers. */
+export interface AccountOrderHeaderRow {
+  customer_key: string
+  order_id: string
+  order_date: string | null
+  order_state: string | null
+  order_status_desc: string | null
+  line_count: number
+  order_qty: number
+  bookings: number
+  open_line_count: number
+  backlog_qty: number
+  backlog_amount: number
+  /** Earliest promise date among the still-open lines. */
+  next_promise_date: string | null
+}
+
+/** One row per PACKLIST — public.v_account_recent_shipment_headers. */
+export interface AccountShipmentHeaderRow {
+  customer_key: string
+  packlist_id: string
+  ship_date: string | null
+  actual_delivery_date: string | null
+  shipment_state: string | null
+  shipper_status_desc: string | null
+  /** waybill_number from the ERP — a UPS number when present. */
+  tracking_number: string | null
+  ship_via: string | null
+  /** Distinct order ids on the packlist, comma-joined. */
+  order_ids: string | null
+  line_count: number
+  shipped_qty: number
+  shipped_revenue: number
+}
+
+/** One order's lines, for the drill-in modal — public.v_account_order_lines. */
+export interface AccountOrderLineRow {
   customer_key: string
   order_id: string
   line_num: number
-  order_date: string | null
   promise_date: string | null
-  order_state: string | null
-  order_status_desc: string | null
   line_status_desc: string | null
   part_key: string | null
   part_id: string | null
@@ -93,17 +131,13 @@ export interface AccountRecentOrderRow {
   is_backlog_line: boolean | null
 }
 
-export interface AccountRecentShipmentRow {
+/** One packlist's lines — public.v_account_shipment_lines. */
+export interface AccountShipmentLineRow {
   customer_key: string
   packlist_id: string
   line_num: number
   order_id: string | null
   invoice_id: string | null
-  ship_date: string | null
-  promise_date: string | null
-  actual_delivery_date: string | null
-  shipment_state: string | null
-  shipper_status_desc: string | null
   part_key: string | null
   part_id: string | null
   part_description: string | null
@@ -127,8 +161,8 @@ function numOrNull(value: unknown): number | null {
 
 const MISSING_VIEW_MESSAGE =
   'The account rollup views are not in the database yet. Apply ' +
-  'supabase/migrations/011_account_views.sql (it creates the v_account_* views), ' +
-  'then reload.'
+  'supabase/migrations/011_account_views.sql and 018_account_header_views.sql ' +
+  '(they create the v_account_* views), then reload.'
 
 /**
  * True when PostgREST could not find the relation — i.e. 011 has not been
@@ -228,31 +262,105 @@ export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
   })
 }
 
-export function useAccountRecentOrders(customerKey: MaybeRef<string>) {
+/** The 20 most recent ORDERS (header grain) for the account card. */
+export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
-    queryKey: computed(() => accountMetricsKeys.recentOrders(key.value)),
+    queryKey: computed(() => accountMetricsKeys.orderHeaders(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
-    queryFn: async (): Promise<AccountRecentOrderRow[]> => {
+    queryFn: async (): Promise<AccountOrderHeaderRow[]> => {
       const { data, error } = await db
-        .from('v_account_recent_orders')
+        .from('v_account_recent_order_headers')
         .select('*')
-        .eq('customer_key', key.value)
+        .eq('customer_key', key.value) // required — see the file header
         .order('order_date', { ascending: false, nullsFirst: false })
         .order('order_id', { ascending: false })
+      if (error) throw asDisplayError(error)
+      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+        customer_key: String(r.customer_key),
+        order_id: String(r.order_id),
+        order_date: (r.order_date as string | null) ?? null,
+        order_state: (r.order_state as string | null) ?? null,
+        order_status_desc: (r.order_status_desc as string | null) ?? null,
+        line_count: num(r.line_count),
+        order_qty: num(r.order_qty),
+        bookings: num(r.bookings),
+        open_line_count: num(r.open_line_count),
+        backlog_qty: num(r.backlog_qty),
+        backlog_amount: num(r.backlog_amount),
+        next_promise_date: (r.next_promise_date as string | null) ?? null,
+      }))
+    },
+  })
+}
+
+/** The 20 most recent PACKLISTS (header grain) for the account card. */
+export function useAccountShipmentHeaders(customerKey: MaybeRef<string>) {
+  const key = computed(() => unref(customerKey))
+  return useQuery({
+    queryKey: computed(() => accountMetricsKeys.shipmentHeaders(key.value)),
+    enabled: computed(() => !!key.value),
+    staleTime: ERP_STALE_TIME,
+    retry: retryUnlessMissing,
+    queryFn: async (): Promise<AccountShipmentHeaderRow[]> => {
+      const { data, error } = await db
+        .from('v_account_recent_shipment_headers')
+        .select('*')
+        .eq('customer_key', key.value)
+        .order('ship_date', { ascending: false, nullsFirst: false })
+        .order('packlist_id', { ascending: false })
+      if (error) throw asDisplayError(error)
+      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+        customer_key: String(r.customer_key),
+        packlist_id: String(r.packlist_id),
+        ship_date: (r.ship_date as string | null) ?? null,
+        actual_delivery_date: (r.actual_delivery_date as string | null) ?? null,
+        shipment_state: (r.shipment_state as string | null) ?? null,
+        shipper_status_desc: (r.shipper_status_desc as string | null) ?? null,
+        tracking_number: (r.tracking_number as string | null) ?? null,
+        ship_via: (r.ship_via as string | null) ?? null,
+        order_ids: (r.order_ids as string | null) ?? null,
+        line_count: num(r.line_count),
+        shipped_qty: num(r.shipped_qty),
+        shipped_revenue: num(r.shipped_revenue),
+      }))
+    },
+  })
+}
+
+/**
+ * Every line of ONE order, for the drill-in modal. Runs only while a modal
+ * is actually open (`orderId` non-null) — closing the modal just flips
+ * `enabled`, and the cached lines survive a re-open.
+ */
+export function useAccountOrderLines(
+  customerKey: MaybeRef<string>,
+  orderId: MaybeRef<string | null>,
+) {
+  const key = computed(() => unref(customerKey))
+  const id = computed(() => unref(orderId))
+  return useQuery({
+    queryKey: computed(() =>
+      accountMetricsKeys.orderLines(key.value, id.value ?? ''),
+    ),
+    enabled: computed(() => !!key.value && !!id.value),
+    staleTime: ERP_STALE_TIME,
+    retry: retryUnlessMissing,
+    queryFn: async (): Promise<AccountOrderLineRow[]> => {
+      const { data, error } = await db
+        .from('v_account_order_lines')
+        .select('*')
+        .eq('customer_key', key.value) // required — see the file header
+        .eq('order_id', id.value!) // hits the fact table's PK index
         .order('line_num', { ascending: true })
-        .limit(20)
       if (error) throw asDisplayError(error)
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
         customer_key: String(r.customer_key),
         order_id: String(r.order_id),
         line_num: num(r.line_num),
-        order_date: (r.order_date as string | null) ?? null,
         promise_date: (r.promise_date as string | null) ?? null,
-        order_state: (r.order_state as string | null) ?? null,
-        order_status_desc: (r.order_status_desc as string | null) ?? null,
         line_status_desc: (r.line_status_desc as string | null) ?? null,
         part_key: (r.part_key as string | null) ?? null,
         part_id: (r.part_id as string | null) ?? null,
@@ -266,22 +374,27 @@ export function useAccountRecentOrders(customerKey: MaybeRef<string>) {
   })
 }
 
-export function useAccountRecentShipments(customerKey: MaybeRef<string>) {
+/** Every line of ONE packlist, for the drill-in modal. Same gating as above. */
+export function useAccountShipmentLines(
+  customerKey: MaybeRef<string>,
+  packlistId: MaybeRef<string | null>,
+) {
   const key = computed(() => unref(customerKey))
+  const id = computed(() => unref(packlistId))
   return useQuery({
-    queryKey: computed(() => accountMetricsKeys.recentShipments(key.value)),
-    enabled: computed(() => !!key.value),
+    queryKey: computed(() =>
+      accountMetricsKeys.shipmentLines(key.value, id.value ?? ''),
+    ),
+    enabled: computed(() => !!key.value && !!id.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
-    queryFn: async (): Promise<AccountRecentShipmentRow[]> => {
+    queryFn: async (): Promise<AccountShipmentLineRow[]> => {
       const { data, error } = await db
-        .from('v_account_recent_shipments')
+        .from('v_account_shipment_lines')
         .select('*')
         .eq('customer_key', key.value)
-        .order('ship_date', { ascending: false, nullsFirst: false })
-        .order('packlist_id', { ascending: false })
+        .eq('packlist_id', id.value!) // hits the fact table's PK index
         .order('line_num', { ascending: true })
-        .limit(20)
       if (error) throw asDisplayError(error)
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
         customer_key: String(r.customer_key),
@@ -289,11 +402,6 @@ export function useAccountRecentShipments(customerKey: MaybeRef<string>) {
         line_num: num(r.line_num),
         order_id: (r.order_id as string | null) ?? null,
         invoice_id: (r.invoice_id as string | null) ?? null,
-        ship_date: (r.ship_date as string | null) ?? null,
-        promise_date: (r.promise_date as string | null) ?? null,
-        actual_delivery_date: (r.actual_delivery_date as string | null) ?? null,
-        shipment_state: (r.shipment_state as string | null) ?? null,
-        shipper_status_desc: (r.shipper_status_desc as string | null) ?? null,
         part_key: (r.part_key as string | null) ?? null,
         part_id: (r.part_id as string | null) ?? null,
         part_description: (r.part_description as string | null) ?? null,
