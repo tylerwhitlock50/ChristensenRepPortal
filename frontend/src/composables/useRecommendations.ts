@@ -28,15 +28,48 @@ export function friendlyRecError(e: unknown): string {
   return message || 'Could not save that.'
 }
 
-const PRIORITY_RANK: Record<RecPriority, number> = { high: 0, normal: 1, low: 2 }
+/** Where an unscored row sits: the midpoint of its priority band. */
+const PRIORITY_SCORE: Record<RecPriority, number> = { high: 75, normal: 50, low: 25 }
 
-/** Highest priority first, then soonest due, then oldest. */
+/**
+ * Admin missions carry no rule_key and so are never scored, and rows created
+ * before migration 020 have no score either. Mapping those onto their
+ * priority band keeps them interleaved sensibly instead of sinking to the
+ * bottom of every list the moment scoring ships.
+ */
+function effectiveScore(r: Recommendation): number {
+  return r.score ?? PRIORITY_SCORE[(r.priority as RecPriority) ?? 'normal']
+}
+
+function isOverdue(dueDate: string | null): boolean {
+  return !!dueDate && dueDate < new Date().toISOString().slice(0, 10)
+}
+
+/**
+ * The rep's queue order.
+ *
+ *   1. overdue first        — ember means late, and lateness outranks a score
+ *   2. missions ahead of system recs at equal lateness — a human is waiting
+ *   3. score, descending    — the balanced ranking from 019
+ *   4. soonest due, then oldest — unchanged tiebreakers
+ *
+ * Rule 2 is load-bearing rather than a preference. Missions are unscored, so
+ * a naive score-descending sort would sink every piece of directed sales-ops
+ * work below the algorithm's suggestions — and TodayView then shows only the
+ * first few, which would hide them outright. The PRD calls order-season
+ * missions "directive, not optional".
+ */
 export function sortForRep(rows: Recommendation[]): Recommendation[] {
   return [...rows].sort((a, b) => {
-    const p =
-      PRIORITY_RANK[(a.priority as RecPriority) ?? 'normal'] -
-      PRIORITY_RANK[(b.priority as RecPriority) ?? 'normal']
-    if (p !== 0) return p
+    const late = Number(isOverdue(b.due_date)) - Number(isOverdue(a.due_date))
+    if (late !== 0) return late
+
+    const mission = Number(isMission(b)) - Number(isMission(a))
+    if (mission !== 0) return mission
+
+    const score = effectiveScore(b) - effectiveScore(a)
+    if (score !== 0) return score
+
     if (a.due_date && b.due_date && a.due_date !== b.due_date)
       return a.due_date < b.due_date ? -1 : 1
     if (a.due_date && !b.due_date) return -1
@@ -61,7 +94,11 @@ export function useNeedsAttention(options?: { enabled?: MaybeRef<boolean> }) {
         .from('recommendations')
         .select('*')
         .in('status', ['open', 'acted'])
-        .limit(500)
+        // Ordered server-side so the cap below takes the TOP rows rather than
+        // an arbitrary 200. The client re-sorts (missions and overdue work
+        // outrank a score), but it can only re-sort what it was sent.
+        .order('score', { ascending: false, nullsFirst: false })
+        .limit(200)
       if (error) throw error
       return sortForRep(data ?? [])
     },

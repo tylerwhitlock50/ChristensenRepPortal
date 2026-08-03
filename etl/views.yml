@@ -43,5 +43,12 @@ column_map:
   QtyAvailableMRP: qty_available_mrp
 
 # After the last table loads successfully, run:
+#
+# Still ONE statement, deliberately. generate_recommendations() refreshes the
+# account signals and applies the scores itself as its first step (migration
+# 020), so there is no way for scoring and generation to run out of order or
+# for recommendations to be generated against yesterday's facts. Adding a
+# second call here would reintroduce exactly the race TECH_STACK §4.2 puts
+# this job in the database to avoid.
 post_load_sql:
   - "select public.generate_recommendations();"

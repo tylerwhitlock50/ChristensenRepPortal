@@ -350,6 +350,8 @@ export type Database = {
           reason: string | null
           requires_visit: boolean
           rule_key: string | null
+          score: number | null
+          score_factors: Json | null
           source: string
           status: string
           title: string
@@ -369,6 +371,8 @@ export type Database = {
           reason?: string | null
           requires_visit?: boolean
           rule_key?: string | null
+          score?: number | null
+          score_factors?: Json | null
           source?: string
           status?: string
           title: string
@@ -388,6 +392,8 @@ export type Database = {
           reason?: string | null
           requires_visit?: boolean
           rule_key?: string | null
+          score?: number | null
+          score_factors?: Json | null
           source?: string
           status?: string
           title?: string
