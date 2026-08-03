@@ -102,10 +102,10 @@ function accountLabel(task: Task): string {
 <template>
   <div class="space-y-6">
     <header>
-      <h1 class="text-2xl font-semibold tracking-tight text-zinc-900">
+      <h1 class="text-2xl font-semibold tracking-tight text-ink">
         My follow-ups
       </h1>
-      <p class="mt-1 text-sm text-zinc-500">
+      <p class="mt-1 text-sm text-muted">
         Your own reminders. Recommendations from sales ops live on Today.
       </p>
     </header>
@@ -114,11 +114,11 @@ function accountLabel(task: Task): string {
       <TaskQuickAdd placeholder="What do you need to remember?" />
     </AppCard>
 
-    <p v-if="overdueCount > 0" class="text-sm font-medium text-red-700">
+    <p v-if="overdueCount > 0" class="text-sm font-medium text-danger">
       {{ overdueCount }} past due
     </p>
 
-    <p v-if="actionError" role="alert" class="text-sm text-red-700">
+    <p v-if="actionError" role="alert" class="text-sm text-danger">
       {{ actionError }}
     </p>
     <p class="sr-only" role="status" aria-live="polite">
@@ -135,24 +135,24 @@ function accountLabel(task: Task): string {
     >
       <div class="space-y-6">
         <section v-for="bucket in buckets" :key="bucket.id" class="space-y-2">
-          <h2 class="flex items-center gap-2 text-sm font-semibold tracking-wide text-zinc-500 uppercase">
+          <h2 class="flex items-center gap-2 text-sm font-semibold tracking-wide text-muted uppercase">
             {{ bucket.label }}
             <AppBadge :tone="bucket.tone">{{ bucket.items.length }}</AppBadge>
           </h2>
 
-          <ul class="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-zinc-200 bg-white">
+          <ul class="divide-y divide-line overflow-hidden rounded-none border border-line bg-surface">
             <li v-for="task in bucket.items" :key="task.id" class="p-3">
               <div class="flex items-start gap-3">
                 <!-- 44px hit area, and it's a real control, not a hover trick -->
                 <button
                   type="button"
-                  class="tap-target flex w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white"
+                  class="tap-target flex w-11 shrink-0 items-center justify-center rounded-[2px] border border-line-2 bg-surface"
                   :disabled="busyId === task.id"
                   :aria-label="`Mark done: ${task.title}`"
                   @click="complete(task)"
                 >
                   <svg
-                    class="size-5 text-zinc-400"
+                    class="size-5 text-muted"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -164,15 +164,15 @@ function accountLabel(task: Task): string {
                 </button>
 
                 <div class="min-w-0 flex-1">
-                  <p class="font-medium break-words text-zinc-900">{{ task.title }}</p>
-                  <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-sm text-zinc-500">
+                  <p class="font-medium break-words text-ink">{{ task.title }}</p>
+                  <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-sm text-muted">
                     <span v-if="task.due_date">
                       {{ dueLabel(task.due_date) }} · {{ shortDate(task.due_date) }}
                     </span>
                     <RouterLink
                       v-if="task.customer_key"
                       :to="{ name: 'account', params: { customerKey: task.customer_key } }"
-                      class="font-medium text-zinc-900 underline underline-offset-2"
+                      class="font-medium text-ink underline underline-offset-2"
                     >
                       {{ accountLabel(task) }}
                     </RouterLink>
@@ -182,7 +182,7 @@ function accountLabel(task: Task): string {
                 <button
                   v-if="confirmingCancelId !== task.id"
                   type="button"
-                  class="tap-target shrink-0 px-2 text-sm font-medium text-zinc-500 underline underline-offset-2"
+                  class="tap-target shrink-0 px-2 text-sm font-medium text-muted underline underline-offset-2"
                   @click="confirmingCancelId = task.id"
                 >
                   Drop
@@ -192,12 +192,12 @@ function accountLabel(task: Task): string {
               <!-- Inline confirm, never a modal -->
               <div
                 v-if="confirmingCancelId === task.id"
-                class="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-zinc-50 p-2"
+                class="mt-2 flex flex-wrap items-center gap-2 rounded-[2px] bg-canvas p-2"
               >
-                <span class="text-sm text-zinc-700">Drop this follow-up?</span>
+                <span class="text-sm text-ink-2">Drop this follow-up?</span>
                 <button
                   type="button"
-                  class="tap-target rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-900"
+                  class="tap-target rounded-[2px] border border-line-2 bg-surface px-3 text-sm font-medium text-ink"
                   :disabled="busyId === task.id"
                   @click="drop(task)"
                 >
@@ -205,7 +205,7 @@ function accountLabel(task: Task): string {
                 </button>
                 <button
                   type="button"
-                  class="tap-target px-3 text-sm font-medium text-zinc-600"
+                  class="tap-target px-3 text-sm font-medium text-ink-2"
                   @click="confirmingCancelId = null"
                 >
                   Keep it

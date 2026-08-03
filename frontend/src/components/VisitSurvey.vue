@@ -158,10 +158,13 @@ function isBrandOn(brand: CompetitorBrand): boolean {
   return (competitionSeen.value ?? []).includes(brand)
 }
 
+/**
+ * Design-system tokens, not raw Tailwind greys: `zinc` is a cool ramp and the
+ * canvas is warm (#f4f2ed), so zinc borders read visibly blue next to every
+ * other card in the app.
+ */
 const segClass = (on: boolean) =>
-  on
-    ? 'border-zinc-900 bg-zinc-900 text-white'
-    : 'border-zinc-300 bg-white text-zinc-700'
+  on ? 'border-ink bg-ink text-canvas' : 'border-line-2 bg-surface text-ink-2'
 
 /* ---- draft plumbing ------------------------------------------------------ */
 
@@ -270,11 +273,11 @@ defineExpose({ pendingActionId: retryActionId })
     <!-- Saved: inline confirmation, never a modal (TECH_STACK §2.4) -->
     <section
       v-if="saved"
-      class="rounded-lg border border-emerald-200 bg-emerald-50 p-4"
+      class="border-line border-l-brand border border-l-[3px] bg-[#E6EBE5] p-4"
       role="status"
     >
-      <h3 class="text-base font-semibold text-emerald-900">Visit saved</h3>
-      <p class="mt-1 text-sm text-emerald-800">
+      <h3 class="text-brand text-base font-semibold">Visit saved</h3>
+      <p class="text-ink-2 mt-1 text-sm">
         {{ visitTypeLabel(current.visit_type) }} ·
         {{ shortDate(current.visit_date) }}. It counts toward coverage.
       </p>
@@ -283,7 +286,7 @@ defineExpose({ pendingActionId: retryActionId })
   <form v-else :id="`${uid}-form`" class="space-y-5" novalidate @submit="onSubmit">
     <!-- Visit type + date: the only two things that are always answered -->
     <fieldset>
-      <legend class="mb-2 text-sm font-medium text-zinc-700">
+      <legend class="mb-2 text-ink-2 text-sm font-medium">
         How did you contact them?
       </legend>
       <div class="flex gap-2">
@@ -291,7 +294,7 @@ defineExpose({ pendingActionId: retryActionId })
           v-for="o in VISIT_TYPE_OPTIONS"
           :key="o.value"
           type="button"
-          class="tap-target flex-1 rounded-lg border px-2 text-sm font-medium"
+          class="tap-target flex-1 rounded-[2px] border px-2 text-sm font-medium"
           :class="segClass(visitType === o.value)"
           :aria-pressed="visitType === o.value"
           @click="pickVisitType(o.value)"
@@ -299,7 +302,7 @@ defineExpose({ pendingActionId: retryActionId })
           {{ o.label }}
         </button>
       </div>
-      <p v-if="visitTypeError" class="mt-1 text-sm text-red-700">
+      <p v-if="visitTypeError" class="text-danger mt-1 text-sm">
         {{ visitTypeError }}
       </p>
     </fieldset>
@@ -307,7 +310,7 @@ defineExpose({ pendingActionId: retryActionId })
     <div>
       <label
         :for="`${uid}-date`"
-        class="mb-1 block text-sm font-medium text-zinc-700"
+        class="mb-1 block text-ink-2 text-sm font-medium"
       >
         Date
       </label>
@@ -315,17 +318,17 @@ defineExpose({ pendingActionId: retryActionId })
         :id="`${uid}-date`"
         v-model="visitDate"
         type="date"
-        class="tap-target w-full rounded-lg border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900"
+        class="field"
         :aria-invalid="!!visitDateError || undefined"
       />
-      <p v-if="visitDateError" class="mt-1 text-sm text-red-700">
+      <p v-if="visitDateError" class="text-danger mt-1 text-sm">
         {{ visitDateError }}
       </p>
     </div>
 
     <!-- Inventory: the single most useful answer on the form -->
     <fieldset>
-      <legend class="mb-2 text-sm font-medium text-zinc-700">
+      <legend class="mb-2 text-ink-2 text-sm font-medium">
         How much of our product is on the shelf?
       </legend>
       <div class="grid grid-cols-4 gap-2">
@@ -333,7 +336,7 @@ defineExpose({ pendingActionId: retryActionId })
           v-for="o in INVENTORY_LEVEL_OPTIONS"
           :key="o.value"
           type="button"
-          class="tap-target rounded-lg border px-1 text-sm font-medium"
+          class="tap-target rounded-[2px] border px-1 text-sm font-medium"
           :class="segClass(inventoryLevel === o.value)"
           :aria-pressed="inventoryLevel === o.value"
           @click="pickInventory(o.value)"
@@ -345,16 +348,16 @@ defineExpose({ pendingActionId: retryActionId })
 
     <!-- 1–5 scales: five big buttons each, never a select or a slider -->
     <fieldset v-for="f in ratingFields" :key="f.key">
-      <legend class="mb-1 flex w-full items-baseline gap-2 text-sm font-medium text-zinc-700">
+      <legend class="mb-1 flex w-full items-baseline gap-2 text-ink-2 text-sm font-medium">
         <span>{{ f.label }}</span>
-        <span class="text-xs font-normal text-zinc-500">{{ f.hint }}</span>
+        <span class="text-muted text-xs font-normal">{{ f.hint }}</span>
       </legend>
       <div class="flex gap-2">
         <button
           v-for="n in RATING_VALUES"
           :key="n"
           type="button"
-          class="tap-target flex-1 rounded-lg border text-base font-semibold"
+          class="tap-target flex-1 rounded-[2px] border text-base font-semibold"
           :class="segClass(f.model.value === n)"
           :aria-pressed="f.model.value === n"
           :aria-label="`${f.label}: ${n} out of 5`"
@@ -366,7 +369,7 @@ defineExpose({ pendingActionId: retryActionId })
     </fieldset>
 
     <fieldset>
-      <legend class="mb-2 text-sm font-medium text-zinc-700">
+      <legend class="mb-2 text-ink-2 text-sm font-medium">
         Store traffic while you were there
       </legend>
       <div class="flex gap-2">
@@ -374,7 +377,7 @@ defineExpose({ pendingActionId: retryActionId })
           v-for="o in STORE_TRAFFIC_OPTIONS"
           :key="o.value"
           type="button"
-          class="tap-target flex-1 rounded-lg border px-2 text-sm font-medium"
+          class="tap-target flex-1 rounded-[2px] border px-2 text-sm font-medium"
           :class="segClass(storeTraffic === o.value)"
           :aria-pressed="storeTraffic === o.value"
           @click="pickTraffic(o.value)"
@@ -385,7 +388,7 @@ defineExpose({ pendingActionId: retryActionId })
     </fieldset>
 
     <fieldset>
-      <legend class="mb-2 text-sm font-medium text-zinc-700">
+      <legend class="mb-2 text-ink-2 text-sm font-medium">
         Competitor promotions
       </legend>
       <div class="flex gap-2">
@@ -393,7 +396,7 @@ defineExpose({ pendingActionId: retryActionId })
           v-for="o in COMPETITOR_PROMO_OPTIONS"
           :key="o.value"
           type="button"
-          class="tap-target flex-1 rounded-lg border px-2 text-sm font-medium"
+          class="tap-target flex-1 rounded-[2px] border px-2 text-sm font-medium"
           :class="segClass(competitorPromos === o.value)"
           :aria-pressed="competitorPromos === o.value"
           @click="pickPromos(o.value)"
@@ -404,16 +407,16 @@ defineExpose({ pendingActionId: retryActionId })
     </fieldset>
 
     <fieldset>
-      <legend class="mb-2 text-sm font-medium text-zinc-700">
+      <legend class="mb-2 text-ink-2 text-sm font-medium">
         Competition on the rack
-        <span class="font-normal text-zinc-500">(tap all you saw)</span>
+        <span class="text-muted font-normal">(tap all you saw)</span>
       </legend>
       <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <button
           v-for="brand in COMPETITOR_BRANDS"
           :key="brand"
           type="button"
-          class="tap-target rounded-lg border px-2 text-sm font-medium"
+          class="tap-target rounded-[2px] border px-2 text-sm font-medium"
           :class="segClass(isBrandOn(brand))"
           :aria-pressed="isBrandOn(brand)"
           @click="toggleBrand(brand)"
@@ -426,10 +429,10 @@ defineExpose({ pendingActionId: retryActionId })
     <div>
       <label
         :for="`${uid}-comments`"
-        class="mb-1 block text-sm font-medium text-zinc-700"
+        class="mb-1 block text-ink-2 text-sm font-medium"
       >
         Anything else?
-        <span class="font-normal text-zinc-500">(optional)</span>
+        <span class="text-muted font-normal">(optional)</span>
       </label>
       <textarea
         :id="`${uid}-comments`"
@@ -437,10 +440,10 @@ defineExpose({ pendingActionId: retryActionId })
         rows="3"
         enterkeyhint="done"
         placeholder="What did the buyer say?"
-        class="w-full rounded-lg border border-zinc-300 bg-white p-3 text-base outline-none focus:border-zinc-900"
+        class="field py-3"
         :aria-invalid="!!commentsError || undefined"
       />
-      <p v-if="commentsError" class="mt-1 text-sm text-red-700">
+      <p v-if="commentsError" class="text-danger mt-1 text-sm">
         {{ commentsError }}
       </p>
     </div>
@@ -455,7 +458,7 @@ defineExpose({ pendingActionId: retryActionId })
     -->
     <slot name="photos" :customer-key="customerKey" :visit-id="savedVisitId" />
 
-    <p v-if="serverError && !saved" role="alert" class="text-sm text-red-700">
+    <p v-if="serverError && !saved" role="alert" class="text-danger text-sm">
       {{ serverError }}
     </p>
 

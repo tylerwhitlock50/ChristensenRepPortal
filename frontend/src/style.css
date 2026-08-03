@@ -68,9 +68,18 @@
   }
 }
 
-/* Every tappable row/button: 48px floor. */
+/* Every tappable row/button: 48px floor.
+ *
+ * min-height is a plain declaration, not `@apply min-h-12`: when this utility
+ * is itself @applied into another (`btn`, `field` below), the nested
+ * `min-h-12` is dropped and only touch-action/user-select survive. That
+ * silently cost every .field control its 48px floor — native selects rendered
+ * at 24px — while standalone `tap-target` users looked fine, so it never
+ * showed up in review. Keep the declaration literal here and in both
+ * consumers. */
 @utility tap-target {
-  @apply min-h-12 touch-manipulation select-none;
+  min-height: 3rem; /* 48px */
+  @apply touch-manipulation select-none;
 }
 
 /* Screen titles and big numbers: condensed caps, tight leading. */
@@ -84,6 +93,7 @@
 }
 
 @utility btn {
+  min-height: 3rem; /* 48px — literal, see tap-target */
   @apply tap-target font-label inline-flex items-center justify-center rounded-[2px] px-5 font-semibold tracking-[0.12em] uppercase;
 }
 @utility btn-primary {
@@ -97,5 +107,22 @@
 }
 
 @utility field {
+  min-height: 3rem; /* 48px — literal, see tap-target */
   @apply tap-target bg-surface border-line-2 focus:border-brand focus:ring-3 focus:ring-brand/15 w-full rounded-[2px] border px-3.5 text-base outline-none;
+}
+
+/* iOS Safari renders a menulist <select> at its own intrinsic height and
+   ignores min-height outright, so every .field select was a 24px tap target on
+   a phone while the inputs beside it were 48px. appearance:none opts out of the
+   native control (and takes the native chevron with it, hence the background
+   arrow) so the height below is actually honoured. */
+select.field {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3rem;
+  padding-right: 2.25rem;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236e6a61' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1.15rem;
 }

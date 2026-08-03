@@ -326,7 +326,7 @@ const stream = computed(() => {
             v-for="w in WINDOWS"
             :key="w"
             type="button"
-            class="font-label min-h-9 rounded-[2px] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase"
+            class="tap-target font-label min-w-12 rounded-[2px] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase"
             :class="window === w ? 'bg-ink text-canvas' : 'text-muted'"
             :aria-pressed="window === w"
             @click="window = w"

@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# Playwright output. Traces record the sign-in, password included — these must
+# never reach the repo.
+test-results
+playwright-report
+blob-report
+.playwright
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

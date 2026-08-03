@@ -84,17 +84,17 @@ function ratings(visit: Visit): Rating[] {
       empty-body="Log one on your next stop — it takes under a minute."
       @retry="refetch()"
     >
-      <ul class="divide-y divide-zinc-100">
+      <ul class="divide-y divide-line">
         <li
           v-for="visit in visits"
           :key="visit.id"
           class="py-3 first:pt-0 last:pb-0"
         >
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span class="text-sm font-semibold text-zinc-900">
+            <span class="text-sm font-semibold text-ink">
               {{ visitTypeLabel(visit.visit_type) }}
             </span>
-            <span class="text-sm text-zinc-500">
+            <span class="text-sm text-muted">
               {{ shortDate(visit.visit_date) }} · {{ daysAgo(visit.visit_date) }}
             </span>
             <AppBadge
@@ -111,22 +111,22 @@ function ratings(visit: Visit): Rating[] {
               visit.store_traffic ||
               visit.competitor_promos
             "
-            class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-600"
+            class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-2"
           >
             <span v-for="r in ratings(visit)" :key="r.label">
               {{ r.label }}
-              <span class="font-semibold text-zinc-900">{{ r.value }}</span>
-              <span class="text-zinc-400">/5</span>
+              <span class="font-semibold text-ink">{{ r.value }}</span>
+              <span class="text-muted">/5</span>
             </span>
             <span v-if="visit.store_traffic">
               Traffic
-              <span class="font-semibold text-zinc-900">
+              <span class="font-semibold text-ink">
                 {{ storeTrafficLabel(visit.store_traffic) }}
               </span>
             </span>
             <span v-if="visit.competitor_promos">
               Promos
-              <span class="font-semibold text-zinc-900">
+              <span class="font-semibold text-ink">
                 {{ competitorPromoLabel(visit.competitor_promos) }}
               </span>
             </span>
@@ -134,12 +134,12 @@ function ratings(visit: Visit): Rating[] {
 
           <p
             v-if="visit.competition_seen.length"
-            class="mt-1 text-xs text-zinc-600"
+            class="mt-1 text-xs text-ink-2"
           >
             Saw: {{ visit.competition_seen.join(', ') }}
           </p>
 
-          <p v-if="visit.comments" class="mt-1 text-sm text-zinc-700">
+          <p v-if="visit.comments" class="mt-1 text-sm text-ink-2">
             {{ visit.comments }}
           </p>
         </li>

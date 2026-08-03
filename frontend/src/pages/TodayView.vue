@@ -57,6 +57,17 @@ function scrollToList() {
 // an address has no spaces, so strip the domain before taking the first word.
 const firstName = computed(() => session.displayName.split('@')[0].split(' ')[0])
 
+/**
+ * Reps do their entry at the end of a route as often as the start of one, and
+ * a fixed "Morning" at 6pm reads like the page is stale.
+ */
+const greeting = computed(() => {
+  const h = new Date().getHours()
+  if (h < 12) return 'Morning'
+  if (h < 17) return 'Afternoon'
+  return 'Evening'
+})
+
 /* ---- my follow-ups ------------------------------------------------------
    The rep's own reminders, under the recommendations sales ops sent them.
    Deliberately a to-do list and nothing else — no counts-by-bucket, no
@@ -108,7 +119,9 @@ function taskAccount(task: Task): string {
       <p class="font-label text-muted text-xs font-semibold tracking-[0.16em] uppercase">
         {{ format(new Date(), 'EEEE, MMMM d') }}
       </p>
-      <h1 class="u-display mt-1 text-[34px] wrap-anywhere">Morning, {{ firstName }}</h1>
+      <h1 class="u-display mt-1 text-[34px] wrap-anywhere">
+        {{ greeting }}, {{ firstName }}
+      </h1>
     </header>
 
     <MissionBanner

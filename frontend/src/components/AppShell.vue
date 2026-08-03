@@ -74,7 +74,13 @@ async function signOut() {
         :class="wide ? 'max-w-7xl' : 'max-w-5xl'"
       >
         <div class="flex items-center gap-6">
-          <RouterLink :to="{ name: 'today' }" class="flex items-center gap-2.5">
+          <!-- tap-target, not just the text box: as a bare flex row the wordmark
+               was a 26px-tall tap target. h-full doesn't help here — the parent
+               is itself a content-height flex item, so 100% of it is still 26px. -->
+          <RouterLink
+            :to="{ name: 'today' }"
+            class="tap-target flex items-center gap-2.5"
+          >
             <span class="bg-accent block h-4 w-[3px]" aria-hidden="true" />
             <span
               class="font-display text-canvas text-[17px] font-bold tracking-[0.18em] uppercase"
