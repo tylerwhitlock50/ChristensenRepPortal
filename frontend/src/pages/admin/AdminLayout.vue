@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * The admin section shell: one nav entry ("Admin") fans out here into four
+ * The admin section shell: one nav entry ("Admin") fans out here into five
  * tabs. A tab bar instead of more top-nav items because the phone bottom bar
  * is already full at four entries.
  */
@@ -9,6 +9,7 @@ const tabs = [
   { to: { name: 'admin-users' }, label: 'Users' },
   { to: { name: 'admin-missions' }, label: 'Missions' },
   { to: { name: 'admin-activity' }, label: 'Activity' },
+  { to: { name: 'admin-settings' }, label: 'Settings' },
 ] as const
 </script>
 

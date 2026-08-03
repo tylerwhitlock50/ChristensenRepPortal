@@ -70,8 +70,33 @@ update public.profiles p set sales_rep_key = (select val from t_fix where name='
 update public.profiles p set rep_group_vendor_id = (select val from t_fix where name='vendor_id')
   where p.user_id = (select id from t_user where label='principal');
 -- 'nullkey' keeps both keys null: the §3.4 fail-open case.
+
+-- The 016 guard (trg_profiles_placeholder_guard) refuses to stamp WEB on a
+-- profile, which is the point of it. But T2 still has to prove that a row
+-- ALREADY carrying a placeholder key derives nothing — rows like that predate
+-- the guard and are exactly the case §3.4 is about. So assert the guard fires,
+-- then build the legacy fixture the only way it can still exist: with the
+-- trigger off. Asserting first means switching it off here can never quietly
+-- mean the guard has gone missing.
+do $$
+begin
+  begin
+    update public.profiles p set sales_rep_key = (select val from t_fix where name='placeholder')
+      where p.user_id = (select id from t_user where label='placeholder');
+    raise exception 'T0 FAILED: the 016 placeholder guard let a WEB key onto a profile';
+  exception when sqlstate 'P0001' then
+    if sqlerrm <> 'placeholder_rep_key' then
+      raise;   -- our own T0 failure, or something else entirely
+    end if;
+    raise notice 'T0 ok (guard rejected a placeholder rep key)';
+  end;
+end;
+$$;
+
+alter table public.profiles disable trigger trg_profiles_placeholder_guard;
 update public.profiles p set sales_rep_key = (select val from t_fix where name='placeholder')
   where p.user_id = (select id from t_user where label='placeholder');
+alter table public.profiles enable trigger trg_profiles_placeholder_guard;
 update public.profiles p
   set sales_rep_key = (select val from t_fix where name='rep_key'), active = false
   where p.user_id = (select id from t_user where label='inactive');

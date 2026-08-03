@@ -1,11 +1,12 @@
 # supabase/functions
 
-Three Supabase Edge Functions (Deno + TypeScript). Exactly three, because
+Four Supabase Edge Functions (Deno + TypeScript). Exactly four, because
 TECH_STACK §3.2 admits only code that holds a secret or needs `service_role`:
 
 | Function | Why it can't be client-side |
 |---|---|
 | `ai-account-summary` | Holds `OPENAI_API_KEY` |
+| `ai-summary-batch` | Holds `OPENAI_API_KEY`; pre-generates briefings overnight |
 | `admin-create-user` | Needs `service_role` to create auth users and set passwords (PRD: no self-signup) |
 | `admin-update-user` | Needs `service_role` to set passwords and ban/unban sign-in on deactivate |
 
@@ -18,15 +19,25 @@ instead?" (usually yes).
 functions/
 ├── _shared/
 │   ├── cors.ts              CORS headers, preflight, json()/fail()
-│   └── supabase.ts          userClient() vs serviceClient(), HttpError
+│   ├── supabase.ts          userClient() vs serviceClient(), HttpError
+│   ├── accountContext.ts    the context payload + hashing, shared by both AI paths
+│   └── aiSummary.ts         the model call, cost gates, generate-or-cache decision
 ├── ai-account-summary/
 │   ├── index.ts             the flow in TECH_STACK §5.1, in order
 │   └── prompt.ts            THE prompt — its own versioned module (see below)
+├── ai-summary-batch/
+│   └── index.ts             nightly pre-generation; the ONE service_role exception
 ├── admin-create-user/
 │   └── index.ts
 └── admin-update-user/
     └── index.ts
 ```
+
+`accountContext.ts` and `aiSummary.ts` exist so the interactive and batch paths
+cannot drift. Both derive the context hash the cache is keyed on; if they built
+the context differently, the same unchanged account would look changed to one
+and cached to the other, and the two would take turns paying to overwrite each
+other's summary.
 
 ## Secrets
 
@@ -34,7 +45,8 @@ Set these once per project (`dev` and `prod` are separate projects — §8):
 
 | Secret | Used by | Notes |
 |---|---|---|
-| `OPENAI_API_KEY` | `ai-account-summary` | Edge Function secrets **only**. Never in Vercel, never in the frontend bundle. |
+| `OPENAI_API_KEY` | `ai-account-summary`, `ai-summary-batch` | Edge Function secrets **only**. Never in Vercel, never in the frontend bundle. |
+| `AI_BATCH_SECRET` | `ai-summary-batch` | The **only** thing standing between the batch and the internet — it authenticates nothing else. Generate with `openssl rand -hex 32` and give the same value to the ETL environment. |
 | `SUPABASE_SERVICE_ROLE_KEY` | `admin-create-user`, `admin-update-user` | Auto-injected by the platform on deploy; set explicitly only for `supabase functions serve`. |
 | `SUPABASE_URL` | both | Auto-injected. |
 | `SUPABASE_ANON_KEY` | both | Auto-injected. Used to build the caller-scoped client that then carries the user's `Authorization` header. |
@@ -61,6 +73,7 @@ supabase secrets list
 supabase link --project-ref <project-ref>
 
 supabase functions deploy ai-account-summary --no-verify-jwt
+supabase functions deploy ai-summary-batch   --no-verify-jwt
 supabase functions deploy admin-create-user  --no-verify-jwt
 supabase functions deploy admin-update-user  --no-verify-jwt
 ```
@@ -77,6 +90,38 @@ verify the caller themselves and do strictly more than the gateway would:
 An unauthenticated request reaches the function and gets a `401` from our own
 code. If you prefer the gateway check, drop the flag and handle the preflight
 at the CDN instead — but do not remove the in-function checks either way.
+
+`ai-summary-batch` is the exception to the pattern above: it has no caller and
+no JWT. It authenticates a constant-time match on `x-batch-secret`, and it is
+the only function that constructs `serviceClient()` without first resolving a
+user. Its file header argues why that is narrow rather than a hole — read it
+before changing anything there. The short version: a nightly job answers no
+browser, returns only counts, cannot be pointed at an account (the request
+body carries no `customer_key`), and writes rows whose read path is still
+RLS-scoped.
+
+## ai-summary-batch
+
+**Request** `POST` with `x-batch-secret`, body `{ "per_rep": 5 }` (optional,
+also `max_accounts`). **Response** `200` with a tally:
+`{ targets, attempted, generated, cached, skipped, insufficient, failed }`.
+
+Targets come from `public.ai_batch_targets(p_per_rep)` — each active rep's
+highest-scoring accounts that have open work, minus anything resolved inside
+the rule cooldown, deduped so an account that is top-N for both a rep and their
+group principal is generated once. Rows are written with `generated_by = null`
+so an overnight run never consumes a rep's `AI_SUMMARY_DAILY_LIMIT`.
+
+Wired into the ETL's `post_load_http` (`etl/views.yml`), so it runs on fresh
+data right after `generate_recommendations()`. Best-effort by design: a failed
+batch logs and moves on rather than failing a good data load.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AI_BATCH_PER_REP` | `5` | Accounts per rep per run. |
+| `AI_BATCH_MAX_ACCOUNTS` | `100` | Hard ceiling per run. Overruns are logged, never silent. |
+| `AI_BATCH_CONCURRENCY` | `3` | Parallel model calls. Raising this is how a nightly job earns a rate limit. |
+| `AI_BATCH_MIN_AGE_HOURS` | `20` | Skip accounts summarised more recently than this. |
 
 The prompt is a **module** (`prompt.ts`), imported by `index.ts`. It used to be
 `prompt.md` read at runtime with `Deno.readTextFile()`, and that does not

@@ -16,9 +16,17 @@ export type Task = Tables<'tasks'>
 export const taskKeys = {
   root: () => ['tasks'] as const,
   mine: (userId: string) => ['tasks', 'mine', userId] as const,
+  due: (userId: string) => ['tasks', 'due', userId] as const,
+  closed: (userId: string) => ['tasks', 'closed', userId] as const,
   forAccount: (userId: string, customerKey: string) =>
     ['tasks', 'account', userId, customerKey] as const,
 } as const
+
+/** 'YYYY-MM-DD' in the rep's own timezone — due_date is a bare date, not an instant. */
+function today(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 /** Open first, then soonest due; tasks with no due date sink to the bottom. */
 const OPEN_TASK_ORDER = { ascending: true, nullsFirst: false } as const
@@ -53,6 +61,82 @@ export function useMyTasks() {
   })
 }
 
+/**
+ * How many of my follow-ups are due — the nav badge.
+ *
+ * One round trip returning two ids-and-dates, not two `head: true` counts: the
+ * payload is a few hundred bytes and the second request would cost more on LTE
+ * than the rows it saves.
+ *
+ * No admin gate, unlike the mission badge in AppShell. That one is gated
+ * because `recommendations` is ACCOUNT-scoped, so an admin's unscoped select is
+ * the whole company. `tasks` is USER-scoped — the "own tasks" policy is
+ * `user_id = auth.uid() or is_admin()` and the filter below is always sent — so
+ * an admin's result is their own list exactly like a rep's, and gating it off
+ * would hide their own overdue follow-ups.
+ *
+ * `enabled` is what makes that true. Without a user id the filter is empty, and
+ * for an admin an empty filter IS the company-wide select.
+ */
+export function useMyDueTasks() {
+  const session = useSessionStore()
+  const userId = computed(() => session.user?.id ?? '')
+
+  return useQuery({
+    queryKey: computed(() => taskKeys.due(userId.value)),
+    enabled: computed(() => !!userId.value),
+    staleTime: 60_000,
+    queryFn: async (): Promise<{ due: number; overdue: number }> => {
+      const now = today()
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('id, due_date')
+        .eq('user_id', userId.value)
+        .eq('status', 'open')
+        .lte('due_date', now)
+        .limit(200)
+      if (error) throw error
+      const rows = data ?? []
+      return {
+        due: rows.length,
+        overdue: rows.filter((r) => (r.due_date ?? '') < now).length,
+      }
+    },
+  })
+}
+
+/**
+ * Finished and dropped follow-ups. Until this existed, checking a box made a
+ * task permanently unreachable — `completed_at` was written and never read.
+ *
+ * The ordering is the whole subtlety. `useCancelTask` deliberately leaves
+ * `completed_at` NULL ("dropped, not done"), so every cancelled row has a null
+ * sort key; without the `created_at` fallback they land in arbitrary order.
+ * For the same reason the UI must label those rows from `created_at` — a
+ * cancelled task has no completion date to show.
+ */
+export function useClosedTasks(enabled: MaybeRef<boolean> = true) {
+  const session = useSessionStore()
+  const userId = computed(() => session.user?.id ?? '')
+
+  return useQuery({
+    queryKey: computed(() => taskKeys.closed(userId.value)),
+    enabled: computed(() => !!userId.value && unref(enabled)),
+    queryFn: async (): Promise<Task[]> => {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('user_id', userId.value)
+        .in('status', ['done', 'cancelled'])
+        .order('completed_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) throw error
+      return data ?? []
+    },
+  })
+}
+
 /** My open follow-ups for one account — the strip on the account page. */
 export function useAccountTasks(customerKey: MaybeRef<string>) {
   const session = useSessionStore()
@@ -79,8 +163,10 @@ export function useAccountTasks(customerKey: MaybeRef<string>) {
 
 function useInvalidateTasks() {
   const qc = useQueryClient()
-  // One call covers ['tasks','mine',…] and ['tasks','account',…]; the lists are
-  // small and a rep can have a task page and an account page mounted at once.
+  // One call covers mine / due / closed / account — every key is built under
+  // the ['tasks'] root precisely so this stays one line. Keep it that way: the
+  // nav badge and the Done list both depend on completing a task from Today
+  // refreshing them without anyone wiring it up.
   return () => void qc.invalidateQueries({ queryKey: taskKeys.root() })
 }
 

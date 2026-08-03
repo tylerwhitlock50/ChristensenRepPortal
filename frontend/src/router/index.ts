@@ -78,6 +78,12 @@ const router = createRouter({
           component: () => import('@/pages/admin/AdminActivityView.vue'),
           meta: { title: 'Activity' },
         },
+        {
+          path: 'settings',
+          name: 'admin-settings',
+          component: () => import('@/pages/admin/AdminSettingsView.vue'),
+          meta: { title: 'Settings' },
+        },
       ],
     },
     {
