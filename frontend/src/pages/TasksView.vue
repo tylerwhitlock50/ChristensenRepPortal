@@ -7,6 +7,7 @@ import TaskQuickAdd from '@/components/TaskQuickAdd.vue'
 import { useAccountNames } from '@/composables/useAccounts'
 import {
   useCancelTask,
+  useClosedTasks,
   useMyTasks,
   useToggleTask,
   type Task,
@@ -16,8 +17,25 @@ import { daysUntilDue, dueLabel, shortDate } from '@/lib/format'
 const { data, isPending, error, refetch } = useMyTasks()
 const tasks = computed(() => data.value ?? [])
 
+/* ---- open vs finished ---------------------------------------------------
+   Two segments, not a tabs component. The repo has no tabs primitive and two
+   mutually exclusive filters do not justify inventing one — this is the same
+   `aria-pressed` pill row already used in AccountView, VisitSurvey and the
+   mission composer.
+
+   The closed query is gated on the segment, so the default view still costs
+   exactly one round trip.
+------------------------------------------------------------------------- */
+type Segment = 'open' | 'closed'
+const segment = ref<Segment>('open')
+
+const closed = useClosedTasks(computed(() => segment.value === 'closed'))
+const closedTasks = computed(() => closed.data.value ?? [])
+
 const accountKeys = computed(() =>
-  tasks.value.map((t) => t.customer_key).filter((k): k is string => !!k),
+  [...tasks.value, ...closedTasks.value]
+    .map((t) => t.customer_key)
+    .filter((k): k is string => !!k),
 )
 const { data: names } = useAccountNames(accountKeys)
 
@@ -79,6 +97,23 @@ async function complete(task: Task) {
   }
 }
 
+/** Back to the open list. `useToggleTask` has supported this since it was
+    written; nothing had ever called it, because nothing could reach a
+    finished task. */
+async function reopen(task: Task) {
+  if (busyId.value) return
+  busyId.value = task.id
+  actionError.value = ''
+  try {
+    await toggle.mutateAsync({ id: task.id, done: false })
+    lastDone.value = ''
+  } catch (e) {
+    actionError.value = (e as Error).message || 'Could not update that.'
+  } finally {
+    busyId.value = null
+  }
+}
+
 async function drop(task: Task) {
   if (busyId.value) return
   busyId.value = task.id
@@ -97,6 +132,18 @@ function accountLabel(task: Task): string {
   if (!task.customer_key) return ''
   return names.value?.[task.customer_key] || task.customer_key
 }
+
+/**
+ * A dropped task has no completion date — `useCancelTask` leaves
+ * `completed_at` null on purpose, because the execution reporting counts on
+ * "dropped" and "done" being different things. Date it by when it was made
+ * instead of rendering "Completed —".
+ */
+function closedLabel(task: Task): string {
+  return task.status === 'cancelled'
+    ? `Dropped · added ${shortDate(task.created_at)}`
+    : `Completed ${shortDate(task.completed_at)}`
+}
 </script>
 
 <template>
@@ -110,11 +157,30 @@ function accountLabel(task: Task): string {
       </p>
     </header>
 
-    <AppCard>
+    <div class="flex flex-wrap gap-2">
+      <button
+        v-for="s in (['open', 'closed'] as Segment[])"
+        :key="s"
+        type="button"
+        class="inline-flex min-h-11 items-center rounded-[2px] px-4 text-[15px] font-semibold"
+        :class="
+          segment === s ? 'bg-ink text-canvas' : 'border-line-2 text-ink-2 border bg-transparent'
+        "
+        :aria-pressed="segment === s"
+        @click="segment = s"
+      >
+        {{ s === 'open' ? 'Open' : 'Finished' }}
+        <span v-if="s === 'open' && tasks.length" class="ml-2 font-normal opacity-70">
+          {{ tasks.length }}
+        </span>
+      </button>
+    </div>
+
+    <AppCard v-if="segment === 'open'">
       <TaskQuickAdd placeholder="What do you need to remember?" />
     </AppCard>
 
-    <p v-if="overdueCount > 0" class="text-sm font-medium text-danger">
+    <p v-if="segment === 'open' && overdueCount > 0" class="text-sm font-medium text-danger">
       {{ overdueCount }} past due
     </p>
 
@@ -126,6 +192,7 @@ function accountLabel(task: Task): string {
     </p>
 
     <AsyncState
+      v-if="segment === 'open'"
       :loading="isPending"
       :error="error"
       :empty="tasks.length === 0"
@@ -215,6 +282,50 @@ function accountLabel(task: Task): string {
           </ul>
         </section>
       </div>
+    </AsyncState>
+
+    <!-- Finished: the last 50, done and dropped together. -->
+    <AsyncState
+      v-else
+      :loading="closed.isPending.value"
+      :error="closed.error.value"
+      :empty="closedTasks.length === 0"
+      empty-title="Nothing finished yet"
+      empty-body="Follow-ups you complete or drop land here."
+      @retry="closed.refetch()"
+    >
+      <ul class="divide-y divide-line overflow-hidden border border-line bg-surface">
+        <li v-for="task in closedTasks" :key="task.id" class="flex items-start gap-3 p-3">
+          <div class="min-w-0 flex-1">
+            <p
+              class="font-medium break-words"
+              :class="task.status === 'cancelled' ? 'text-muted line-through' : 'text-ink'"
+            >
+              {{ task.title }}
+            </p>
+            <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-sm text-muted">
+              <span>{{ closedLabel(task) }}</span>
+              <RouterLink
+                v-if="task.customer_key"
+                :to="{ name: 'account', params: { customerKey: task.customer_key } }"
+                class="font-medium text-ink underline underline-offset-2"
+              >
+                {{ accountLabel(task) }}
+              </RouterLink>
+            </p>
+          </div>
+
+          <button
+            type="button"
+            class="tap-target shrink-0 px-2 text-sm font-medium text-muted underline underline-offset-2"
+            :disabled="busyId === task.id"
+            :aria-label="`Reopen: ${task.title}`"
+            @click="reopen(task)"
+          >
+            Reopen
+          </button>
+        </li>
+      </ul>
     </AsyncState>
   </div>
 </template>

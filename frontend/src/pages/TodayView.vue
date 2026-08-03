@@ -1,57 +1,109 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { format } from 'date-fns'
 import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useAccountNames } from '@/composables/useAccounts'
-import { useMyTasks, useToggleTask, type Task } from '@/composables/useTasks'
+import { useMyDueTasks, useMyTasks } from '@/composables/useTasks'
 import MissionBanner from '@/components/MissionBanner.vue'
 import NextActionCard from '@/components/NextActionCard.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
-import TaskQuickAdd from '@/components/TaskQuickAdd.vue'
-import AppCard from '@/components/ui/AppCard.vue'
+import FollowUpsCard from '@/components/FollowUpsCard.vue'
+import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import { daysUntilDue, dueLabel } from '@/lib/format'
+import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
 const { data, isPending, error, refetch } = useNeedsAttention()
 
 const items = computed(() => data.value ?? [])
 
-// One next action up top, then the ranked list.
+function isLate(dueDate: string | null): boolean {
+  const d = daysUntilDue(dueDate)
+  return d != null && d < 0
+}
+
+const overdue = computed(() => items.value.filter((r) => isLate(r.due_date)).length)
+
+/* ---- the queue --------------------------------------------------------
+   The screen used to render every open recommendation. At 95 of them the
+   mission banner scrolled away, the follow-ups below were unreachable, and
+   the ranked list stopped being a list and became a wall.
+
+   So: one "do this first", then a short window onto the rest. Nothing is
+   hidden — the count is always on screen and the window opens — but the
+   default is a page a rep can act on rather than read.
+
+   Replenishment needs no code. Closing an item invalidates the query, the
+   item leaves the array, and the next one moves under the cap on its own.
+------------------------------------------------------------------------- */
+const QUEUE_SIZE = 4
+const QUEUE_STEP = 10
+const MISSION_PREVIEW = 3
+
 const first = computed(() => items.value[0])
 const rest = computed(() => items.value.slice(1))
 
-const overdue = computed(
-  () =>
-    items.value.filter((r) => {
-      const d = daysUntilDue(r.due_date)
-      return d != null && d < 0
-    }).length,
-)
-const awaitingOutcome = computed(
-  () => items.value.filter((r) => r.status === 'acted').length,
+/* Missions get their own section above the queue. They are admin-directed
+   work — "directive, not optional" — and must never be paginated below a
+   stack of algorithmic suggestions. */
+const missions = computed(() => rest.value.filter((r) => isMission(r)))
+const queue = computed(() => rest.value.filter((r) => !isMission(r)))
+
+const missionsOverdue = computed(() => missions.value.filter((r) => isLate(r.due_date)).length)
+/** The banner counts every open mission, including one sitting in the do-first slot. */
+const missionsOpen = computed(() => items.value.filter((r) => isMission(r)).length)
+
+const visibleCount = ref(QUEUE_SIZE)
+const showAllMissions = ref(false)
+
+const visibleQueue = computed(() => queue.value.slice(0, visibleCount.value))
+const hiddenCount = computed(() => Math.max(0, queue.value.length - visibleCount.value))
+const visibleMissions = computed(() =>
+  showAllMissions.value ? missions.value : missions.value.slice(0, MISSION_PREVIEW),
 )
 
-/* ---- missions -----------------------------------------------------------
-   Admin-directed work gets a banner above everything else — a rep signing
-   in must see it before the rest of the list. The cards themselves are in
-   the ranked feed below, so "See them" scrolls to the list.
-------------------------------------------------------------------------- */
-const missions = computed(() => items.value.filter((r) => isMission(r)))
-const missionsOverdue = computed(
-  () =>
-    missions.value.filter((r) => {
-      const d = daysUntilDue(r.due_date)
-      return d != null && d < 0
-    }).length,
+/* A refetch that ADDS work (the nightly job ran, or another device closed
+   nothing) resets the window — otherwise a rep who expanded once yesterday
+   comes back to a wall again. Shrinking is left alone: closing four items in
+   a row should not keep collapsing the list under the rep's thumb. */
+watch(
+  () => queue.value.length,
+  (now, before) => {
+    if (now > before) visibleCount.value = QUEUE_SIZE
+  },
 )
 
 const listEl = ref<HTMLElement | null>(null)
-function scrollToList() {
-  listEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+const missionsEl = ref<HTMLElement | null>(null)
+
+/** The banner points at the missions section, and opens it far enough to
+    actually contain them — scrolling to a truncated list is a dead end. */
+function showMissions() {
+  showAllMissions.value = true
+  const target = missionsEl.value ?? listEl.value
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
+
+/* ---- follow-ups ---------------------------------------------------------
+   The card owns its own query and mutation. This page reads the same query
+   for the tile and the name lookup — vue-query dedupes on the key, so that
+   is one request, not two.
+------------------------------------------------------------------------- */
+const myTasks = useMyTasks()
+const tasks = computed(() => myTasks.data.value ?? [])
+const dueTasks = useMyDueTasks()
+const followUpsDue = computed(() => dueTasks.data.value?.due ?? 0)
+const followUpsOverdue = computed(() => dueTasks.data.value?.overdue ?? 0)
+
+/** One name lookup for both lists — recommendations and account-linked tasks. */
+const { data: names } = useAccountNames(
+  computed(() => [
+    ...items.value.map((r) => r.customer_key),
+    ...tasks.value.map((t) => t.customer_key).filter((k): k is string => !!k),
+  ]),
+)
 
 // displayName falls back to the email when the profile has no full_name;
 // an address has no spaces, so strip the domain before taking the first word.
@@ -67,50 +119,6 @@ const greeting = computed(() => {
   if (h < 17) return 'Afternoon'
   return 'Evening'
 })
-
-/* ---- my follow-ups ------------------------------------------------------
-   The rep's own reminders, under the recommendations sales ops sent them.
-   Deliberately a to-do list and nothing else — no counts-by-bucket, no
-   charts (PRD: "Zero analytics beyond that"). The full page is /tasks.
-------------------------------------------------------------------------- */
-const TASK_PREVIEW = 5
-
-const myTasks = useMyTasks()
-const tasks = computed<Task[]>(() => myTasks.data.value ?? [])
-const visibleTasks = computed(() => tasks.value.slice(0, TASK_PREVIEW))
-
-/** One name lookup for both lists — recommendations and account-linked tasks. */
-const { data: names } = useAccountNames(
-  computed(() => [
-    ...items.value.map((r) => r.customer_key),
-    ...tasks.value.map((t) => t.customer_key).filter((k): k is string => !!k),
-  ]),
-)
-
-const toggle = useToggleTask()
-const busyTaskId = ref<number | null>(null)
-const taskError = ref('')
-/** Completing a task removes the row; without this the only feedback is a gap. */
-const lastDone = ref('')
-
-async function completeTask(task: Task) {
-  if (busyTaskId.value) return
-  busyTaskId.value = task.id
-  taskError.value = ''
-  try {
-    await toggle.mutateAsync({ id: task.id, done: true })
-    lastDone.value = task.title
-  } catch (e) {
-    taskError.value = (e as Error).message || 'Could not update that.'
-  } finally {
-    busyTaskId.value = null
-  }
-}
-
-function taskAccount(task: Task): string {
-  if (!task.customer_key) return ''
-  return names.value?.[task.customer_key] || task.customer_key
-}
 </script>
 
 <template>
@@ -125,9 +133,9 @@ function taskAccount(task: Task): string {
     </header>
 
     <MissionBanner
-      :open="missions.length"
+      :open="missionsOpen"
       :overdue="missionsOverdue"
-      @show="scrollToList"
+      @show="showMissions"
     />
 
     <div class="bg-line border-line grid grid-cols-3 gap-px border">
@@ -137,7 +145,12 @@ function taskAccount(task: Task): string {
         :value="overdue"
         :tone="overdue > 0 ? 'alert' : 'default'"
       />
-      <StatTile label="No outcome" :value="awaitingOutcome" />
+      <StatTile
+        label="Follow-ups"
+        :value="followUpsDue"
+        sub="due"
+        :tone="followUpsOverdue > 0 ? 'alert' : 'default'"
+      />
     </div>
 
     <AsyncState
@@ -155,115 +168,63 @@ function taskAccount(task: Task): string {
           :account-name="names?.[first.customer_key]"
         />
 
-        <section v-if="rest.length" class="space-y-3">
+        <!-- Sales ops' own work, above the algorithm's. -->
+        <section v-if="missions.length" ref="missionsEl" class="scroll-mt-16 space-y-3">
           <h2 class="font-label text-muted text-xs font-semibold tracking-[0.18em] uppercase">
-            Then these · {{ rest.length }}
+            From sales ops · {{ missions.length }}
           </h2>
           <div class="-space-y-px">
             <RecommendationCard
-              v-for="rec in rest"
+              v-for="rec in visibleMissions"
               :key="rec.id"
               :rec="rec"
               :account-name="names?.[rec.customer_key]"
             />
           </div>
+          <AppButton
+            v-if="missions.length > visibleMissions.length"
+            variant="ghost"
+            block
+            @click="showAllMissions = true"
+          >
+            Show {{ missions.length - visibleMissions.length }} more missions
+          </AppButton>
         </section>
+
+        <section v-if="queue.length" class="space-y-3">
+          <h2 class="font-label text-muted text-xs font-semibold tracking-[0.18em] uppercase">
+            Then these · {{ queue.length }}
+          </h2>
+          <div class="-space-y-px">
+            <RecommendationCard
+              v-for="rec in visibleQueue"
+              :key="rec.id"
+              :rec="rec"
+              :account-name="names?.[rec.customer_key]"
+            />
+          </div>
+
+          <!-- Nothing is hidden: the count is on screen even when collapsed. -->
+          <AppButton
+            v-if="hiddenCount > 0"
+            variant="ghost"
+            block
+            @click="visibleCount += QUEUE_STEP"
+          >
+            {{ hiddenCount }} more waiting — show
+            {{ Math.min(QUEUE_STEP, hiddenCount) }}
+          </AppButton>
+        </section>
+
+        <!-- Closing an item silently removes a card; say what's left. -->
+        <p class="sr-only" role="status" aria-live="polite">
+          {{ items.length }} still need attention
+        </p>
       </div>
     </AsyncState>
 
-    <!-- My own follow-ups. Separate from the list above on purpose: those come
-         from sales ops, these are the rep's. -->
-    <section class="space-y-3">
-      <h2 class="font-label text-muted text-xs font-semibold tracking-[0.18em] uppercase">
-        My follow-ups<template v-if="tasks.length"> · {{ tasks.length }}</template>
-      </h2>
-
-      <AppCard :padded="false">
-        <div class="border-line border-b p-4">
-          <TaskQuickAdd placeholder="Remind me to…" />
-        </div>
-
-        <p v-if="taskError" role="alert" class="text-danger px-4 pt-3 text-sm font-medium">
-          {{ taskError }}
-        </p>
-        <p class="sr-only" role="status" aria-live="polite">
-          <template v-if="lastDone">Done: {{ lastDone }}</template>
-        </p>
-
-        <div class="p-4">
-          <AsyncState
-            :loading="myTasks.isPending.value"
-            :error="myTasks.error.value"
-            :empty="tasks.length === 0"
-            empty-title="Nothing pending"
-            empty-body="Add a follow-up above when something needs a nudge."
-            :rows="1"
-            @retry="myTasks.refetch()"
-          >
-            <ul class="divide-line divide-y">
-              <li
-                v-for="task in visibleTasks"
-                :key="task.id"
-                class="flex items-start gap-3 py-3 first:pt-0 last:pb-0"
-              >
-                <button
-                  type="button"
-                  class="tap-target border-line-2 flex w-12 shrink-0 items-center justify-center rounded-[2px] border"
-                  :disabled="busyTaskId === task.id"
-                  :aria-label="`Mark done: ${task.title}`"
-                  @click="completeTask(task)"
-                >
-                  <svg
-                    class="text-muted size-5"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M5 13l4 4L19 7" />
-                  </svg>
-                </button>
-
-                <div class="min-w-0 flex-1">
-                  <p class="text-ink text-[15px] font-semibold break-words">
-                    {{ task.title }}
-                  </p>
-                  <p class="text-muted mt-0.5 flex flex-wrap items-center gap-x-2 text-sm">
-                    <span
-                      :class="
-                        (daysUntilDue(task.due_date) ?? 1) < 0
-                          ? 'text-accent font-semibold'
-                          : ''
-                      "
-                    >
-                      {{ dueLabel(task.due_date) }}
-                    </span>
-                    <RouterLink
-                      v-if="task.customer_key"
-                      :to="{ name: 'account', params: { customerKey: task.customer_key } }"
-                      class="text-ink font-medium underline underline-offset-2"
-                    >
-                      {{ taskAccount(task) }}
-                    </RouterLink>
-                  </p>
-                </div>
-              </li>
-            </ul>
-          </AsyncState>
-        </div>
-
-        <template v-if="tasks.length > TASK_PREVIEW" #footer>
-          <RouterLink
-            :to="{ name: 'tasks' }"
-            class="font-label text-ink text-[13px] font-semibold tracking-[0.12em] uppercase underline underline-offset-4"
-          >
-            All {{ tasks.length }} follow-ups
-          </RouterLink>
-        </template>
-      </AppCard>
-    </section>
+    <!-- The rep's own reminders. Separate from the list above on purpose:
+         those come from sales ops, these are theirs. -->
+    <FollowUpsCard :names="names ?? {}" />
   </div>
 </template>

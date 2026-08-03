@@ -58,6 +58,8 @@ export const qk = {
   tasks: {
     root: () => ['tasks'] as const,
     mine: (userId: string) => ['tasks', 'mine', userId] as const,
+    due: (userId: string) => ['tasks', 'due', userId] as const,
+    closed: (userId: string) => ['tasks', 'closed', userId] as const,
     forAccount: (userId: string, key: string) =>
       ['tasks', 'account', userId, key] as const,
   },

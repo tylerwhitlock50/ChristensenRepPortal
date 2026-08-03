@@ -74,6 +74,21 @@ export type PhotoCategory = (typeof PHOTO_CATEGORIES)[number]
 export const TASK_STATUSES = ['open', 'done', 'cancelled'] as const
 export type TaskStatus = (typeof TASK_STATUSES)[number]
 
+/**
+ * The account page's quick-action strip. Not a DB value — a UI vocabulary that
+ * two components have to agree on, which is the same reason everything else
+ * here exists.
+ */
+export const QUICK_ACTIONS = [
+  'visit',
+  'contact',
+  'note',
+  'photo',
+  'task',
+  'summary',
+] as const
+export type QuickAction = (typeof QUICK_ACTIONS)[number]
+
 /** Mission scope options — mission_batches.scope_type (016_missions_admin.sql). */
 export const MISSION_SCOPES = ['all', 'vendor', 'rep', 'custom'] as const
 export type MissionScope = (typeof MISSION_SCOPES)[number]

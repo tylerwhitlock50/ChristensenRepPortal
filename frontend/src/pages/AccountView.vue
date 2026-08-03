@@ -29,6 +29,8 @@ const AccountRevenueChart = defineAsyncComponent(
   () => import('@/components/AccountRevenueChart.vue'),
 )
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
+import AccountQuickActions from '@/components/AccountQuickActions.vue'
+import AccountTasksCard from '@/components/AccountTasksCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
 import VisitSurvey from '@/components/VisitSurvey.vue'
 import VisitHistoryCard from '@/components/VisitHistoryCard.vue'
@@ -41,7 +43,12 @@ import {
   type VisitFormValues,
 } from '@/lib/visitSchema'
 import { qk } from '@/lib/queryClient'
-import { ACTION_LABELS, ACTION_TYPES, type ActionType } from '@/types/domain'
+import {
+  ACTION_LABELS,
+  ACTION_TYPES,
+  type ActionType,
+  type QuickAction,
+} from '@/types/domain'
 import { daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
@@ -305,6 +312,38 @@ async function submitNote() {
   }
 }
 
+/* ---- quick actions ------------------------------------------------------
+   The strip in the header only routes: it sets whichever panel ref the action
+   belongs to and scrolls that section into view. Same nextTick-then-scroll
+   shape as the ?survey= deep link below, and every target carries
+   `scroll-mt-16` so the sticky 56px app header doesn't cover the heading it
+   just scrolled to.
+------------------------------------------------------------------------- */
+const logSection = ref<HTMLElement | null>(null)
+const taskSection = ref<HTMLElement | null>(null)
+const noteSection = ref<HTMLElement | null>(null)
+const photoSection = ref<HTMLElement | null>(null)
+const summarySection = ref<HTMLElement | null>(null)
+
+async function onQuickAction(action: QuickAction) {
+  const targets: Record<QuickAction, typeof logSection> = {
+    visit: surveySection,
+    contact: logSection,
+    note: noteSection,
+    photo: photoSection,
+    task: taskSection,
+    summary: summarySection,
+  }
+
+  if (action === 'visit') openSurvey()
+  if (action === 'contact') logging.value = true
+  // Summarize is a paid call — jump to the card and let the rep press the
+  // button, rather than spending a token because they tapped a nav chip.
+
+  await nextTick()
+  targets[action].value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 /* ---- mission deep link --------------------------------------------------
    "Do the visit survey" on a mission card lands here as ?survey=<rec id>.
    Declared last: the immediate run calls openSurvey(), which touches refs
@@ -367,6 +406,11 @@ watch(key, () => closeSurvey())
             Rep: {{ account.data.value.assigned_sales_rep_name }}
           </span>
         </div>
+
+        <!-- What the rep can do, before the numbers rather than after them. -->
+        <div class="mt-4">
+          <AccountQuickActions @select="onQuickAction" />
+        </div>
       </header>
 
       <!--
@@ -417,6 +461,7 @@ watch(key, () => closeSurvey())
     <AccountRevenueChart :customer-key="customerKey" />
 
     <!-- AI summary — cached copy first, regeneration on request only. -->
+    <section ref="summarySection" class="scroll-mt-16">
     <AppCard>
       <template #header>
         <h2 class="u-label text-ink">The story so far</h2>
@@ -458,6 +503,7 @@ watch(key, () => closeSurvey())
         </div>
       </AsyncState>
     </AppCard>
+    </section>
 
     <!-- Open recommendations -->
     <section class="space-y-3">
@@ -484,6 +530,7 @@ watch(key, () => closeSurvey())
     </section>
 
     <!-- Log a contact — the 10-second path. The full survey is below it. -->
+    <section ref="logSection" class="scroll-mt-16">
     <div v-if="!logging">
       <AppButton variant="secondary" block @click="logging = true">
         Log a contact
@@ -526,6 +573,7 @@ watch(key, () => closeSurvey())
         <AppButton variant="ghost" @click="logging = false">Cancel</AppButton>
       </div>
     </AppCard>
+    </section>
 
     <!-- Visit survey — the one green button on this view. Opens inline. -->
     <section ref="surveySection" class="scroll-mt-16 space-y-3">
@@ -603,7 +651,13 @@ watch(key, () => closeSurvey())
 
     <ContactsCard :customer-key="customerKey" />
 
+    <!-- Personal follow-ups on this account. -->
+    <section ref="taskSection" class="scroll-mt-16">
+      <AccountTasksCard :customer-key="customerKey" />
+    </section>
+
     <!-- Notes -->
+    <section ref="noteSection" class="scroll-mt-16">
     <AppCard title="Notes">
       <form class="mb-4" @submit.prevent="submitNote">
         <label class="sr-only" for="note">Add a note</label>
@@ -644,11 +698,14 @@ watch(key, () => closeSurvey())
         </ul>
       </AsyncState>
     </AppCard>
+    </section>
 
     <!-- Photos that aren't tied to a survey — an endcap on the way past. -->
-    <AppCard title="Photos">
-      <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
-    </AppCard>
+    <section ref="photoSection" class="scroll-mt-16">
+      <AppCard title="Photos">
+        <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
+      </AppCard>
+    </section>
 
     <VisitHistoryCard :customer-key="customerKey" />
 

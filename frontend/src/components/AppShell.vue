@@ -4,7 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
+import { useMyDueTasks } from '@/composables/useTasks'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
+import NavBadge from '@/components/NavBadge.vue'
 import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
@@ -29,14 +31,53 @@ const missionsLate = computed(() =>
   }),
 )
 
+/* Due follow-ups on the Tasks tab. Deliberately NOT gated off for admins the
+   way the mission query above is: `tasks` is user-scoped and the composable
+   always sends `.eq('user_id', …)`, so an admin sees their own list, not the
+   company's. Gating it would hide an admin's own overdue follow-ups. */
+const dueTasks = useMyDueTasks()
+const tasksDue = computed(() => dueTasks.data.value?.due ?? 0)
+const tasksOverdue = computed(() => dueTasks.data.value?.overdue ?? 0)
+
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 onClickOutside(menuRef, () => (menuOpen.value = false))
 
-const nav = computed(() => {
-  const items: { to: string | { name: string }; label: string; icon: string }[] = [
-    { to: { name: 'today' }, label: 'Today', icon: 'today' },
-    { to: { name: 'tasks' }, label: 'Tasks', icon: 'tasks' },
+type Badge = { count: number; late: boolean; label: string }
+type NavItem = {
+  to: string | { name: string }
+  label: string
+  icon: string
+  badge?: Badge
+}
+
+/* Badges hang off the item rather than being matched by icon name at the two
+   render sites — adding a third one should not mean editing two templates. */
+const nav = computed<NavItem[]>(() => {
+  const items: NavItem[] = [
+    {
+      to: { name: 'today' },
+      label: 'Today',
+      icon: 'today',
+      badge: {
+        count: missionCount.value,
+        late: missionsLate.value,
+        label: `${missionCount.value} open missions`,
+      },
+    },
+    {
+      to: { name: 'tasks' },
+      label: 'Tasks',
+      icon: 'tasks',
+      badge: {
+        count: tasksDue.value,
+        late: tasksOverdue.value > 0,
+        label:
+          tasksOverdue.value > 0
+            ? `${tasksDue.value} follow-ups due, ${tasksOverdue.value} overdue`
+            : `${tasksDue.value} follow-ups due`,
+      },
+    },
     { to: { name: 'accounts' }, label: 'Accounts', icon: 'accounts' },
   ]
   if (session.isAdmin) {
@@ -99,14 +140,14 @@ async function signOut() {
               active-class="!text-canvas !border-accent"
             >
               {{ item.label }}
-              <span
-                v-if="item.icon === 'today' && missionCount > 0"
-                class="ml-1 inline-grid min-w-5 place-items-center px-1 py-0.5 text-[11px] leading-none font-bold"
-                :class="missionsLate ? 'bg-accent text-[#20100A]' : 'bg-canvas text-ink'"
-                :aria-label="`${missionCount} open missions`"
-              >
-                {{ missionCount }}
-              </span>
+              <NavBadge
+                v-if="item.badge"
+                class="ml-1"
+                variant="header"
+                :count="item.badge.count"
+                :late="item.badge.late"
+                :label="item.badge.label"
+              />
             </RouterLink>
           </nav>
         </div>
@@ -194,14 +235,14 @@ async function signOut() {
           class="font-label relative flex min-h-[66px] flex-1 flex-col items-center justify-center gap-1 border-t-2 border-transparent text-xs font-semibold tracking-[0.1em] text-[#8E8A80] uppercase"
           active-class="!text-ink !border-ink -mt-px"
         >
-          <span
-            v-if="item.icon === 'today' && missionCount > 0"
-            class="absolute top-2 left-1/2 ml-1.5 inline-grid min-w-5 place-items-center px-1 py-0.5 text-[11px] leading-none font-bold"
-            :class="missionsLate ? 'bg-accent text-[#20100A]' : 'bg-ink text-canvas'"
-            :aria-label="`${missionCount} open missions`"
-          >
-            {{ missionCount }}
-          </span>
+          <NavBadge
+            v-if="item.badge"
+            class="absolute top-2 left-1/2 ml-1.5"
+            variant="bar"
+            :count="item.badge.count"
+            :late="item.badge.late"
+            :label="item.badge.label"
+          />
           <svg
             class="size-5"
             viewBox="0 0 24 24"
