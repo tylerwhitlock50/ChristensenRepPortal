@@ -344,6 +344,72 @@ begin
   raise notice 'preview returns rows and writes nothing ok (% rows)', n;
 end $$;
 
+--------------------------------------------------------------------------
+-- 9. A rep cannot re-score the book.
+--
+--    Guarding a hole that existed for about ten minutes: apply_account_scores
+--    takes a whole score_settings row and was granted to `authenticated` so
+--    the admin screen could call it after saving. That is a write path over
+--    every account in the ERP, reachable straight from PostgREST, with no
+--    admin check in it — any rep could have re-ranked the entire book under
+--    weights of their own choosing.
+--
+--    It is job-only now, and app users get admin_rescore_accounts(), which
+--    takes no arguments and gates on is_admin().
+--------------------------------------------------------------------------
+do $$
+declare allowed boolean := false;
+begin
+  perform pg_temp.as_user((select id from t_user where label='repa'));
+  set local role authenticated;
+  begin
+    perform public.apply_account_scores(
+      (true,
+       '{"cadence": 100, "recency": 0, "trend": 0, "value": 0, "mix": 0}'::jsonb,
+       (select params from public.score_settings where id),
+       70, 35, now(), null)::public.score_settings);
+    allowed := true;
+  exception when others then
+    null;   -- expected: permission denied
+  end;
+  reset role;
+  if allowed then
+    raise exception 'GRANT FAILED: a rep re-scored the whole book via apply_account_scores';
+  end if;
+  raise notice 'reps cannot call apply_account_scores ok';
+end $$;
+
+do $$
+declare allowed boolean := false;
+begin
+  perform pg_temp.as_user((select id from t_user where label='repa'));
+  set local role authenticated;
+  begin
+    perform public.admin_rescore_accounts();
+    allowed := true;
+  exception when others then
+    null;   -- expected: not_admin
+  end;
+  reset role;
+  if allowed then
+    raise exception 'GRANT FAILED: a rep ran admin_rescore_accounts';
+  end if;
+  raise notice 'admin_rescore_accounts is admin-only ok';
+end $$;
+
+do $$
+declare n int;
+begin
+  perform pg_temp.as_user((select id from t_user where label='admin'));
+  set local role authenticated;
+  n := public.admin_rescore_accounts();
+  reset role;
+  if n < 1 then
+    raise exception 'FAILED: admin_rescore_accounts scored % accounts', n;
+  end if;
+  raise notice 'admin can re-score ok (% accounts)', n;
+end $$;
+
 \echo ''
 \echo 'ALL SCORING TESTS PASSED'
 

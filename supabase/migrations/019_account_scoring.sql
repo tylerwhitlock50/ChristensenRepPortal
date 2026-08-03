@@ -669,6 +669,33 @@ end;
 $$;
 
 --------------------------------------------------------------------------
+-- admin_rescore_accounts — the ONLY re-scoring entry point app users get.
+--
+-- apply_account_scores() takes a whole score_settings row, so granting it to
+-- `authenticated` would let any rep re-score the entire book under weights
+-- of their choosing — a write path with no admin check, reachable straight
+-- from PostgREST. It stays job-only. This wrapper takes no arguments, reads
+-- the stored settings, and gates on is_admin(), which is what the admin
+-- screen calls after saving.
+--------------------------------------------------------------------------
+create or replace function public.admin_rescore_accounts()
+returns integer
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'not_admin';
+  end if;
+  return public.apply_account_scores();
+end;
+$$;
+
+comment on function public.admin_rescore_accounts() is
+  'Re-score every account from the stored score_settings. Admin-gated, no '
+  'arguments — the only re-scoring path exposed to app users.';
+
+--------------------------------------------------------------------------
 -- preview_account_scores — "what would the ranking look like under THESE
 -- settings?" Writes nothing.
 --
@@ -740,21 +767,27 @@ end;
 $$;
 
 --------------------------------------------------------------------------
--- Grants. The two job functions are not callable by app users at all; the
--- two admin-facing ones gate on is_admin() themselves (016's posture).
+-- Grants.
+--
+-- The rule: anything taking a composite argument is job-only. Those are the
+-- functions that can rewrite the whole book, and a composite parameter is
+-- also not something PostgREST should be marshalling from client JSON.
+-- App users get the two argument-checked entry points, each of which gates
+-- on is_admin() itself (016's posture).
 --------------------------------------------------------------------------
 revoke execute on function public.refresh_account_signals()
   from public, anon, authenticated;
 revoke execute on function public.apply_account_scores(public.score_settings)
+  from public, anon, authenticated;
+revoke execute on function public.score_account(public.account_signals, public.score_settings)
+  from public, anon, authenticated;
+revoke execute on function public.admin_rescore_accounts()
   from public, anon;
 revoke execute on function public.preview_account_scores(jsonb, jsonb, numeric, numeric, int)
   from public, anon;
-revoke execute on function public.score_account(public.account_signals, public.score_settings)
-  from public, anon;
 
-grant execute on function public.apply_account_scores(public.score_settings) to authenticated;
+grant execute on function public.admin_rescore_accounts() to authenticated;
 grant execute on function public.preview_account_scores(jsonb, jsonb, numeric, numeric, int) to authenticated;
-grant execute on function public.score_account(public.account_signals, public.score_settings) to authenticated;
 grant execute on function public.clamp100(numeric) to authenticated;
 
 /*----------------------------------------------------------------------------

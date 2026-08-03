@@ -72,6 +72,8 @@ export const qk = {
     missionDetail: (batchId: number) => ['admin', 'missions', batchId] as const,
     activity: () => ['admin', 'activity'] as const,
     salesReps: () => ['admin', 'sales-reps'] as const,
+    scoreSettings: () => ['admin', 'score-settings'] as const,
+    rules: () => ['admin', 'rules'] as const,
   },
 } as const
 
