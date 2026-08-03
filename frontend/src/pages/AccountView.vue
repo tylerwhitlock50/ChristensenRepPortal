@@ -46,9 +46,17 @@ import { qk } from '@/lib/queryClient'
 import {
   ACTION_LABELS,
   ACTION_TYPES,
+  DEACTIVATION_REASONS,
+  DEACTIVATION_REASON_LABELS,
   type ActionType,
+  type DeactivationReason,
   type QuickAction,
 } from '@/types/domain'
+import {
+  useAccountDeactivation,
+  useDeactivateAccount,
+  useReactivateAccount,
+} from '@/composables/useAccountStatus'
 import { daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
@@ -362,10 +370,64 @@ watch(
   { immediate: true },
 )
 
+/* ---- deactivation --------------------------------------------------------
+   The rep's override of the ERP's active_flag (migration 023). The panel
+   lives at the very bottom of the page — this is the "I'm done with this
+   account" action, not a daily one — and it confirms inline with a required
+   reason, never in a modal (TECH_STACK §2.4). Deactivating dismisses the
+   account's open recommendations and drops it from scoring DB-side, so the
+   copy below promises exactly what the trigger does.
+------------------------------------------------------------------------- */
+const deactivationQuery = useAccountDeactivation(key)
+const deactivation = computed(() => deactivationQuery.data.value ?? null)
+const deactivate = useDeactivateAccount()
+const reactivate = useReactivateAccount()
+
+const deactivating = ref(false)
+const deactivationReason = ref<DeactivationReason | null>(null)
+const deactivationNote = ref('')
+const deactivationError = ref('')
+
+async function submitDeactivation() {
+  if (!deactivationReason.value) return
+  deactivationError.value = ''
+  try {
+    await deactivate.mutateAsync({
+      customerKey: props.customerKey,
+      reason: deactivationReason.value,
+      note: deactivationNote.value,
+    })
+    deactivating.value = false
+    deactivationReason.value = null
+    deactivationNote.value = ''
+  } catch (e) {
+    deactivationError.value =
+      (e as Error).message || 'Could not deactivate this account right now.'
+  }
+}
+
+async function submitReactivation() {
+  const row = deactivation.value
+  if (!row) return
+  deactivationError.value = ''
+  try {
+    await reactivate.mutateAsync({ id: row.id, customerKey: props.customerKey })
+  } catch (e) {
+    deactivationError.value =
+      (e as Error).message || 'Could not reactivate this account right now.'
+  }
+}
+
 // The router reuses this component across /accounts/:customerKey changes, so
 // without this a survey opened for account A (and its mission id) would still
 // be open on account B and stamp the wrong recommendation.
-watch(key, () => closeSurvey())
+watch(key, () => {
+  closeSurvey()
+  deactivating.value = false
+  deactivationReason.value = null
+  deactivationNote.value = ''
+  deactivationError.value = ''
+})
 </script>
 
 <template>
@@ -395,7 +457,13 @@ watch(key, () => closeSurvey())
           </template>
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
-          <AppBadge v-if="account.data.value?.active_flag === 'Y'" tone="good">
+          <!-- The rep's write-off outranks the ERP flag: the ERP will keep
+               saying Active forever, and that's the whole reason 023 exists. -->
+          <AppBadge v-if="deactivation" tone="high">Deactivated</AppBadge>
+          <AppBadge
+            v-else-if="account.data.value?.active_flag === 'Y'"
+            tone="good"
+          >
             Active
           </AppBadge>
           <AppBadge v-else tone="neutral">Inactive</AppBadge>
@@ -455,6 +523,44 @@ watch(key, () => closeSurvey())
         </div>
       </dl>
     </AsyncState>
+
+    <!-- Deactivated: say so up top, with the way back. The full story and
+         the deactivate flow itself live at the bottom of the page. -->
+    <AppCard v-if="deactivation">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-ink text-[15px] font-semibold">
+            This account is deactivated —
+            {{ DEACTIVATION_REASON_LABELS[deactivation.reason] ?? deactivation.reason }}
+          </p>
+          <p class="text-muted mt-1 text-sm">
+            Taken out of play {{ daysAgo(deactivation.deactivated_at) }}. It's
+            hidden from your active list and gets no new recommendations until
+            you bring it back.
+          </p>
+          <p
+            v-if="deactivation.note"
+            class="text-ink-2 mt-2 text-sm whitespace-pre-wrap"
+          >
+            “{{ deactivation.note }}”
+          </p>
+        </div>
+        <AppButton
+          variant="secondary"
+          :loading="reactivate.isPending.value"
+          @click="submitReactivation"
+        >
+          Reactivate
+        </AppButton>
+      </div>
+      <p
+        v-if="deactivationError"
+        role="alert"
+        class="text-danger mt-2 text-sm font-medium"
+      >
+        {{ deactivationError }}
+      </p>
+    </AppCard>
 
     <!-- Mini-dashboard: every number below is aggregated in Postgres. -->
     <AccountSummaryCard :customer-key="customerKey" />
@@ -738,5 +844,81 @@ watch(key, () => closeSurvey())
         </ul>
       </AsyncState>
     </AppCard>
+
+    <!-- Deactivate — last on purpose: this is "I'm done with this account",
+         not a daily action. Inline confirm with a required reason, never a
+         modal (TECH_STACK §2.4). Hidden while already deactivated; the
+         banner at the top owns that state. -->
+    <section
+      v-if="account.data.value && !deactivation && !deactivationQuery.isPending.value"
+    >
+      <div v-if="!deactivating">
+        <AppButton variant="ghost" block @click="deactivating = true">
+          Deactivate this account…
+        </AppButton>
+        <p class="text-muted mt-2 text-center text-xs">
+          Not worth working anymore? Take it off your list — you can always
+          bring it back.
+        </p>
+      </div>
+
+      <AppCard v-else title="Deactivate this account">
+        <p class="text-muted text-sm">
+          The ERP will still show it as active, but it drops off your active
+          list, stops being scored, and its open recommendations are dismissed.
+          Reactivating undoes all of that.
+        </p>
+
+        <fieldset class="mt-4">
+          <legend class="u-label mb-2">Why?</legend>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="r in DEACTIVATION_REASONS"
+              :key="r"
+              type="button"
+              class="inline-flex min-h-11 items-center rounded-[2px] px-4 text-[15px] font-semibold"
+              :class="
+                deactivationReason === r
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="deactivationReason === r"
+              @click="deactivationReason = r"
+            >
+              {{ DEACTIVATION_REASON_LABELS[r] }}
+            </button>
+          </div>
+        </fieldset>
+
+        <textarea
+          v-model="deactivationNote"
+          rows="3"
+          placeholder="Anything worth remembering about why? (optional)"
+          class="field mt-3 h-auto p-3.5"
+        />
+
+        <p
+          v-if="deactivationError"
+          role="alert"
+          class="text-danger mt-2 text-sm font-medium"
+        >
+          {{ deactivationError }}
+        </p>
+
+        <div class="mt-3 flex gap-2">
+          <AppButton
+            variant="danger"
+            :disabled="!deactivationReason"
+            :loading="deactivate.isPending.value"
+            @click="submitDeactivation"
+          >
+            Deactivate
+          </AppButton>
+          <AppButton variant="ghost" @click="deactivating = false">
+            Cancel
+          </AppButton>
+        </div>
+      </AppCard>
+    </section>
   </div>
 </template>

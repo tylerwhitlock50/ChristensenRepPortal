@@ -27,6 +27,8 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `019_account_scoring.sql` | `account_signals` (a TABLE — matviews cannot carry RLS), `score_settings`, `score_account()`, `refresh_account_signals()` / `apply_account_scores()` split, `preview_account_scores()` |
 | `020_recommendation_engine_v2.sql` | `generate_recommendations()` on the score: banded priority, why-now `reason`, `cadence_overdue` (seeded off), per-rule cooldown after a resolution, `preview_recommendation_counts()` |
 | `021_ai_summary_batch.sql` | `ai_summaries.headline`, `ai_batch_targets()` for the nightly pre-generation |
+| `022_job_run_duration.sql` | `log_job_run()` stamps `finished_at` with `clock_timestamp()`, so job durations are real |
+| `023_account_deactivations.sql` | `account_deactivations` — rep-side "stop working this account" override with reason + history; dismiss/de-score trigger; exclusions in `v_account_list`, `refresh_account_signals()`, `create_mission()`, coverage views |
 
 ## Applying
 
@@ -79,3 +81,9 @@ or paste each file in order into the Dashboard SQL editor, or apply via MCP
 - Closed recommendations no longer re-fire the next night. `uq_recs_open_rule`
   only ever prevented duplicate *open* rows; the cooldown in 020 is what makes
   resolving something mean anything.
+- The ERP's `active_flag` is not the whole story: `account_deactivations`
+  (023) is the rep's own "stop working this account" override, and every
+  active-only surface (account list, scoring, missions, coverage) must check
+  both. Deactivation never removes *access* — `my_customer_keys()` and
+  `has_account_access()` are deliberately untouched, so the rep can still
+  open the account and undo it.
