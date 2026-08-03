@@ -21,7 +21,7 @@ functions/
 │   └── supabase.ts          userClient() vs serviceClient(), HttpError
 ├── ai-account-summary/
 │   ├── index.ts             the flow in TECH_STACK §5.1, in order
-│   └── prompt.md            THE prompt — versioned file, not a string literal
+│   └── prompt.ts            THE prompt — its own versioned module (see below)
 ├── admin-create-user/
 │   └── index.ts
 └── admin-update-user/
@@ -78,8 +78,12 @@ An unauthenticated request reaches the function and gets a `401` from our own
 code. If you prefer the gateway check, drop the flag and handle the preflight
 at the CDN instead — but do not remove the in-function checks either way.
 
-`ai-account-summary` reads `prompt.md` at runtime from its own directory, so
-always deploy the **directory**, never a single file.
+The prompt is a **module** (`prompt.ts`), imported by `index.ts`. It used to be
+`prompt.md` read at runtime with `Deno.readTextFile()`, and that does not
+survive deployment: the bundler builds from the import graph, so a markdown
+file nobody imports is silently dropped and every request dies on
+`prompt_missing`. Do not move it back to a data file that is only read at
+runtime — if it is not imported, it does not ship.
 
 ## Local development
 
@@ -148,7 +152,7 @@ Two parameter names are load-bearing and easy to get wrong:
 field to set. What matters is ordering: the system prompt is the first message
 and is byte-identical across every account, so it forms a shared prefix. Any
 account-specific content placed before it would break that prefix for every
-account. `prompt.md` is ~1400 tokens today; trim it below ~1024 and caching
+account. The prompt is ~1280 tokens today; trim it below ~1024 and caching
 silently stops with no error. Check `cached_tokens` in the function logs
 (`supabase functions logs ai-account-summary`) — a steady zero means something
 is invalidating the prefix.
@@ -158,11 +162,18 @@ The model id is folded into the context hash, so a change re-baselines every
 cached summary exactly once — the same property `prompt_version` has. That is
 also why moving off Claude did not require clearing `ai_summaries`.
 
-**Prompt versioning (§5.2).** `prompt.md`'s first line carries
-`prompt-version: X.Y.Z`; `index.ts` exports a matching `PROMPT_VERSION`. The
-function refuses to run if they disagree, because every `ai_summaries` row is
-stamped with the version that produced it and the PRD's whole thesis is tuning
-on outcomes.
+**Prompt versioning (§5.2).** `prompt.ts` exports `PROMPT_VERSION` alongside
+`SYSTEM_PROMPT`, so the version and the text it describes live in one file and
+cannot desync. Bump the version whenever you change the text: every
+`ai_summaries` row is stamped with the version that produced it and the PRD's
+whole thesis is tuning on outcomes. The version is also folded into the context
+hash, so a bump regenerates every account exactly once.
+
+This replaced an earlier scheme where `prompt.md` carried a `prompt-version:`
+marker that `index.ts` compared against its own constant at runtime. Two
+sources of truth needed a check to keep them honest; one source needs no
+check, so `prompt_version_missing` and `prompt_version_mismatch` no longer
+exist.
 
 **PII.** The context payload never includes `public.contacts` and carries no
 author identity on notes, visits or actions (§5.1 — never send PII you don't

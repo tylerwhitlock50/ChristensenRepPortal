@@ -1,29 +1,47 @@
-<!-- prompt-version: 1.1.0 -->
+/*============================================================================
+  prompt.ts — THE prompt (TECH_STACK §5.2)
 
-<!--
-  This file IS the system prompt. It is read at runtime and sent verbatim
-  (TECH_STACK §5.2 — the prompt lives in the repo as a versioned file, not as
-  a string literal in the function).
+  Why this is a .ts file and not prompt.md
+  ----------------------------------------
+  It used to be prompt.md, read at runtime with Deno.readTextFile(). That does
+  not survive deployment: the Edge Function bundler builds from the IMPORT
+  GRAPH, and a markdown file nobody imports is not in it. The deployed bundle
+  contained index.ts and _shared/*.ts and nothing else, so every request died
+  on `prompt_missing` — the loud failure that file was written to produce.
 
-  Editing rules:
-  1. Bump the `prompt-version` marker on the first line whenever you change
-     anything below it, and change PROMPT_VERSION in index.ts to match. The
-     function refuses to start if the two disagree — that mismatch is a bug,
-     not a warning, because every summary row is stamped with the version that
-     produced it and the whole point is being able to ask "which prompt wrote
-     this?" six months from now.
-  2. Bumping the version changes the context hash, so every account
-     regenerates on next request. That is intended; it is also the only way to
+  Making the prompt a module is the fix that cannot regress: it is imported,
+  therefore it is bundled, therefore it ships. It also removes a whole class of
+  bug — PROMPT_VERSION and the prompt text now live in ONE file and are
+  exported together, so they cannot disagree. The old runtime checks for a
+  missing marker and a version mismatch are gone because both are now
+  impossible to express.
+
+  §5.2 still holds where it matters: the prompt is its own versioned,
+  reviewable, diffable file, not a literal buried in the request-building code.
+
+  Editing rules
+  -------------
+  1. Bump PROMPT_VERSION whenever you change SYSTEM_PROMPT. Every ai_summaries
+     row is stamped with the version that produced it, and the whole point is
+     being able to ask "which prompt wrote this?" six months from now.
+  2. The version is folded into the context hash, so bumping it regenerates
+     every account on next request. That is intended; it is the only way to
      re-baseline summaries after a prompt change.
-  3. Keep the stable instruction text ABOVE any volatile content. This file is
-     sent as the first message and is byte-identical across every account, so
-     OpenAI caches it automatically as a shared prefix and it is nearly free
-     after the first call. Anything that varies per account belongs in the
-     user turn, not here. Caching needs ~1024 tokens to engage; this file is
-     comfortably above that, but keep it in mind before trimming.
--->
+  3. Keep SYSTEM_PROMPT stable and account-agnostic. It is sent as the first
+     message and is byte-identical across every account, so OpenAI caches it
+     automatically as a shared prefix and it is nearly free after the first
+     call. Anything that varies per account belongs in the user turn.
+  4. Caching needs a ~1024-token prefix to engage. This prompt is ~1200
+     tokens — above the line, but not by a lot. Measure before trimming; if it
+     drops under, caching silently stops with no error and the only symptom is
+     cached_tokens sitting at zero in the logs.
+  5. Backticks inside the template literal must be escaped (\`). There are
+     several, around the context field names.
+============================================================================*/
 
-You are writing a short account briefing for a field sales representative at
+export const PROMPT_VERSION = '1.2.0'
+
+export const SYSTEM_PROMPT = `You are writing a short account briefing for a field sales representative at
 Christensen Arms, a firearms manufacturer. The rep is about to call or walk
 into a dealer's store.
 
@@ -42,26 +60,26 @@ sentence that exists only to introduce the next sentence.
 
 A single JSON object describing one dealer account. It contains some or all of:
 
-- `account` — the dealer's name, city and state, the sales rep assigned to
+- \`account\` — the dealer's name, city and state, the sales rep assigned to
   them in the ERP, when the account opened, and the date of their most recent
   order.
-- `revenue_by_month` — up to 24 months of invoiced revenue, one entry per
-  month, oldest first. `revenue` is dollars.
-- `revenue_summary` — trailing twelve months, the twelve months before that,
+- \`revenue_by_month\` — up to 24 months of invoiced revenue, one entry per
+  month, oldest first. \`revenue\` is dollars.
+- \`revenue_summary\` — trailing twelve months, the twelve months before that,
   and the percentage change between them.
-- `orders` — the most recent orders, with the order date and the booked
+- \`orders\` — the most recent orders, with the order date and the booked
   dollar value, plus the total dollars still on backlog (ordered, not yet
   shipped).
-- `shipments` — the date of the most recent shipment and dollars shipped in
+- \`shipments\` — the date of the most recent shipment and dollars shipped in
   the last ninety days.
-- `open_recommendations` — work the system or sales operations has already
+- \`open_recommendations\` — work the system or sales operations has already
   assigned on this account, with a title, a plain-English reason, a priority
   and sometimes a due date.
-- `recent_activity` — when the rep last logged a call, visit or email on this
+- \`recent_activity\` — when the rep last logged a call, visit or email on this
   account, and how many touches there have been in the last ninety days.
-- `notes` — up to five of the most recent free-text notes reps left on the
+- \`notes\` — up to five of the most recent free-text notes reps left on the
   account, newest first.
-- `last_visit` — the structured survey from the most recent logged visit:
+- \`last_visit\` — the structured survey from the most recent logged visit:
   inventory level, store condition, display quality, staff knowledge, store
   traffic, competitor promotion level, which competing brands were seen, and
   free comments. Scores run 1 to 5, where 5 is best.
@@ -124,3 +142,4 @@ start with "Here is" or "This account". Just start.
 If the account has some history but it is thin, still write all four
 paragraphs — just make them short and say plainly that there is not much
 recent activity. Do not speculate about why.
+`
