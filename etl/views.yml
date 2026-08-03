@@ -52,3 +52,11 @@ column_map:
 # this job in the database to avoid.
 post_load_sql:
   - "select public.generate_recommendations();"
+
+# Then pre-generate the briefings for the accounts that just floated to the top
+# of each rep's list. Needs SUPABASE_URL and AI_BATCH_SECRET in the ETL's
+# environment; skipped with a warning when they are absent, because a missing
+# summary must never fail a successful data load.
+post_load_http:
+  - function: ai-summary-batch
+    body: { per_rep: 5 }

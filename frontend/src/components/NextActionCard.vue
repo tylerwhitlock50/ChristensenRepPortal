@@ -25,7 +25,18 @@ import { daysUntilDue, dueLabel } from '@/lib/format'
 const props = defineProps<{
   rec: Recommendation
   accountName?: string
+  /**
+   * The pre-generated AI headline for this account, when there is a recent
+   * one. Prefer it over `reason`: the rule text is assembled from thresholds
+   * and reads like it, while this was written about this dealer specifically.
+   * The caller is responsible for not passing a stale one — see
+   * HEADLINE_MAX_AGE_DAYS in useAiSummary.
+   */
+  headline?: string
 }>()
+
+/** Silent fallback. An account with no summary must look normal, not broken. */
+const body = computed(() => props.headline || props.rec.reason)
 
 type Panel = 'none' | 'act' | 'close'
 const panel = ref<Panel>('none')
@@ -127,8 +138,8 @@ async function submitClose(status: 'closed' | 'dismissed') {
       </div>
 
       <h2 class="u-display mt-3 text-3xl">{{ rec.title }}</h2>
-      <p v-if="rec.reason" class="mt-2 text-[15px] leading-relaxed text-[#B4B0A5]">
-        {{ rec.reason }}
+      <p v-if="body" class="mt-2 text-[15px] leading-relaxed text-[#B4B0A5]">
+        {{ body }}
       </p>
 
       <RouterLink

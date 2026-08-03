@@ -5,6 +5,7 @@ import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useAccountNames } from '@/composables/useAccounts'
 import { useMyDueTasks, useMyTasks } from '@/composables/useTasks'
+import { useAiHeadlines } from '@/composables/useAiSummary'
 import MissionBanner from '@/components/MissionBanner.vue'
 import NextActionCard from '@/components/NextActionCard.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
@@ -105,6 +106,20 @@ const { data: names } = useAccountNames(
   ]),
 )
 
+/* Pre-generated briefings for the cards actually on screen — one `.in()`
+   over the visible keys, not a query per card. Absent or stale headlines
+   simply don't come back and each card falls through to its reason string. */
+const { data: headlines } = useAiHeadlines(
+  computed(() => [
+    ...(first.value ? [first.value.customer_key] : []),
+    ...visibleMissions.value.map((r) => r.customer_key),
+    ...visibleQueue.value.map((r) => r.customer_key),
+  ]),
+)
+function headlineFor(customerKey: string): string | undefined {
+  return headlines.value?.[customerKey]?.headline
+}
+
 // displayName falls back to the email when the profile has no full_name;
 // an address has no spaces, so strip the domain before taking the first word.
 const firstName = computed(() => session.displayName.split('@')[0].split(' ')[0])
@@ -166,6 +181,7 @@ const greeting = computed(() => {
           v-if="first"
           :rec="first"
           :account-name="names?.[first.customer_key]"
+          :headline="headlineFor(first.customer_key)"
         />
 
         <!-- Sales ops' own work, above the algorithm's. -->
@@ -179,6 +195,7 @@ const greeting = computed(() => {
               :key="rec.id"
               :rec="rec"
               :account-name="names?.[rec.customer_key]"
+              :headline="headlineFor(rec.customer_key)"
             />
           </div>
           <AppButton
@@ -201,6 +218,7 @@ const greeting = computed(() => {
               :key="rec.id"
               :rec="rec"
               :account-name="names?.[rec.customer_key]"
+              :headline="headlineFor(rec.customer_key)"
             />
           </div>
 

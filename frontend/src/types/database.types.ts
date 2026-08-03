@@ -95,6 +95,7 @@ export type Database = {
           customer_key: string
           generated_at: string
           generated_by: string | null
+          headline: string | null
           model: string | null
           prompt_version: string | null
         }
@@ -104,6 +105,7 @@ export type Database = {
           customer_key: string
           generated_at?: string
           generated_by?: string | null
+          headline?: string | null
           model?: string | null
           prompt_version?: string | null
         }
@@ -113,6 +115,7 @@ export type Database = {
           customer_key?: string
           generated_at?: string
           generated_by?: string | null
+          headline?: string | null
           model?: string | null
           prompt_version?: string | null
         }

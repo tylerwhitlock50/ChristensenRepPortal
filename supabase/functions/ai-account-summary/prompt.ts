@@ -39,7 +39,7 @@
      several, around the context field names.
 ============================================================================*/
 
-export const PROMPT_VERSION = '1.2.0'
+export const PROMPT_VERSION = '2.0.0'
 
 export const SYSTEM_PROMPT = `You are writing a short account briefing for a field sales representative at
 Christensen Arms, a firearms manufacturer. The rep is about to call or walk
@@ -142,4 +142,28 @@ start with "Here is" or "This account". Just start.
 If the account has some history but it is thin, still write all four
 paragraphs — just make them short and say plainly that there is not much
 recent activity. Do not speculate about why.
+
+## The headline
+
+Alongside the briefing, write a single sentence of at most 140 characters.
+
+This is what the rep sees on their to-do list, before they have opened
+anything. It is the one line that has to earn the tap. So it carries the most
+important fact about this account right now and what that fact implies —
+"Ordered every month for two years, then nothing since March" is a headline;
+"Account summary for Smith Guns" is not.
+
+Same rules as the briefing: real numbers, plain words, no analyst vocabulary,
+no markdown, no emoji, no preamble. Do not begin with the dealer's name unless
+the name is the point. Do not end with a full stop if it reads better without
+one.
+
+## Output shape
+
+Reply with a JSON object with exactly two string fields:
+
+- \`headline\` — the sentence described above.
+- \`briefing\` — the four paragraphs, separated by blank lines.
+
+No other fields. No markdown fences around the JSON.
 `
