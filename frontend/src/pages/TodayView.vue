@@ -6,6 +6,7 @@ import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useAccountNames } from '@/composables/useAccounts'
 import { useMyDueTasks, useMyTasks } from '@/composables/useTasks'
 import { useAiHeadlines } from '@/composables/useAiSummary'
+import BookGoalCard from '@/components/BookGoalCard.vue'
 import MissionBanner from '@/components/MissionBanner.vue'
 import NextActionCard from '@/components/NextActionCard.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
@@ -167,6 +168,10 @@ const greeting = computed(() => {
         :tone="followUpsOverdue > 0 ? 'alert' : 'default'"
       />
     </div>
+
+    <!-- Where the book stands against the rep's own goals. Renders nothing
+         until they have set one — see BookGoalCard. -->
+    <BookGoalCard />
 
     <AsyncState
       :loading="isPending"

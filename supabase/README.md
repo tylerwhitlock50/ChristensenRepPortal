@@ -27,6 +27,8 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `019_account_scoring.sql` | `account_signals` (a TABLE — matviews cannot carry RLS), `score_settings`, `score_account()`, `refresh_account_signals()` / `apply_account_scores()` split, `preview_account_scores()` |
 | `020_recommendation_engine_v2.sql` | `generate_recommendations()` on the score: banded priority, why-now `reason`, `cadence_overdue` (seeded off), per-rule cooldown after a resolution, `preview_recommendation_counts()` |
 | `021_ai_summary_batch.sql` | `ai_summaries.headline`, `ai_batch_targets()` for the nightly pre-generation |
+| `022_job_run_duration.sql` | `log_job_run()` on `clock_timestamp()` — `now()` recorded zero/negative durations |
+| `023_account_goals.sql` | `account_goals` (rep-entered annual goal, one per account/year), `v_account_goal_progress` (seasonal pace), `v_my_goal_rollup`, `v_rep_goal_attainment` |
 
 ## Applying
 
@@ -79,3 +81,17 @@ or paste each file in order into the Dashboard SQL editor, or apply via MCP
 - Closed recommendations no longer re-fire the next night. `uq_recs_open_rule`
   only ever prevented duplicate *open* rows; the cooldown in 020 is what makes
   resolving something mean anything.
+- **A goal belongs to the account, not to the rep who typed it.**
+  `account_goals` is unique on `(customer_key, period_year)`, so a principal
+  and their rep report against the same number and the admin rollup never has
+  to pick whose copy counts. `created_by`/`updated_by` record who touched it.
+- Goal pace is **seasonal, not straight-line**: `v_account_goal_progress`
+  takes the share of the goal that should be in by today from the account's
+  own prior-year shape, and only falls back to days-elapsed when there is no
+  prior year (`pace_basis` says which). A straight line tells a dealer that
+  books its year in the order season that it is behind every June, which
+  trains reps to ignore the number.
+- `erp.dim_customer.yearly_sales_goal` is **not** replaced by this. The UI
+  shows both, because the drift between the ERP's goal and the rep's is the
+  interesting part — and it is what an outbound push to Visual would
+  reconcile. Nothing in the app writes to `erp.*`.
