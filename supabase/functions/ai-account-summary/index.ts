@@ -2,7 +2,7 @@
   ai-account-summary
 
   Justification for existing at all (TECH_STACK §3.2): it holds
-  ANTHROPIC_API_KEY. Nothing else about it needs a server.
+  OPENAI_API_KEY. Nothing else about it needs a server.
 
   Flow (TECH_STACK §5.1, followed in order):
 
@@ -14,7 +14,8 @@
     6. SHA-256 the context; if it matches ai_summaries.context_hash, return
        the cached row instantly and for free.
     7. Enforce a per-user daily call limit and a per-account cooldown.
-    8. One Claude call — Sonnet 5, prompt caching on the system block.
+    8. One OpenAI call — gpt-5-mini, automatic prompt caching on the system
+       message.
     9. Upsert into public.ai_summaries with model, context_hash,
        prompt_version, generated_at.
 
@@ -52,17 +53,41 @@ import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
  * so tuning the prompt re-baselines every account instead of leaving a mix of
  * old and new summaries that nobody can tell apart.
  */
-export const PROMPT_VERSION = '1.0.0'
+export const PROMPT_VERSION = '1.1.0'
 
 /**
- * Sonnet 5, per TECH_STACK §5.1. This is summarisation over a small,
- * well-structured context — Opus is not worth the latency or the cost per
- * account, and reps hit this button a lot.
+ * gpt-5-mini. This is summarisation over a small, well-structured context —
+ * full gpt-5 is not worth the cost per account, and reps hit this button a
+ * lot.
+ *
+ * Overridable without a redeploy, because the model id is folded into the
+ * context hash below: changing it re-baselines every cached summary exactly
+ * once, which is the same property prompt_version has. Set OPENAI_MODEL to
+ * try a different one and the next generation per account picks it up.
  */
-const MODEL = 'claude-sonnet-5'
-const ANTHROPIC_VERSION = '2023-06-01'
-const MAX_TOKENS = 900
-const ANTHROPIC_TIMEOUT_MS = 60_000
+const MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-5-mini'
+
+/**
+ * On the gpt-5 family this budget covers REASONING TOKENS AS WELL AS the
+ * visible reply, and reasoning tokens are spent first. The briefing itself is
+ * ~150 words (~250 tokens), but a budget sized to that would be swallowed
+ * whole by reasoning and return an empty message with finish_reason
+ * 'length' — which is why this is 2000 and not 900. Headroom here is not
+ * wasted spend: unused budget is never billed.
+ */
+const MAX_COMPLETION_TOKENS = 2000
+
+/**
+ * The design called for a low-temperature, deterministic summary. gpt-5
+ * reasoning models reject a non-default `temperature` outright, so that
+ * intent is expressed as minimal reasoning effort plus a prescriptive prompt
+ * and the context-hash cache — which makes a repeated ask literally the same
+ * bytes rather than merely a similar sample. Raise to 'low' or 'medium' if
+ * summaries come back shallow.
+ */
+const REASONING_EFFORT = Deno.env.get('OPENAI_REASONING_EFFORT') ?? 'minimal'
+
+const OPENAI_TIMEOUT_MS = 60_000
 
 function envInt(name: string, fallback: number): number {
   const raw = Deno.env.get(name)
@@ -521,62 +546,59 @@ async function buildContext(client: SupabaseClient, customerKey: string) {
 }
 
 /*----------------------------------------------------------------------------
-  Claude
+  OpenAI
 ----------------------------------------------------------------------------*/
 
-type AnthropicBlock = { type: string; text?: string }
-type AnthropicResponse = {
-  content?: AnthropicBlock[]
-  stop_reason?: string
-  stop_details?: { category?: string | null; explanation?: string | null } | null
-  usage?: Record<string, number>
+type OpenAIResponse = {
+  choices?: Array<{
+    message?: { content?: string | null; refusal?: string | null }
+    finish_reason?: string
+  }>
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    completion_tokens_details?: { reasoning_tokens?: number }
+  }
+  error?: { message?: string; type?: string; code?: string }
 }
 
-async function callClaude(systemPrompt: string, contextJson: string): Promise<string> {
-  const apiKey = Deno.env.get('ANTHROPIC_API_KEY')
+async function callOpenAI(systemPrompt: string, contextJson: string): Promise<string> {
+  const apiKey = Deno.env.get('OPENAI_API_KEY')
   if (!apiKey) {
     throw new HttpError(
       500,
       'missing_env',
-      'ANTHROPIC_API_KEY is not set on this function.',
+      'OPENAI_API_KEY is not set on this function.',
     )
   }
 
   /*
-    Notes on this request shape, because two of them look like mistakes:
+    Notes on this request shape, because three of them look like mistakes:
 
-    - There is NO `temperature`. Claude Sonnet 5 rejects a non-default
-      temperature with a 400 — sampling parameters were removed on this model
-      generation. The "low temperature" this design calls for is expressed
-      instead by `effort: low`, a prescriptive prompt, and the context-hash
-      cache, which makes a repeated ask literally the same bytes rather than
-      merely a similar sample.
+    - `max_completion_tokens`, not `max_tokens`. The gpt-5 family rejects
+      `max_tokens` outright; it is the older parameter and is not merely
+      deprecated here. See the MAX_COMPLETION_TOKENS note for why the number
+      is much larger than the 150-word answer suggests.
 
-    - `thinking` is explicitly disabled. Adaptive thinking is ON by default on
-      Sonnet 5, and this is a fixed-shape 150-word summary over pre-digested
-      JSON — thinking would add latency and tokens to every button press for
-      no quality gain. If summaries ever come back shallow, switch to
-      { type: 'adaptive' } and raise effort to 'medium'.
+    - There is NO `temperature`. gpt-5 reasoning models accept only the
+      default and 400 on anything else. Determinism comes from the prompt,
+      minimal reasoning effort and the context-hash cache instead.
 
-    - The system block carries `cache_control: ephemeral`. It is byte-identical
-      across every account, so after the first call in a five-minute window it
-      is served from cache at ~0.1x. Prompt caching has a minimum cacheable
-      prefix (~1024 tokens on Sonnet 5); if prompt.md is trimmed below that,
-      caching silently no-ops. Watch usage.cache_read_input_tokens in the logs.
+    - The system prompt is the FIRST message and is byte-identical across
+      every account. OpenAI caches prompt prefixes automatically above ~1024
+      tokens — there is no cache_control field to set and nothing to opt into,
+      but the ordering matters: anything account-specific placed before it
+      would break the shared prefix for every other account. prompt.md is
+      ~1400 tokens today; trim it below ~1024 and caching silently stops.
+      Watch usage.prompt_tokens_details.cached_tokens in the logs.
   */
   const body = {
     model: MODEL,
-    max_tokens: MAX_TOKENS,
-    thinking: { type: 'disabled' },
-    output_config: { effort: 'low' },
-    system: [
-      {
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      },
-    ],
+    max_completion_tokens: MAX_COMPLETION_TOKENS,
+    reasoning_effort: REASONING_EFFORT,
     messages: [
+      { role: 'system', content: systemPrompt },
       {
         role: 'user',
         content:
@@ -589,18 +611,17 @@ async function callClaude(systemPrompt: string, contextJson: string): Promise<st
 
   let res: Response
   try {
-    res = await fetch('https://api.anthropic.com/v1/messages', {
+    res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
+        authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(ANTHROPIC_TIMEOUT_MS),
+      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     })
   } catch (cause) {
-    console.error('anthropic request failed', cause)
+    console.error('openai request failed', cause)
     throw new HttpError(
       504,
       'ai_unavailable',
@@ -610,7 +631,7 @@ async function callClaude(systemPrompt: string, contextJson: string): Promise<st
 
   if (!res.ok) {
     const detail = await res.text()
-    console.error('anthropic returned', res.status, detail)
+    console.error('openai returned', res.status, detail)
     throw new HttpError(
       res.status === 429 ? 429 : 502,
       res.status === 429 ? 'ai_rate_limited' : 'ai_error',
@@ -620,12 +641,13 @@ async function callClaude(systemPrompt: string, contextJson: string): Promise<st
     )
   }
 
-  const payload = (await res.json()) as AnthropicResponse
+  const payload = (await res.json()) as OpenAIResponse
+  const choice = payload.choices?.[0]
 
-  // Check stop_reason before reading content: on a refusal the content array
-  // is empty or partial, and indexing content[0] blindly would throw.
-  if (payload.stop_reason === 'refusal') {
-    console.warn('anthropic refused', payload.stop_details)
+  // Check refusal before reading content: on a refusal `content` is null and
+  // the reason lives in its own field.
+  if (choice?.message?.refusal) {
+    console.warn('openai refused', choice.message.refusal)
     throw new HttpError(
       502,
       'ai_refused',
@@ -633,22 +655,31 @@ async function callClaude(systemPrompt: string, contextJson: string): Promise<st
     )
   }
 
-  const text = (payload.content ?? [])
-    .filter((b) => b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text as string)
-    .join('\n')
-    .trim()
+  const text = (choice?.message?.content ?? '').trim()
 
   if (!text) {
+    // The specific failure worth naming: reasoning ate the whole budget and
+    // nothing was left for the reply. Silently retrying would just burn the
+    // same tokens again, so say what to change.
+    if (choice?.finish_reason === 'length') {
+      console.error('openai hit the token ceiling before replying', payload.usage)
+      throw new HttpError(
+        502,
+        'ai_truncated',
+        'The summary service ran out of tokens before answering. Raise ' +
+          'MAX_COMPLETION_TOKENS or lower OPENAI_REASONING_EFFORT.',
+      )
+    }
     throw new HttpError(502, 'ai_empty', 'The summary service returned nothing.')
   }
 
-  console.log('anthropic usage', {
-    stop_reason: payload.stop_reason,
-    input: payload.usage?.input_tokens,
-    output: payload.usage?.output_tokens,
-    cache_write: payload.usage?.cache_creation_input_tokens,
-    cache_read: payload.usage?.cache_read_input_tokens,
+  console.log('openai usage', {
+    model: MODEL,
+    finish_reason: choice?.finish_reason,
+    input: payload.usage?.prompt_tokens,
+    output: payload.usage?.completion_tokens,
+    reasoning: payload.usage?.completion_tokens_details?.reasoning_tokens,
+    cache_read: payload.usage?.prompt_tokens_details?.cached_tokens,
   })
 
   return text
@@ -714,7 +745,7 @@ async function handle(req: Request): Promise<Response> {
   /*
     Graceful degradation, before a single token is spent (PRD acceptance
     criterion #7). A brand-new dealer with two invoice lines and no notes has
-    nothing to summarise, and paying Anthropic to say so would be silly.
+    nothing to summarise, and paying OpenAI to say so would be silly.
   */
   if (built.invoiceLineCount < MIN_INVOICE_LINES && built.noteCount === 0) {
     return respond('insufficient_data', null, {
@@ -778,7 +809,7 @@ async function handle(req: Request): Promise<Response> {
   }
 
   const systemPrompt = await loadPrompt()
-  const content = await callClaude(systemPrompt, contextJson)
+  const content = await callOpenAI(systemPrompt, contextJson)
 
   const row = {
     customer_key: customerKey,

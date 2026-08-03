@@ -5,7 +5,7 @@ TECH_STACK §3.2 admits only code that holds a secret or needs `service_role`:
 
 | Function | Why it can't be client-side |
 |---|---|
-| `ai-account-summary` | Holds `ANTHROPIC_API_KEY` |
+| `ai-account-summary` | Holds `OPENAI_API_KEY` |
 | `admin-create-user` | Needs `service_role` to create auth users and set passwords (PRD: no self-signup) |
 | `admin-update-user` | Needs `service_role` to set passwords and ban/unban sign-in on deactivate |
 
@@ -34,13 +34,13 @@ Set these once per project (`dev` and `prod` are separate projects — §8):
 
 | Secret | Used by | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `ai-account-summary` | Edge Function secrets **only**. Never in Vercel, never in the frontend bundle. |
+| `OPENAI_API_KEY` | `ai-account-summary` | Edge Function secrets **only**. Never in Vercel, never in the frontend bundle. |
 | `SUPABASE_SERVICE_ROLE_KEY` | `admin-create-user`, `admin-update-user` | Auto-injected by the platform on deploy; set explicitly only for `supabase functions serve`. |
 | `SUPABASE_URL` | both | Auto-injected. |
 | `SUPABASE_ANON_KEY` | both | Auto-injected. Used to build the caller-scoped client that then carries the user's `Authorization` header. |
 
 ```bash
-supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+supabase secrets set OPENAI_API_KEY=sk-...
 supabase secrets list
 ```
 
@@ -52,6 +52,8 @@ supabase secrets list
 | `AI_SUMMARY_MIN_INVOICE_LINES` | `5` | Below this, with no notes, the function returns "Not enough activity to summarize" without calling the API. |
 | `AI_SUMMARY_COOLDOWN_SECONDS` | `60` | Minimum gap between two *paid* generations for the same account. Cached returns are unaffected. |
 | `CORS_ALLOWED_ORIGIN` | `*` | Pin to the Vercel origin if you ever move to cookie auth. |
+| `OPENAI_MODEL` | `gpt-5-mini` | Model id. Folded into the context hash, so changing it re-baselines every cached summary once. |
+| `OPENAI_REASONING_EFFORT` | `minimal` | `minimal` / `low` / `medium` / `high`. Raise if summaries come back shallow; costs more per call. |
 
 ## Deploy
 
@@ -86,7 +88,7 @@ supabase start
 supabase functions serve --env-file ./supabase/.env.local
 ```
 
-`.env.local` (git-ignored) needs `ANTHROPIC_API_KEY`, and
+`.env.local` (git-ignored) needs `OPENAI_API_KEY`, and
 `SUPABASE_SERVICE_ROLE_KEY` if you're exercising `admin-create-user`.
 
 ```bash
@@ -112,31 +114,49 @@ curl -i -X POST http://localhost:54321/functions/v1/admin-create-user \
 
 | `status` | Meaning | Tokens spent |
 |---|---|---|
-| `generated` | Fresh call to Claude; `summary` is the stored row | yes |
+| `generated` | Fresh call to OpenAI; `summary` is the stored row | yes |
 | `cached` | Context hash unchanged since last time | no |
 | `cooldown` | Context changed but the last generation is younger than the cooldown; `summary` is the previous row, plus `retry_after_seconds` | no |
 | `insufficient_data` | `summary` is `null`; `message` is `"Not enough activity to summarize"` | no |
 
 Errors are `{ error: { code, message } }` with codes `no_auth`,
 `invalid_token`, `no_access` (403), `daily_limit_reached` (429),
-`ai_rate_limited` (429), `ai_unavailable` (504), `ai_error` / `ai_refused` (502).
+`ai_rate_limited` (429), `ai_unavailable` (504), and `ai_error` /
+`ai_refused` / `ai_empty` / `ai_truncated` (502).
 
 **Cost controls, in the order they fire:** degradation gate → context hash →
 per-account cooldown → per-user daily cap. The hash covers the context *plus*
 `PROMPT_VERSION` and the model id, so a prompt change re-baselines every
 account exactly once.
 
-**Model.** `claude-sonnet-5`, one call, `effort: low`, thinking disabled. Note
-there is deliberately no `temperature` — Sonnet 5 rejects a non-default
-sampling parameter with a 400. Determinism comes from the prompt, the effort
-level and the hash cache instead.
+**Model.** `gpt-5-mini` via Chat Completions, one call, `reasoning_effort:
+minimal`. Note there is deliberately no `temperature` — gpt-5 reasoning models
+accept only the default and 400 on anything else. Determinism comes from the
+prompt, the effort level and the hash cache instead.
 
-**Prompt caching** is on the system block (`cache_control: ephemeral`), which
-is byte-identical across every account. The minimum cacheable prefix on
-Sonnet 5 is ~1024 tokens; if you trim `prompt.md` below that, caching silently
-stops working with no error. Check `cache_read_input_tokens` in the function
-logs (`supabase functions logs ai-account-summary`) — a steady zero means
-something is invalidating the prefix.
+Two parameter names are load-bearing and easy to get wrong:
+
+- `max_completion_tokens`, **not** `max_tokens` — the gpt-5 family rejects the
+  latter outright.
+- That budget covers **reasoning tokens as well as the visible reply**, and
+  reasoning is spent first. It is set to 2000 for a ~150-word answer for
+  exactly that reason; sizing it to the answer returns an empty message with
+  `finish_reason: length`, surfaced as `ai_truncated`. Unused budget is not
+  billed.
+
+**Prompt caching** is automatic on OpenAI above ~1024 tokens — there is no
+field to set. What matters is ordering: the system prompt is the first message
+and is byte-identical across every account, so it forms a shared prefix. Any
+account-specific content placed before it would break that prefix for every
+account. `prompt.md` is ~1400 tokens today; trim it below ~1024 and caching
+silently stops with no error. Check `cached_tokens` in the function logs
+(`supabase functions logs ai-account-summary`) — a steady zero means something
+is invalidating the prefix.
+
+**Switching models.** `OPENAI_MODEL` overrides the default with no redeploy.
+The model id is folded into the context hash, so a change re-baselines every
+cached summary exactly once — the same property `prompt_version` has. That is
+also why moving off Claude did not require clearing `ai_summaries`.
 
 **Prompt versioning (§5.2).** `prompt.md`'s first line carries
 `prompt-version: X.Y.Z`; `index.ts` exports a matching `PROMPT_VERSION`. The
