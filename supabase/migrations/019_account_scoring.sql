@@ -798,12 +798,39 @@ grant execute on function public.clamp100(numeric) to authenticated;
   2. Run `select public.refresh_account_signals();` once by hand and TIME IT.
      It is two whole-book fact scans and it runs inside the ETL window.
   3. Two weights need real data before they can be trusted, and both degrade
-     safely until then:
+     safely until then. MEASURED against dev on 2026-08-03:
+
        - `select count(*), max(action_date) from public.actions;`
-         If that is near zero, leave recency.treat_never_as = 'unknown'.
-       - `select count(*) filter (where product_family is not null)::numeric
-                 / count(*) from erp.dim_part;`
-         If product_family is sparse, drop the mix weight to 0 and say so on
-         the admin screen rather than ranking on a mostly-NULL column.
+         6 rows across 3 accounts, of 41,556 customers. Recency is blind:
+         it produced a subscore for 3 of 8,816 scored accounts. Leave
+         recency.treat_never_as = 'unknown' — as NULL it renormalizes away
+         instead of pinning the whole book at 100.
+
+       - product_family coverage. Do NOT measure this per PART, which is what
+         an earlier draft of this checklist said:
+             count(*) filter (where product_family is not null) / count(*)
+             from erp.dim_part            -> 21% (4,427 of 21,112)
+         21% reads as "sparse, zero the mix weight", and that is the wrong
+         call. The unfamilied 79% is long-tail catalog that barely moves.
+         Weight it by what actually sells instead:
+             select round(100.0 * sum(f.revenue) filter (
+                      where nullif(btrim(p.product_family),'') is not null)
+                    / nullif(sum(f.revenue),0), 1)
+             from erp.fact_invoice_line f
+             left join erp.dim_part p on p.part_key = f.part_key
+             where f.invoice_date > current_date - 365;
+         -> 92.3% of trailing-12-month revenue, across 37 live families.
+         Keep mix at 10.
+
   4. Regenerate frontend/src/types/database.types.ts.
+
+  5. One thing the fixtures cannot tell you: cadence_confident (>= 2 observed
+     gaps) is true for only 774 of 8,816 scored accounts. For the other 91%
+     `cad` falls back to params.cadence.default_days, so the cadence factor is
+     currently a 120-day threshold wearing a better name, and only genuinely
+     rhythm-aware for the confident tenth. The `why` string already tells the
+     truth about this — it quotes the observed median ONLY when confident and
+     says "No order in N days" otherwise — so nothing misleading reaches a
+     rep. It does mean cadence_overdue (which requires confidence) can only
+     ever fire on that tenth. That is the rule being honest, not broken.
 ----------------------------------------------------------------------------*/

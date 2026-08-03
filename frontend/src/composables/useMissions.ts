@@ -84,16 +84,23 @@ export interface MissionInput {
   activeOnly?: boolean
 }
 
+/**
+ * Optional args are omitted (undefined), not nulled. The generated RPC types
+ * type an optional argument as `T | undefined`, and supabase-js drops
+ * undefined keys from the body so PostgREST falls back to the SQL default.
+ * Every one of these defaults to NULL in create_mission (016), so this is the
+ * same call it always was — it just type-checks now.
+ */
 function rpcArgs(input: MissionInput, dryRun: boolean) {
   return {
     p_title: input.title.trim(),
-    p_reason: input.reason?.trim() || null,
+    p_reason: input.reason?.trim() || undefined,
     p_priority: input.priority,
-    p_due_date: input.dueDate || null,
+    p_due_date: input.dueDate || undefined,
     p_requires_visit: input.requiresVisit,
     p_scope_type: input.scopeType,
-    p_scope_value: input.scopeValue || null,
-    p_customer_keys: input.customerKeys?.length ? input.customerKeys : null,
+    p_scope_value: input.scopeValue || undefined,
+    p_customer_keys: input.customerKeys?.length ? input.customerKeys : undefined,
     p_active_only: input.activeOnly ?? true,
     p_dry_run: dryRun,
   }

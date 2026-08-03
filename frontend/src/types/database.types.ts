@@ -9,9 +9,9 @@
  * `erp` reads stay typed by hand in src/types/erp.ts. Regenerate with the CLI
  * and `--schema erp` if you want them generated.
  *
- * Last regenerated after migration 014; hand-extended for 016 (missions,
- * profiles.email) — regenerate when database access is available and diff
- * against this file.
+ * Last regenerated after migration 022 against dev — no hand edits. Covers
+ * account_signals and score_settings (019), recommendations.score /
+ * score_factors (020), and ai_summaries.headline (021).
  */
 
 export type Json =
@@ -23,8 +23,10 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: '14.15'
+    PostgrestVersion: "14.15"
   }
   public: {
     Tables: {
@@ -52,6 +54,145 @@ export type Database = {
           customer_key?: string
           id?: never
           user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_assignments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_assignments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_assignments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      account_signals: {
+        Row: {
+          cadence_confident: boolean
+          cadence_days: number | null
+          computed_at: string
+          customer_key: string
+          days_since_order: number | null
+          days_since_touch: number | null
+          factors: Json | null
+          families_12m: number | null
+          families_dropped: number | null
+          families_prior_12m: number | null
+          last_false_positive_at: string | null
+          last_order_date: string | null
+          last_order_received_at: string | null
+          last_touch_date: string | null
+          open_backlog_amount: number | null
+          order_days_24m: number | null
+          priority: string | null
+          revenue_12m: number | null
+          revenue_percentile: number | null
+          revenue_prior_12m: number | null
+          score: number | null
+          score_cadence: number | null
+          score_mix: number | null
+          score_recency: number | null
+          score_trend: number | null
+          score_value: number | null
+          scored_at: string | null
+          yearly_sales_goal: number | null
+          yoy_change: number | null
+        }
+        Insert: {
+          cadence_confident?: boolean
+          cadence_days?: number | null
+          computed_at?: string
+          customer_key: string
+          days_since_order?: number | null
+          days_since_touch?: number | null
+          factors?: Json | null
+          families_12m?: number | null
+          families_dropped?: number | null
+          families_prior_12m?: number | null
+          last_false_positive_at?: string | null
+          last_order_date?: string | null
+          last_order_received_at?: string | null
+          last_touch_date?: string | null
+          open_backlog_amount?: number | null
+          order_days_24m?: number | null
+          priority?: string | null
+          revenue_12m?: number | null
+          revenue_percentile?: number | null
+          revenue_prior_12m?: number | null
+          score?: number | null
+          score_cadence?: number | null
+          score_mix?: number | null
+          score_recency?: number | null
+          score_trend?: number | null
+          score_value?: number | null
+          scored_at?: string | null
+          yearly_sales_goal?: number | null
+          yoy_change?: number | null
+        }
+        Update: {
+          cadence_confident?: boolean
+          cadence_days?: number | null
+          computed_at?: string
+          customer_key?: string
+          days_since_order?: number | null
+          days_since_touch?: number | null
+          factors?: Json | null
+          families_12m?: number | null
+          families_dropped?: number | null
+          families_prior_12m?: number | null
+          last_false_positive_at?: string | null
+          last_order_date?: string | null
+          last_order_received_at?: string | null
+          last_touch_date?: string | null
+          open_backlog_amount?: number | null
+          order_days_24m?: number | null
+          priority?: string | null
+          revenue_12m?: number | null
+          revenue_percentile?: number | null
+          revenue_prior_12m?: number | null
+          score?: number | null
+          score_cadence?: number | null
+          score_mix?: number | null
+          score_recency?: number | null
+          score_trend?: number | null
+          score_value?: number | null
+          scored_at?: string | null
+          yearly_sales_goal?: number | null
+          yoy_change?: number | null
         }
         Relationships: []
       }
@@ -86,7 +227,43 @@ export type Database = {
           recommendation_id?: number | null
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "actions_recommendation_id_fkey"
+            columns: ["recommendation_id"]
+            isOneToOne: false
+            referencedRelation: "recommendations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "actions_recommendation_id_fkey"
+            columns: ["recommendation_id"]
+            isOneToOne: false
+            referencedRelation: "v_mission_detail"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "actions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "actions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "actions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       ai_summaries: {
         Row: {
@@ -119,7 +296,29 @@ export type Database = {
           model?: string | null
           prompt_version?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "ai_summaries_generated_by_fkey"
+            columns: ["generated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_summaries_generated_by_fkey"
+            columns: ["generated_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_summaries_generated_by_fkey"
+            columns: ["generated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       contacts: {
         Row: {
@@ -161,7 +360,29 @@ export type Database = {
           title?: string | null
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "contacts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "contacts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "contacts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       job_runs: {
         Row: {
@@ -209,7 +430,29 @@ export type Database = {
           logged_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "login_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "login_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "login_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       mission_batches: {
         Row: {
@@ -245,7 +488,29 @@ export type Database = {
           scope_value?: string | null
           title?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       notes: {
         Row: {
@@ -269,7 +534,29 @@ export type Database = {
           customer_key?: string
           id?: never
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "notes_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "notes_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "notes_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       photos: {
         Row: {
@@ -302,7 +589,36 @@ export type Database = {
           storage_path?: string
           visit_id?: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "photos_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "photos_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "photos_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "photos_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -401,7 +717,71 @@ export type Database = {
           status?: string
           title?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "recommendations_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "mission_batch_progress"
+            referencedColumns: ["batch_id"]
+          },
+          {
+            foreignKeyName: "recommendations_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "mission_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "recommendations_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_rule_key_fkey"
+            columns: ["rule_key"]
+            isOneToOne: false
+            referencedRelation: "rule_settings"
+            referencedColumns: ["rule_key"]
+          },
+        ]
       }
       rule_settings: {
         Row: {
@@ -426,6 +806,58 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      score_settings: {
+        Row: {
+          id: boolean
+          params: Json
+          priority_high: number
+          priority_low: number
+          updated_at: string
+          updated_by: string | null
+          weights: Json
+        }
+        Insert: {
+          id?: boolean
+          params?: Json
+          priority_high?: number
+          priority_low?: number
+          updated_at?: string
+          updated_by?: string | null
+          weights?: Json
+        }
+        Update: {
+          id?: boolean
+          params?: Json
+          priority_high?: number
+          priority_low?: number
+          updated_at?: string
+          updated_by?: string | null
+          weights?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "score_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "score_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "score_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       tasks: {
         Row: {
@@ -458,7 +890,29 @@ export type Database = {
           title?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "tasks_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "tasks_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "tasks_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       visits: {
         Row: {
@@ -512,7 +966,36 @@ export type Database = {
           visit_date?: string
           visit_type?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "visits_action_id_fkey"
+            columns: ["action_id"]
+            isOneToOne: false
+            referencedRelation: "actions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "visits_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "visits_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
     }
     Views: {
@@ -545,7 +1028,29 @@ export type Database = {
           title: string | null
           total: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       rep_execution_summary: {
         Row: {
@@ -559,6 +1064,102 @@ export type Database = {
           overdue_recommendations: number | null
           rep_group_vendor_id: string | null
           user_id: string | null
+        }
+        Insert: {
+          actions_last_30d?: never
+          active?: boolean | null
+          assigned_accounts?: never
+          full_name?: string | null
+          last_action_date?: never
+          last_login_at?: never
+          open_recommendations?: never
+          overdue_recommendations?: never
+          rep_group_vendor_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          actions_last_30d?: never
+          active?: boolean | null
+          assigned_accounts?: never
+          full_name?: string | null
+          last_action_date?: never
+          last_login_at?: never
+          open_recommendations?: never
+          overdue_recommendations?: never
+          rep_group_vendor_id?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      v_account_list: {
+        Row: {
+          active_flag: string | null
+          assigned_sales_rep_id: string | null
+          assigned_sales_rep_name: string | null
+          customer_key: string | null
+          customer_name: string | null
+          last_order_date: string | null
+          sold_to_city: string | null
+          sold_to_state: string | null
+          territory: string | null
+        }
+        Insert: {
+          active_flag?: string | null
+          assigned_sales_rep_id?: string | null
+          assigned_sales_rep_name?: string | null
+          customer_key?: string | null
+          customer_name?: string | null
+          last_order_date?: never
+          sold_to_city?: string | null
+          sold_to_state?: string | null
+          territory?: string | null
+        }
+        Update: {
+          active_flag?: string | null
+          assigned_sales_rep_id?: string | null
+          assigned_sales_rep_name?: string | null
+          customer_key?: string | null
+          customer_name?: string | null
+          last_order_date?: never
+          sold_to_city?: string | null
+          sold_to_state?: string | null
+          territory?: string | null
+        }
+        Relationships: []
+      }
+      v_account_order_lines: {
+        Row: {
+          backlog_qty: number | null
+          bookings: number | null
+          customer_key: string | null
+          is_backlog_line: boolean | null
+          line_num: number | null
+          line_status_desc: string | null
+          order_date: string | null
+          order_id: string | null
+          order_qty: number | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          promise_date: string | null
+        }
+        Relationships: []
+      }
+      v_account_recent_order_headers: {
+        Row: {
+          backlog_amount: number | null
+          backlog_qty: number | null
+          bookings: number | null
+          customer_key: string | null
+          line_count: number | null
+          next_promise_date: string | null
+          open_line_count: number | null
+          order_date: string | null
+          order_id: string | null
+          order_qty: number | null
+          order_state: string | null
+          order_status_desc: string | null
+          rn: number | null
         }
         Relationships: []
       }
@@ -579,6 +1180,24 @@ export type Database = {
           part_id: string | null
           part_key: string | null
           promise_date: string | null
+        }
+        Relationships: []
+      }
+      v_account_recent_shipment_headers: {
+        Row: {
+          actual_delivery_date: string | null
+          customer_key: string | null
+          line_count: number | null
+          order_ids: string | null
+          packlist_id: string | null
+          rn: number | null
+          ship_date: string | null
+          ship_via: string | null
+          shipment_state: string | null
+          shipped_qty: number | null
+          shipped_revenue: number | null
+          shipper_status_desc: string | null
+          tracking_number: string | null
         }
         Relationships: []
       }
@@ -608,6 +1227,23 @@ export type Database = {
           invoice_count: number | null
           month: string | null
           revenue: number | null
+        }
+        Relationships: []
+      }
+      v_account_shipment_lines: {
+        Row: {
+          actual_delivery_date: string | null
+          customer_key: string | null
+          invoice_id: string | null
+          line_num: number | null
+          order_id: string | null
+          packlist_id: string | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          ship_date: string | null
+          shipped_qty: number | null
+          shipped_revenue: number | null
         }
         Relationships: []
       }
@@ -641,7 +1277,22 @@ export type Database = {
           status: string | null
           title: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "recommendations_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "mission_batch_progress"
+            referencedColumns: ["batch_id"]
+          },
+          {
+            foreignKeyName: "recommendations_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "mission_batches"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       v_rep_activity: {
         Row: {
@@ -669,24 +1320,40 @@ export type Database = {
       }
     }
     Functions: {
+      admin_rescore_accounts: { Args: never; Returns: number }
+      ai_batch_targets: {
+        Args: { p_per_rep?: number }
+        Returns: {
+          customer_key: string
+          score: number
+        }[]
+      }
+      apply_account_scores: {
+        Args: {
+          p_settings?: Database["public"]["Tables"]["score_settings"]["Row"]
+        }
+        Returns: number
+      }
+      clamp100: { Args: { v: number }; Returns: number }
       create_mission: {
         Args: {
-          p_title: string
-          p_reason?: string | null
+          p_active_only?: boolean
+          p_customer_keys?: string[]
+          p_dry_run?: boolean
+          p_due_date?: string
           p_priority?: string
-          p_due_date?: string | null
+          p_reason?: string
           p_requires_visit?: boolean
           p_scope_type?: string
-          p_scope_value?: string | null
-          p_customer_keys?: string[] | null
-          p_active_only?: boolean
-          p_dry_run?: boolean
+          p_scope_value?: string
+          p_title: string
         }
         Returns: {
-          batch_id: number | null
+          batch_id: number
           created_count: number
         }[]
       }
+      explain_score: { Args: { p_factors: Json }; Returns: string }
       generate_recommendations: {
         Args: never
         Returns: {
@@ -709,6 +1376,52 @@ export type Database = {
       log_login: { Args: never; Returns: undefined }
       my_customer_keys: { Args: never; Returns: string[] }
       placeholder_rep_keys: { Args: never; Returns: string[] }
+      preview_account_scores: {
+        Args: {
+          p_high?: number
+          p_limit?: number
+          p_low?: number
+          p_params?: Json
+          p_weights?: Json
+        }
+        Returns: {
+          customer_key: string
+          customer_name: string
+          factors: Json
+          priority: string
+          score: number
+          score_cadence: number
+          score_mix: number
+          score_recency: number
+          score_trend: number
+          score_value: number
+        }[]
+      }
+      preview_recommendation_counts: {
+        Args: {
+          p_high?: number
+          p_low?: number
+          p_params?: Json
+          p_rules?: Json
+          p_weights?: Json
+        }
+        Returns: {
+          rule_key: string
+          would_create: number
+        }[]
+      }
+      refresh_account_signals: { Args: never; Returns: number }
+      rule_in_cooldown: {
+        Args: { p_customer_key: string; p_params: Json; p_rule_key: string }
+        Returns: boolean
+      }
+      score_account: {
+        Args: {
+          cfg: Database["public"]["Tables"]["score_settings"]["Row"]
+          s: Database["public"]["Tables"]["account_signals"]["Row"]
+        }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never
@@ -719,13 +1432,125 @@ export type Database = {
   }
 }
 
-type PublicSchema = Database['public']
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
 
-export type Tables<T extends keyof (PublicSchema['Tables'] & PublicSchema['Views'])> =
-  (PublicSchema['Tables'] & PublicSchema['Views'])[T] extends { Row: infer R } ? R : never
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
 
-export type TablesInsert<T extends keyof PublicSchema['Tables']> =
-  PublicSchema['Tables'][T] extends { Insert: infer I } ? I : never
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
 
-export type TablesUpdate<T extends keyof PublicSchema['Tables']> =
-  PublicSchema['Tables'][T] extends { Update: infer U } ? U : never
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {},
+  },
+} as const
