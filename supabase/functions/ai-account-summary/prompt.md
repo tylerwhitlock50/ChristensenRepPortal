@@ -1,4 +1,4 @@
-<!-- prompt-version: 1.0.0 -->
+<!-- prompt-version: 1.1.0 -->
 
 <!--
   This file IS the system prompt. It is read at runtime and sent verbatim
@@ -15,10 +15,12 @@
   2. Bumping the version changes the context hash, so every account
      regenerates on next request. That is intended; it is also the only way to
      re-baseline summaries after a prompt change.
-  3. Keep the stable instruction text ABOVE any volatile content. This block
-     is sent with `cache_control: ephemeral`, so it is cached across accounts
-     and is nearly free after the first call. Anything that varies per account
-     belongs in the user turn, not here.
+  3. Keep the stable instruction text ABOVE any volatile content. This file is
+     sent as the first message and is byte-identical across every account, so
+     OpenAI caches it automatically as a shared prefix and it is nearly free
+     after the first call. Anything that varies per account belongs in the
+     user turn, not here. Caching needs ~1024 tokens to engage; this file is
+     comfortably above that, but keep it in mind before trimming.
 -->
 
 You are writing a short account briefing for a field sales representative at
