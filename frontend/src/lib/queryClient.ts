@@ -68,6 +68,7 @@ export const qk = {
     visits: (key: string) => ['account', key, 'visits'] as const,
     photos: (key: string) => ['account', key, 'photos'] as const,
     aiSummary: (key: string) => ['account', key, 'ai-summary'] as const,
+    status: (key: string) => ['account', key, 'status'] as const,
     summary: (key: string) => ['account', key, 'summary'] as const,
     revenueMonthly: (key: string) => ['account', key, 'revenue-monthly'] as const,
     skuSales: (key: string) => ['account', key, 'sku-sales'] as const,
@@ -80,6 +81,8 @@ export const qk = {
   tasks: {
     root: () => ['tasks'] as const,
     mine: (userId: string) => ['tasks', 'mine', userId] as const,
+    due: (userId: string) => ['tasks', 'due', userId] as const,
+    closed: (userId: string) => ['tasks', 'closed', userId] as const,
     forAccount: (userId: string, key: string) =>
       ['tasks', 'account', userId, key] as const,
   },
@@ -92,6 +95,8 @@ export const qk = {
     missionDetail: (batchId: number) => ['admin', 'missions', batchId] as const,
     activity: () => ['admin', 'activity'] as const,
     salesReps: () => ['admin', 'sales-reps'] as const,
+    scoreSettings: () => ['admin', 'score-settings'] as const,
+    rules: () => ['admin', 'rules'] as const,
   },
 } as const
 

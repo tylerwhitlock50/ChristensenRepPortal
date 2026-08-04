@@ -54,6 +54,59 @@ export type AiSummaryResult = {
  */
 export const aiSummaryKey = qk.account.aiSummary
 
+/** Headlines for a set of accounts — the Today cards, not an account page. */
+export const aiHeadlinesKey = (keys: string[]) => ['me', 'ai-headlines', keys] as const
+
+/**
+ * An AI headline is only better than the deterministic `reason` string while
+ * it is current. The reason is rebuilt nightly from tonight's facts; a
+ * headline from three weeks ago sitting on a card that says "Do this first"
+ * is worse than the sentence it replaced.
+ */
+export const HEADLINE_MAX_AGE_DAYS = 7
+
+export interface AccountHeadline {
+  headline: string
+  generatedAt: string
+}
+
+/**
+ * Batch-read the cached headlines for the accounts currently on screen.
+ *
+ * Same shape as useAccountNames() — one `.in()` over the visible keys rather
+ * than a query per card. RLS scopes it, so no owner filter is written here.
+ * Degrades to an empty map: a missing headline must never take down the
+ * to-do list, and every caller falls back to `rec.reason`.
+ */
+export function useAiHeadlines(customerKeys: MaybeRef<string[]>) {
+  const list = computed(() => [...new Set(unref(customerKeys))].sort())
+
+  return useQuery({
+    queryKey: computed(() => aiHeadlinesKey(list.value)),
+    enabled: computed(() => list.value.length > 0),
+    staleTime: 5 * 60_000,
+    queryFn: async (): Promise<Record<string, AccountHeadline>> => {
+      const { data, error } = await supabase
+        .from('ai_summaries')
+        .select('customer_key, headline, generated_at')
+        .in('customer_key', list.value)
+      if (error) throw error
+
+      const cutoff = Date.now() - HEADLINE_MAX_AGE_DAYS * 86_400_000
+      const map: Record<string, AccountHeadline> = {}
+      for (const row of data ?? []) {
+        if (!row.headline) continue
+        if (new Date(row.generated_at).getTime() < cutoff) continue
+        map[row.customer_key] = {
+          headline: row.headline,
+          generatedAt: row.generated_at,
+        }
+      }
+      return map
+    },
+  })
+}
+
 /**
  * "as of <timestamp>" for the card footer. Persona #1 reads "as of yesterday"
  * faster than a date, and the date is more useful once it is older than that.

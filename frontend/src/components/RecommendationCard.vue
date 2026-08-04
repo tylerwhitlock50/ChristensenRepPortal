@@ -26,7 +26,11 @@ const props = defineProps<{
   accountName?: string
   /** Hide the account link when the card is already on that account's page. */
   hideAccountLink?: boolean
+  /** Recent pre-generated AI headline; falls back to `reason` when absent. */
+  headline?: string
 }>()
+
+const body = computed(() => props.headline || props.rec.reason)
 
 type Panel = 'none' | 'act' | 'close'
 const panel = ref<Panel>('none')
@@ -138,8 +142,8 @@ async function submitClose(status: 'closed' | 'dismissed') {
         </div>
 
         <h3 class="text-ink text-[17px] font-semibold">{{ rec.title }}</h3>
-        <p v-if="rec.reason" class="text-ink-2 mt-1 text-[15px] leading-relaxed">
-          {{ rec.reason }}
+        <p v-if="body" class="text-ink-2 mt-1 text-[15px] leading-relaxed">
+          {{ body }}
         </p>
 
         <RouterLink

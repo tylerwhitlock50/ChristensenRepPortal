@@ -26,17 +26,19 @@
      above. Measure before trimming — under the line, caching silently stops.
   5. Backticks inside the template literal must be escaped (\`).
 
-  v2.0.0 — the Sales Brief rewrite (data-first restructure)
+  v3.0.0 — the Sales Brief rewrite (data-first restructure)
   ---------------------------------------------------------
-  The product's AI philosophy changed: the AI is an analyst sitting beside
-  the rep, not a manager assigning work. v1's fourth paragraph ("what to do
-  next") assigned actions; v2 surfaces possible discussion topics instead and
-  the rep decides. Output is now HEADLINES-first (Bloomberg-style bullets,
-  then analysis) and the context gained a \`buying_patterns\` block
-  (reorder cadence, seasonality, typical order size, product mix).
+  (2.0.0 was the shared-context extraction re-baseline.) The product's AI
+  philosophy changed: the AI is an analyst sitting beside the rep, not a
+  manager assigning work. The old fourth paragraph ("what to do next")
+  assigned actions; v3 surfaces possible discussion topics instead and the
+  rep decides. Output is now HEADLINES-first (Bloomberg-style bullets, then
+  analysis) and the context gained a \`buying_patterns\` block (reorder
+  cadence, seasonality, typical order size, product mix) in
+  _shared/accountContext.ts.
 ============================================================================*/
 
-export const PROMPT_VERSION = '2.0.0'
+export const PROMPT_VERSION = '3.0.0'
 
 export const SYSTEM_PROMPT = `You are a sales analyst writing a short account brief for a field sales
 representative at Christensen Arms, a firearms manufacturer. The rep is about

@@ -10,6 +10,14 @@ const LIST_COLUMNS =
   'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, territory, last_order_date, active_flag'
 
 /**
+ * The view carries the portal deactivation columns (migration 023); the raw
+ * dim_customer fallback below cannot. That's fine: the fallback only runs
+ * when 015 isn't applied, and 023 can't be applied without 015, so on that
+ * path there are no deactivations to filter either.
+ */
+const VIEW_COLUMNS = `${LIST_COLUMNS}, deactivated_at, deactivation_reason`
+
+/**
  * The list reads public.v_account_list (migration 015), not erp.dim_customer:
  * same columns, but last_order_date is derived from order history instead of
  * the ERP's unmaintained CUSTOMER.LAST_ORDER_DATE field, which is NULL for
@@ -30,8 +38,14 @@ function sanitizeSearch(raw: string): string {
   return raw.trim().replace(/[,()"'\\*%]/g, '').slice(0, 80)
 }
 
+/** A v_account_list row: dim_customer identity plus the open deactivation. */
+export type AccountListRow = DimCustomerRow & {
+  deactivated_at?: string | null
+  deactivation_reason?: string | null
+}
+
 export interface AccountPage {
-  rows: DimCustomerRow[]
+  rows: AccountListRow[]
   total: number
   page: number
 }
@@ -65,12 +79,19 @@ export function useAccountSearch(
       const from = page * ACCOUNTS_PAGE_SIZE
 
       const runPage = (relation: 'v_account_list' | 'dim_customer') => {
-        const client =
-          relation === 'v_account_list' ? db : (erp as unknown as SupabaseClient)
+        const isView = relation === 'v_account_list'
+        const client = isView ? db : (erp as unknown as SupabaseClient)
         // Built as one expression so the query-builder type doesn't need to be
         // re-narrowed on each conditional filter.
-        const base = client.from(relation).select(LIST_COLUMNS, { count: 'exact' })
-        const scoped = active.value ? base.eq('active_flag', 'Y') : base
+        const base = client
+          .from(relation)
+          .select(isView ? VIEW_COLUMNS : LIST_COLUMNS, { count: 'exact' })
+        // "Active" = active in the ERP and not written off by the rep (023).
+        const scoped = active.value
+          ? isView
+            ? base.eq('active_flag', 'Y').is('deactivated_at', null)
+            : base.eq('active_flag', 'Y')
+          : base
         const filtered = term.value
           ? scoped.or(
               `customer_name.ilike.*${term.value}*,` +
@@ -91,7 +112,7 @@ export function useAccountSearch(
       }
       if (error) throw error
       return {
-        rows: (data ?? []) as unknown as DimCustomerRow[],
+        rows: (data ?? []) as unknown as AccountListRow[],
         total: count ?? 0,
         page,
       }

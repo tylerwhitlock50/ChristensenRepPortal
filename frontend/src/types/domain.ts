@@ -17,7 +17,13 @@ export type RecStatus = (typeof REC_STATUSES)[number]
 export const REC_PRIORITIES = ['high', 'normal', 'low'] as const
 export type RecPriority = (typeof REC_PRIORITIES)[number]
 
-/** PRD §7: a recommendation cannot close without one of these. */
+/**
+ * PRD §7: a recommendation cannot close without one of these. This is the
+ * list a rep can CHOOSE from — 'account_deactivated' is deliberately not in
+ * it. That outcome is stamped only by the deactivation trigger
+ * (023_account_deactivations.sql) and would be a nonsense chip in a close
+ * panel, but it still needs a label wherever closed work is displayed.
+ */
 export const REC_OUTCOMES = [
   'order_received',
   'inventory_issue',
@@ -29,7 +35,9 @@ export const REC_OUTCOMES = [
 ] as const
 export type RecOutcome = (typeof REC_OUTCOMES)[number]
 
-export const OUTCOME_LABELS: Record<RecOutcome, string> = {
+export type SystemRecOutcome = 'account_deactivated'
+
+export const OUTCOME_LABELS: Record<RecOutcome | SystemRecOutcome, string> = {
   order_received: 'Order received',
   inventory_issue: 'Inventory issue',
   competitor: 'Competitor activity',
@@ -37,6 +45,7 @@ export const OUTCOME_LABELS: Record<RecOutcome, string> = {
   seasonal: 'Seasonal',
   false_positive: 'Bad recommendation',
   could_not_contact: 'Could not contact',
+  account_deactivated: 'Account deactivated',
 }
 
 export const ACTION_TYPES = ['call', 'visit', 'email', 'other'] as const
@@ -73,6 +82,44 @@ export type PhotoCategory = (typeof PHOTO_CATEGORIES)[number]
 
 export const TASK_STATUSES = ['open', 'done', 'cancelled'] as const
 export type TaskStatus = (typeof TASK_STATUSES)[number]
+
+/**
+ * The account page's quick-action strip. Not a DB value — a UI vocabulary that
+ * two components have to agree on, which is the same reason everything else
+ * here exists.
+ */
+export const QUICK_ACTIONS = [
+  'visit',
+  'contact',
+  'note',
+  'photo',
+  'task',
+  'summary',
+] as const
+export type QuickAction = (typeof QUICK_ACTIONS)[number]
+
+/**
+ * Why a rep took an account out of play —
+ * account_deactivations.reason (023_account_deactivations.sql).
+ */
+export const DEACTIVATION_REASONS = [
+  'store_closed',
+  'buys_elsewhere',
+  'unresponsive',
+  'low_potential',
+  'duplicate_account',
+  'other',
+] as const
+export type DeactivationReason = (typeof DEACTIVATION_REASONS)[number]
+
+export const DEACTIVATION_REASON_LABELS: Record<DeactivationReason, string> = {
+  store_closed: 'Store closed',
+  buys_elsewhere: 'Buys elsewhere now',
+  unresponsive: "Can't get a response",
+  low_potential: 'Not worth the calls',
+  duplicate_account: 'Duplicate account',
+  other: 'Something else',
+}
 
 /** Mission scope options — mission_batches.scope_type (016_missions_admin.sql). */
 export const MISSION_SCOPES = ['all', 'vendor', 'rep', 'custom'] as const

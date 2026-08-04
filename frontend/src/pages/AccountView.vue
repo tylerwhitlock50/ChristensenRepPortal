@@ -32,6 +32,8 @@ const AccountRevenueChart = defineAsyncComponent(
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
 import AccountSkuSalesCard from '@/components/AccountSkuSalesCard.vue'
 import AccountBacklogCard from '@/components/AccountBacklogCard.vue'
+import AccountQuickActions from '@/components/AccountQuickActions.vue'
+import AccountTasksCard from '@/components/AccountTasksCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
 import VisitSurvey from '@/components/VisitSurvey.vue'
 import VisitHistoryCard from '@/components/VisitHistoryCard.vue'
@@ -44,7 +46,20 @@ import {
   type VisitFormValues,
 } from '@/lib/visitSchema'
 import { qk } from '@/lib/queryClient'
-import { ACTION_LABELS, ACTION_TYPES, type ActionType } from '@/types/domain'
+import {
+  ACTION_LABELS,
+  ACTION_TYPES,
+  DEACTIVATION_REASONS,
+  DEACTIVATION_REASON_LABELS,
+  type ActionType,
+  type DeactivationReason,
+  type QuickAction,
+} from '@/types/domain'
+import {
+  useAccountDeactivation,
+  useDeactivateAccount,
+  useReactivateAccount,
+} from '@/composables/useAccountStatus'
 import { daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
@@ -59,6 +74,16 @@ const session = useSessionStore()
    admin flags are on. Data underneath is untouched — flipping a flag back on
    restores everything. */
 const flags = useFeatureFlags()
+
+/* The quick-action strip only offers chips whose target panels exist under
+   the current flags. Summary is data-side and always available. */
+const quickActions = computed<QuickAction[]>(() => {
+  const list: QuickAction[] = ['summary']
+  if (flags.visits.value) list.push('visit', 'photo')
+  if (flags.actionLogging.value) list.push('contact', 'note')
+  if (flags.tasks.value) list.push('task')
+  return list
+})
 
 const account = useAccount(key)
 // Same query AccountSummaryCard runs — vue-query dedupes it, so this costs
@@ -314,6 +339,38 @@ async function submitNote() {
   }
 }
 
+/* ---- quick actions ------------------------------------------------------
+   The strip in the header only routes: it sets whichever panel ref the action
+   belongs to and scrolls that section into view. Same nextTick-then-scroll
+   shape as the ?survey= deep link below, and every target carries
+   `scroll-mt-16` so the sticky 56px app header doesn't cover the heading it
+   just scrolled to.
+------------------------------------------------------------------------- */
+const logSection = ref<HTMLElement | null>(null)
+const taskSection = ref<HTMLElement | null>(null)
+const noteSection = ref<HTMLElement | null>(null)
+const photoSection = ref<HTMLElement | null>(null)
+const summarySection = ref<HTMLElement | null>(null)
+
+async function onQuickAction(action: QuickAction) {
+  const targets: Record<QuickAction, typeof logSection> = {
+    visit: surveySection,
+    contact: logSection,
+    note: noteSection,
+    photo: photoSection,
+    task: taskSection,
+    summary: summarySection,
+  }
+
+  if (action === 'visit') openSurvey()
+  if (action === 'contact') logging.value = true
+  // Summarize is a paid call — jump to the card and let the rep press the
+  // button, rather than spending a token because they tapped a nav chip.
+
+  await nextTick()
+  targets[action].value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 /* ---- mission deep link --------------------------------------------------
    "Do the visit survey" on a mission card lands here as ?survey=<rec id>.
    Declared last: the immediate run calls openSurvey(), which touches refs
@@ -332,10 +389,64 @@ watch(
   { immediate: true },
 )
 
+/* ---- deactivation --------------------------------------------------------
+   The rep's override of the ERP's active_flag (migration 023). The panel
+   lives at the very bottom of the page — this is the "I'm done with this
+   account" action, not a daily one — and it confirms inline with a required
+   reason, never in a modal (TECH_STACK §2.4). Deactivating dismisses the
+   account's open recommendations and drops it from scoring DB-side, so the
+   copy below promises exactly what the trigger does.
+------------------------------------------------------------------------- */
+const deactivationQuery = useAccountDeactivation(key)
+const deactivation = computed(() => deactivationQuery.data.value ?? null)
+const deactivate = useDeactivateAccount()
+const reactivate = useReactivateAccount()
+
+const deactivating = ref(false)
+const deactivationReason = ref<DeactivationReason | null>(null)
+const deactivationNote = ref('')
+const deactivationError = ref('')
+
+async function submitDeactivation() {
+  if (!deactivationReason.value) return
+  deactivationError.value = ''
+  try {
+    await deactivate.mutateAsync({
+      customerKey: props.customerKey,
+      reason: deactivationReason.value,
+      note: deactivationNote.value,
+    })
+    deactivating.value = false
+    deactivationReason.value = null
+    deactivationNote.value = ''
+  } catch (e) {
+    deactivationError.value =
+      (e as Error).message || 'Could not deactivate this account right now.'
+  }
+}
+
+async function submitReactivation() {
+  const row = deactivation.value
+  if (!row) return
+  deactivationError.value = ''
+  try {
+    await reactivate.mutateAsync({ id: row.id, customerKey: props.customerKey })
+  } catch (e) {
+    deactivationError.value =
+      (e as Error).message || 'Could not reactivate this account right now.'
+  }
+}
+
 // The router reuses this component across /accounts/:customerKey changes, so
 // without this a survey opened for account A (and its mission id) would still
 // be open on account B and stamp the wrong recommendation.
-watch(key, () => closeSurvey())
+watch(key, () => {
+  closeSurvey()
+  deactivating.value = false
+  deactivationReason.value = null
+  deactivationNote.value = ''
+  deactivationError.value = ''
+})
 </script>
 
 <template>
@@ -365,7 +476,13 @@ watch(key, () => closeSurvey())
           </template>
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
-          <AppBadge v-if="account.data.value?.active_flag === 'Y'" tone="good">
+          <!-- The rep's write-off outranks the ERP flag: the ERP will keep
+               saying Active forever, and that's the whole reason 023 exists. -->
+          <AppBadge v-if="deactivation" tone="high">Deactivated</AppBadge>
+          <AppBadge
+            v-else-if="account.data.value?.active_flag === 'Y'"
+            tone="good"
+          >
             Active
           </AppBadge>
           <AppBadge v-else tone="neutral">Inactive</AppBadge>
@@ -375,6 +492,11 @@ watch(key, () => closeSurvey())
           >
             Rep: {{ account.data.value.assigned_sales_rep_name }}
           </span>
+        </div>
+
+        <!-- What the rep can do, before the numbers rather than after them. -->
+        <div class="mt-4">
+          <AccountQuickActions :include="quickActions" @select="onQuickAction" />
         </div>
       </header>
 
@@ -421,12 +543,51 @@ watch(key, () => closeSurvey())
       </dl>
     </AsyncState>
 
+    <!-- Deactivated: say so up top, with the way back. The full story and
+         the deactivate flow itself live at the bottom of the page. -->
+    <AppCard v-if="deactivation">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-ink text-[15px] font-semibold">
+            This account is deactivated —
+            {{ DEACTIVATION_REASON_LABELS[deactivation.reason] ?? deactivation.reason }}
+          </p>
+          <p class="text-muted mt-1 text-sm">
+            Taken out of play {{ daysAgo(deactivation.deactivated_at) }}. It's
+            hidden from your active list and gets no new recommendations until
+            you bring it back.
+          </p>
+          <p
+            v-if="deactivation.note"
+            class="text-ink-2 mt-2 text-sm whitespace-pre-wrap"
+          >
+            “{{ deactivation.note }}”
+          </p>
+        </div>
+        <AppButton
+          variant="secondary"
+          :loading="reactivate.isPending.value"
+          @click="submitReactivation"
+        >
+          Reactivate
+        </AppButton>
+      </div>
+      <p
+        v-if="deactivationError"
+        role="alert"
+        class="text-danger mt-2 text-sm font-medium"
+      >
+        {{ deactivationError }}
+      </p>
+    </AppCard>
+
     <!-- Mini-dashboard: every number below is aggregated in Postgres. -->
     <AccountSummaryCard :customer-key="customerKey" />
     <AccountRevenueChart :customer-key="customerKey" />
 
     <!-- The account Sales Brief — cached copy first, regeneration on request
          only. HEADLINES-first structure comes from the prompt (v2). -->
+    <section ref="summarySection" class="scroll-mt-16">
     <AppCard>
       <template #header>
         <h2 class="u-label text-ink">Sales Brief</h2>
@@ -468,6 +629,7 @@ watch(key, () => closeSurvey())
         </div>
       </AsyncState>
     </AppCard>
+    </section>
 
     <!-- Open recommendations -->
     <section v-if="flags.recommendations.value" class="space-y-3">
@@ -494,12 +656,17 @@ watch(key, () => closeSurvey())
     </section>
 
     <!-- Log a contact — the 10-second path. The full survey is below it. -->
-    <div v-if="flags.actionLogging.value && !logging">
+    <section
+      v-if="flags.actionLogging.value"
+      ref="logSection"
+      class="scroll-mt-16"
+    >
+    <div v-if="!logging">
       <AppButton variant="secondary" block @click="logging = true">
         Log a contact
       </AppButton>
     </div>
-    <AppCard v-else-if="flags.actionLogging.value" title="Log a contact">
+    <AppCard v-else title="Log a contact">
       <fieldset>
         <legend class="u-label mb-2">What did you do?</legend>
         <div class="flex flex-wrap gap-2">
@@ -536,6 +703,7 @@ watch(key, () => closeSurvey())
         <AppButton variant="ghost" @click="logging = false">Cancel</AppButton>
       </div>
     </AppCard>
+    </section>
 
     <!-- Visit survey — the one green button on this view. Opens inline. -->
     <section
@@ -621,8 +789,18 @@ watch(key, () => closeSurvey())
 
     <ContactsCard :customer-key="customerKey" />
 
+    <!-- Personal follow-ups on this account. -->
+    <section v-if="flags.tasks.value" ref="taskSection" class="scroll-mt-16">
+      <AccountTasksCard :customer-key="customerKey" />
+    </section>
+
     <!-- Notes -->
-    <AppCard v-if="flags.actionLogging.value" title="Notes">
+    <section
+      v-if="flags.actionLogging.value"
+      ref="noteSection"
+      class="scroll-mt-16"
+    >
+    <AppCard title="Notes">
       <form class="mb-4" @submit.prevent="submitNote">
         <label class="sr-only" for="note">Add a note</label>
         <textarea
@@ -662,11 +840,14 @@ watch(key, () => closeSurvey())
         </ul>
       </AsyncState>
     </AppCard>
+    </section>
 
     <!-- Photos that aren't tied to a survey — an endcap on the way past. -->
-    <AppCard v-if="flags.visits.value" title="Photos">
-      <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
-    </AppCard>
+    <section v-if="flags.visits.value" ref="photoSection" class="scroll-mt-16">
+      <AppCard title="Photos">
+        <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
+      </AppCard>
+    </section>
 
     <VisitHistoryCard v-if="flags.visits.value" :customer-key="customerKey" />
 
@@ -699,5 +880,81 @@ watch(key, () => closeSurvey())
         </ul>
       </AsyncState>
     </AppCard>
+
+    <!-- Deactivate — last on purpose: this is "I'm done with this account",
+         not a daily action. Inline confirm with a required reason, never a
+         modal (TECH_STACK §2.4). Hidden while already deactivated; the
+         banner at the top owns that state. -->
+    <section
+      v-if="account.data.value && !deactivation && !deactivationQuery.isPending.value"
+    >
+      <div v-if="!deactivating">
+        <AppButton variant="ghost" block @click="deactivating = true">
+          Deactivate this account…
+        </AppButton>
+        <p class="text-muted mt-2 text-center text-xs">
+          Not worth working anymore? Take it off your list — you can always
+          bring it back.
+        </p>
+      </div>
+
+      <AppCard v-else title="Deactivate this account">
+        <p class="text-muted text-sm">
+          The ERP will still show it as active, but it drops off your active
+          list, stops being scored, and its open recommendations are dismissed.
+          Reactivating undoes all of that.
+        </p>
+
+        <fieldset class="mt-4">
+          <legend class="u-label mb-2">Why?</legend>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="r in DEACTIVATION_REASONS"
+              :key="r"
+              type="button"
+              class="inline-flex min-h-11 items-center rounded-[2px] px-4 text-[15px] font-semibold"
+              :class="
+                deactivationReason === r
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="deactivationReason === r"
+              @click="deactivationReason = r"
+            >
+              {{ DEACTIVATION_REASON_LABELS[r] }}
+            </button>
+          </div>
+        </fieldset>
+
+        <textarea
+          v-model="deactivationNote"
+          rows="3"
+          placeholder="Anything worth remembering about why? (optional)"
+          class="field mt-3 h-auto p-3.5"
+        />
+
+        <p
+          v-if="deactivationError"
+          role="alert"
+          class="text-danger mt-2 text-sm font-medium"
+        >
+          {{ deactivationError }}
+        </p>
+
+        <div class="mt-3 flex gap-2">
+          <AppButton
+            variant="danger"
+            :disabled="!deactivationReason"
+            :loading="deactivate.isPending.value"
+            @click="submitDeactivation"
+          >
+            Deactivate
+          </AppButton>
+          <AppButton variant="ghost" @click="deactivating = false">
+            Cancel
+          </AppButton>
+        </div>
+      </AppCard>
+    </section>
   </div>
 </template>

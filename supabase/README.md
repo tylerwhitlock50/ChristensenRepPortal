@@ -22,6 +22,13 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `014_erp_column_drift.sql` | ERP landing-table column drift fixes |
 | `015_account_last_order_date.sql` | `v_account_list` with harmonized `last_order_date` |
 | `016_missions_admin.sql` | Missions: `mission_batches`, `recommendations.requires_visit`/`batch_id`, visit-required close trigger, `create_mission()` bulk RPC with dry-run, progress/detail/activity views, `profiles.email` mirror, profile placeholder guard, login-events + `v_user_accounts` cleanups |
+| `017_function_hardening.sql` | Function grants + pinned `search_path` |
+| `018_account_header_views.sql` | Order/shipment views at header grain + line detail for the drill-in |
+| `019_account_scoring.sql` | `account_signals` (a TABLE — matviews cannot carry RLS), `score_settings`, `score_account()`, `refresh_account_signals()` / `apply_account_scores()` split, `preview_account_scores()` |
+| `020_recommendation_engine_v2.sql` | `generate_recommendations()` on the score: banded priority, why-now `reason`, `cadence_overdue` (seeded off), per-rule cooldown after a resolution, `preview_recommendation_counts()` |
+| `021_ai_summary_batch.sql` | `ai_summaries.headline`, `ai_batch_targets()` for the nightly pre-generation |
+| `022_job_run_duration.sql` | `log_job_run()` stamps `finished_at` with `clock_timestamp()`, so job durations are real |
+| `023_account_deactivations.sql` | `account_deactivations` — rep-side "stop working this account" override with reason + history; dismiss/de-score trigger; exclusions in `v_account_list`, `refresh_account_signals()`, `create_mission()`, coverage views |
 
 ## Applying
 
@@ -61,5 +68,22 @@ or paste each file in order into the Dashboard SQL editor, or apply via MCP
 - Recommendations: reps never create them (system job or admin only), an
   action auto-advances `open → acted`, and a CHECK constraint blocks
   closing/dismissing without an outcome.
-- Rule thresholds live in `rule_settings.params` (jsonb) — tune with an
-  UPDATE, not a migration.
+- Rule thresholds live in `rule_settings.params` (jsonb) — tune from
+  /admin/settings, or with an UPDATE. Not a migration.
+- **Scoring weights live in `score_settings`, NOT in `rule_settings`.**
+  `recommendations.rule_key` is a foreign key to `rule_settings.rule_key`, so
+  every row in that table is a legal rule stamp on a recommendation. A weight
+  vector is not a rule and must not be stampable.
+- `account_signals` is a plain table and must stay one. Postgres does not
+  support RLS on materialized views, and Supabase grants `authenticated`
+  SELECT on new objects in `public` — so the obvious "nightly rollup" shape
+  would serve every dealer's revenue to every rep while looking correct.
+- Closed recommendations no longer re-fire the next night. `uq_recs_open_rule`
+  only ever prevented duplicate *open* rows; the cooldown in 020 is what makes
+  resolving something mean anything.
+- The ERP's `active_flag` is not the whole story: `account_deactivations`
+  (023) is the rep's own "stop working this account" override, and every
+  active-only surface (account list, scoring, missions, coverage) must check
+  both. Deactivation never removes *access* — `my_customer_keys()` and
+  `has_account_access()` are deliberately untouched, so the rep can still
+  open the account and undo it.

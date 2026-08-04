@@ -5,7 +5,9 @@ import { onClickOutside } from '@vueuse/core'
 import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useFeatureFlags } from '@/composables/useAppSettings'
+import { useMyDueTasks } from '@/composables/useTasks'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
+import NavBadge from '@/components/NavBadge.vue'
 import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
@@ -35,26 +37,66 @@ const missionsLate = computed(() =>
   }),
 )
 
+/* Due follow-ups on the Tasks tab. Deliberately NOT gated off for admins the
+   way the mission query above is: `tasks` is user-scoped and the composable
+   always sends `.eq('user_id', …)`, so an admin sees their own list, not the
+   company's. Gating it would hide an admin's own overdue follow-ups. */
+const dueTasks = useMyDueTasks()
+const tasksDue = computed(() => dueTasks.data.value?.due ?? 0)
+const tasksOverdue = computed(() => dueTasks.data.value?.overdue ?? 0)
+
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 onClickOutside(menuRef, () => (menuOpen.value = false))
 
+type Badge = { count: number; late: boolean; label: string }
+type NavItem = {
+  to: string | { name: string }
+  label: string
+  icon: string
+  badge?: Badge
+}
+
 /* Data-first nav: Overview, Sales Intel, Accounts always; the capture
-   features (Today, Tasks) appear only while their flags are on. Flags load
-   as false, so the bar renders the lean set first and never flashes a
-   hidden feature. */
-const nav = computed(() => {
-  const items: { to: string | { name: string }; label: string; icon: string }[] = [
+   features (Today, Tasks) appear only while their flags are on — with their
+   badges, which hang off the item rather than being matched by icon name at
+   the two render sites. Flags load as false, so the bar renders the lean
+   set first and never flashes a hidden feature. */
+const nav = computed<NavItem[]>(() => {
+  const items: NavItem[] = [
     { to: { name: 'overview' }, label: 'Overview', icon: 'overview' },
     // Path, not name, for section parents: keeps the item active on every
     // child tab.
     { to: '/intel', label: 'Intel', icon: 'intel' },
     { to: { name: 'accounts' }, label: 'Accounts', icon: 'accounts' },
   ]
-  if (flags.recommendations.value)
-    items.splice(0, 0, { to: { name: 'today' }, label: 'Today', icon: 'today' })
-  if (flags.tasks.value)
-    items.push({ to: { name: 'tasks' }, label: 'Tasks', icon: 'tasks' })
+  if (flags.recommendations.value) {
+    items.splice(0, 0, {
+      to: { name: 'today' },
+      label: 'Today',
+      icon: 'today',
+      badge: {
+        count: missionCount.value,
+        late: missionsLate.value,
+        label: `${missionCount.value} open missions`,
+      },
+    })
+  }
+  if (flags.tasks.value) {
+    items.push({
+      to: { name: 'tasks' },
+      label: 'Tasks',
+      icon: 'tasks',
+      badge: {
+        count: tasksDue.value,
+        late: tasksOverdue.value > 0,
+        label:
+          tasksOverdue.value > 0
+            ? `${tasksDue.value} follow-ups due, ${tasksOverdue.value} overdue`
+            : `${tasksDue.value} follow-ups due`,
+      },
+    })
+  }
   if (session.isAdmin) {
     items.push({ to: '/admin', label: 'Admin', icon: 'admin' })
   }
@@ -115,14 +157,14 @@ async function signOut() {
               active-class="!text-canvas !border-accent"
             >
               {{ item.label }}
-              <span
-                v-if="item.icon === 'today' && missionCount > 0"
-                class="ml-1 inline-grid min-w-5 place-items-center px-1 py-0.5 text-[11px] leading-none font-bold"
-                :class="missionsLate ? 'bg-accent text-[#20100A]' : 'bg-canvas text-ink'"
-                :aria-label="`${missionCount} open missions`"
-              >
-                {{ missionCount }}
-              </span>
+              <NavBadge
+                v-if="item.badge"
+                class="ml-1"
+                variant="header"
+                :count="item.badge.count"
+                :late="item.badge.late"
+                :label="item.badge.label"
+              />
             </RouterLink>
           </nav>
         </div>
@@ -210,14 +252,14 @@ async function signOut() {
           class="font-label relative flex min-h-[66px] flex-1 flex-col items-center justify-center gap-1 border-t-2 border-transparent text-xs font-semibold tracking-[0.1em] text-[#8E8A80] uppercase"
           active-class="!text-ink !border-ink -mt-px"
         >
-          <span
-            v-if="item.icon === 'today' && missionCount > 0"
-            class="absolute top-2 left-1/2 ml-1.5 inline-grid min-w-5 place-items-center px-1 py-0.5 text-[11px] leading-none font-bold"
-            :class="missionsLate ? 'bg-accent text-[#20100A]' : 'bg-ink text-canvas'"
-            :aria-label="`${missionCount} open missions`"
-          >
-            {{ missionCount }}
-          </span>
+          <NavBadge
+            v-if="item.badge"
+            class="absolute top-2 left-1/2 ml-1.5"
+            variant="bar"
+            :count="item.badge.count"
+            :late="item.badge.late"
+            :label="item.badge.label"
+          />
           <svg
             class="size-5"
             viewBox="0 0 24 24"
