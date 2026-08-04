@@ -20,6 +20,11 @@ tables:
     target_table: erp.fact_shipment_line
   - source_view: bi.vw_FactInventoryOnHand
     target_table: erp.fact_inventory_on_hand
+  # ATS list (migration 027 must be applied before this entry first runs —
+  # truncate+COPY fails on a missing table). next_avail_date is a generated
+  # column in the target; per the note below it must NOT be pushed.
+  - source_view: bi.vw_FactATS
+    target_table: erp.fact_ats
 
 # Generated columns in the target (order_date, ship_date, …) are computed by
 # Postgres — the ETL must NOT include them in the column list.
@@ -44,4 +49,8 @@ column_map:
 
 # After the last table loads successfully, run:
 post_load_sql:
-  - "select public.generate_recommendations();"
+  # Gated at the call site (migration 024): while feature.recommendations is
+  # disabled the SRF in the select list is never evaluated, so the nightly
+  # run mints nothing — and the gate survives any rewrite of the function
+  # itself. Flipping the flag back on resumes generation on the next load.
+  - "select public.generate_recommendations() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"

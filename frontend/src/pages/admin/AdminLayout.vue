@@ -1,15 +1,29 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useFeatureFlags } from '@/composables/useAppSettings'
+
 /**
- * The admin section shell: one nav entry ("Admin") fans out here into four
- * tabs. A tab bar instead of more top-nav items because the phone bottom bar
- * is already full at four entries.
+ * The admin section shell: one nav entry ("Admin") fans out here into tabs.
+ * A tab bar instead of more top-nav items because the phone bottom bar is
+ * already full at four entries. Missions rides the recommendations flag —
+ * composing missions nobody can see would just be confusing.
  */
-const tabs = [
-  { to: { name: 'admin-execution' }, label: 'Execution' },
-  { to: { name: 'admin-users' }, label: 'Users' },
-  { to: { name: 'admin-missions' }, label: 'Missions' },
-  { to: { name: 'admin-activity' }, label: 'Activity' },
-] as const
+const flags = useFeatureFlags()
+
+const tabs = computed(() => {
+  const items: { to: { name: string }; label: string }[] = [
+    { to: { name: 'admin-execution' }, label: 'Execution' },
+    { to: { name: 'admin-users' }, label: 'Users' },
+  ]
+  if (flags.recommendations.value) {
+    items.push({ to: { name: 'admin-missions' }, label: 'Missions' })
+  }
+  items.push(
+    { to: { name: 'admin-activity' }, label: 'Activity' },
+    { to: { name: 'admin-settings' }, label: 'Settings' },
+  )
+  return items
+})
 </script>
 
 <template>

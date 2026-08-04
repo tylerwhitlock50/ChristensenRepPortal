@@ -20,7 +20,6 @@ import { QueryClient } from '@tanstack/vue-query'
  * and must stay byte-identical to them:
  *
  *   qk.account.visits        = visitsQueryKey()      src/composables/useVisits.ts
- *   qk.account.aiSummary     = aiSummaryKey()        src/composables/useAiSummary.ts
  *   qk.account.summary       ┐ accountMetricsKeys    src/composables/useAccountMetrics.ts
  *   qk.account.revenueMonthly┘ (also reuses .orders / .shipments below)
  *   qk.tasks.*               = taskKeys              src/composables/useTasks.ts
@@ -35,6 +34,27 @@ export const qk = {
     accounts: () => ['me', 'accounts'] as const,
     activity: () => ['me', 'activity'] as const,
   },
+  /** Feature flags (public.app_settings). One list, long staleTime. */
+  settings: () => ['app-settings'] as const,
+  /** "As of / Data through" stamp (public.v_data_freshness). */
+  freshness: () => ['data-freshness'] as const,
+  /**
+   * Territory-scoped intel — the Overview and the Sales Intel section.
+   * These are the caller's whole book (RLS is the filter), so they carry no
+   * account key. Account-scoped intel lives under `account` below so the
+   * root-invalidation sweep covers it.
+   */
+  intel: {
+    territoryYoy: () => ['intel', 'territory-yoy'] as const,
+    territoryRecentOrders: () => ['intel', 'territory-recent-orders'] as const,
+    territorySku: () => ['intel', 'territory-sku'] as const,
+    backlog: () => ['intel', 'backlog'] as const,
+    ats: () => ['intel', 'ats'] as const,
+    global: (months: number) => ['intel', 'global', months] as const,
+  },
+  /** Cached AI Action output (public.ai_briefs). subject '' = territory. */
+  aiBrief: (action: string, subject = '') =>
+    ['ai-brief', action, subject] as const,
   account: {
     root: (key: string) => ['account', key] as const,
     detail: (key: string) => ['account', key, 'detail'] as const,
@@ -50,6 +70,8 @@ export const qk = {
     aiSummary: (key: string) => ['account', key, 'ai-summary'] as const,
     summary: (key: string) => ['account', key, 'summary'] as const,
     revenueMonthly: (key: string) => ['account', key, 'revenue-monthly'] as const,
+    skuSales: (key: string) => ['account', key, 'sku-sales'] as const,
+    backlogSku: (key: string) => ['account', key, 'backlog-sku'] as const,
   },
   /**
    * Personal follow-ups. Scoped by user id so signing in as someone else on a

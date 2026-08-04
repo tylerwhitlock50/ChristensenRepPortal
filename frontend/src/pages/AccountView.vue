@@ -14,6 +14,7 @@ import {
 } from '@/composables/useAccountData'
 import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
 import { useAccountSummary } from '@/composables/useAccountMetrics'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -29,6 +30,8 @@ const AccountRevenueChart = defineAsyncComponent(
   () => import('@/components/AccountRevenueChart.vue'),
 )
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
+import AccountSkuSalesCard from '@/components/AccountSkuSalesCard.vue'
+import AccountBacklogCard from '@/components/AccountBacklogCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
 import VisitSurvey from '@/components/VisitSurvey.vue'
 import VisitHistoryCard from '@/components/VisitHistoryCard.vue'
@@ -50,6 +53,12 @@ const key = computed(() => props.customerKey)
 const qc = useQueryClient()
 const online = useOnline()
 const session = useSessionStore()
+
+/* Data-first restructure: the capture surfaces on this page (recommendations,
+   survey + photos, log-a-contact + notes + activity) render only while their
+   admin flags are on. Data underneath is untouched — flipping a flag back on
+   restores everything. */
+const flags = useFeatureFlags()
 
 const account = useAccount(key)
 // Same query AccountSummaryCard runs — vue-query dedupes it, so this costs
@@ -416,10 +425,11 @@ watch(key, () => closeSurvey())
     <AccountSummaryCard :customer-key="customerKey" />
     <AccountRevenueChart :customer-key="customerKey" />
 
-    <!-- AI summary — cached copy first, regeneration on request only. -->
+    <!-- The account Sales Brief — cached copy first, regeneration on request
+         only. HEADLINES-first structure comes from the prompt (v2). -->
     <AppCard>
       <template #header>
-        <h2 class="u-label text-ink">The story so far</h2>
+        <h2 class="u-label text-ink">Sales Brief</h2>
         <AppButton
           variant="ghost"
           :loading="generate.isPending.value"
@@ -460,7 +470,7 @@ watch(key, () => closeSurvey())
     </AppCard>
 
     <!-- Open recommendations -->
-    <section class="space-y-3">
+    <section v-if="flags.recommendations.value" class="space-y-3">
       <h2 class="font-label text-muted text-xs font-semibold tracking-[0.18em] uppercase">
         Needs attention
       </h2>
@@ -484,12 +494,12 @@ watch(key, () => closeSurvey())
     </section>
 
     <!-- Log a contact — the 10-second path. The full survey is below it. -->
-    <div v-if="!logging">
+    <div v-if="flags.actionLogging.value && !logging">
       <AppButton variant="secondary" block @click="logging = true">
         Log a contact
       </AppButton>
     </div>
-    <AppCard v-else title="Log a contact">
+    <AppCard v-else-if="flags.actionLogging.value" title="Log a contact">
       <fieldset>
         <legend class="u-label mb-2">What did you do?</legend>
         <div class="flex flex-wrap gap-2">
@@ -528,7 +538,11 @@ watch(key, () => closeSurvey())
     </AppCard>
 
     <!-- Visit survey — the one green button on this view. Opens inline. -->
-    <section ref="surveySection" class="scroll-mt-16 space-y-3">
+    <section
+      v-if="flags.visits.value"
+      ref="surveySection"
+      class="scroll-mt-16 space-y-3"
+    >
       <template v-if="!surveyOpen">
         <AppButton variant="primary" size="lg" block @click="openSurvey">
           Log a visit
@@ -601,10 +615,14 @@ watch(key, () => closeSurvey())
     <!-- Orders and shipments, straight off the rollup views. -->
     <AccountOrdersCard :customer-key="customerKey" />
 
+    <!-- What they buy and what they're owed, by SKU (data-first additions). -->
+    <AccountSkuSalesCard :customer-key="customerKey" />
+    <AccountBacklogCard :customer-key="customerKey" />
+
     <ContactsCard :customer-key="customerKey" />
 
     <!-- Notes -->
-    <AppCard title="Notes">
+    <AppCard v-if="flags.actionLogging.value" title="Notes">
       <form class="mb-4" @submit.prevent="submitNote">
         <label class="sr-only" for="note">Add a note</label>
         <textarea
@@ -646,14 +664,14 @@ watch(key, () => closeSurvey())
     </AppCard>
 
     <!-- Photos that aren't tied to a survey — an endcap on the way past. -->
-    <AppCard title="Photos">
+    <AppCard v-if="flags.visits.value" title="Photos">
       <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
     </AppCard>
 
-    <VisitHistoryCard :customer-key="customerKey" />
+    <VisitHistoryCard v-if="flags.visits.value" :customer-key="customerKey" />
 
     <!-- Activity -->
-    <AppCard title="Activity">
+    <AppCard v-if="flags.actionLogging.value" title="Activity">
       <AsyncState
         :loading="actions.isPending.value"
         :error="actions.error.value"
