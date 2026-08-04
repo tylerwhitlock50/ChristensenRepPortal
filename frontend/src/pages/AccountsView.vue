@@ -107,8 +107,17 @@ function place(a: { sold_to_city: string | null; sold_to_state: string | null })
                   ({{ a.customer_key }})
                 </span>
               </span>
+              <!-- The rep's own write-off outranks the ERP flag: an account
+                   can be both, and "you deactivated this" is the label that
+                   explains why it's off the default list. -->
               <span
-                v-if="a.active_flag !== 'Y'"
+                v-if="a.deactivated_at"
+                class="border-line text-muted font-label shrink-0 border px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.1em] uppercase"
+              >
+                Deactivated
+              </span>
+              <span
+                v-else-if="a.active_flag !== 'Y'"
                 class="border-line text-muted font-label shrink-0 border px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.1em] uppercase"
               >
                 Inactive

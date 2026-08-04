@@ -48,6 +48,7 @@ export const qk = {
     visits: (key: string) => ['account', key, 'visits'] as const,
     photos: (key: string) => ['account', key, 'photos'] as const,
     aiSummary: (key: string) => ['account', key, 'ai-summary'] as const,
+    status: (key: string) => ['account', key, 'status'] as const,
     summary: (key: string) => ['account', key, 'summary'] as const,
     revenueMonthly: (key: string) => ['account', key, 'revenue-monthly'] as const,
   },
