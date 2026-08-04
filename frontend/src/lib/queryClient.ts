@@ -14,26 +14,25 @@ import { QueryClient } from '@tanstack/vue-query'
  * `invalidateQueries({ queryKey: qk.account.root(key) })` after a write clears
  * the whole account page — summary, revenue, visits, the AI summary, the lot.
  *
- * DUPLICATES, ON PURPOSE (for now): several feature composables were written
- * before this registry could be edited and define their own identical copies.
- * They are the ones actually in use; the entries here are the canonical shape
- * and must stay byte-identical to them:
- *
- *   qk.account.visits        = visitsQueryKey()      src/composables/useVisits.ts
- *   qk.account.aiSummary     = aiSummaryKey()        src/composables/useAiSummary.ts
- *   qk.account.summary       ┐ accountMetricsKeys    src/composables/useAccountMetrics.ts
- *   qk.account.revenueMonthly┘ (also reuses .orders / .shipments below)
- *   qk.tasks.*               = taskKeys              src/composables/useTasks.ts
- *
- * When one of those files is next touched, re-point it at `qk` and delete its
- * local const. Changing a key here without changing it there breaks
- * invalidation silently, so change both or neither.
+ * This is the only place query keys are defined. Four composables used to keep
+ * their own byte-identical copies (useVisits, useAiSummary, useAccountMetrics,
+ * useTasks) because they were written before this file could be edited; they
+ * now all import from here. Keep it that way — a key that drifts out of sync
+ * does not throw, it just stops matching, and the symptom is a write that
+ * silently leaves stale data on screen.
  */
 export const qk = {
   me: {
     needsAttention: () => ['me', 'needs-attention'] as const,
     accounts: () => ['me', 'accounts'] as const,
     activity: () => ['me', 'activity'] as const,
+    /**
+     * Headlines for the accounts currently on screen — a batch read for the
+     * Today cards, so it is keyed by the visible set rather than by account.
+     * Callers must pass a de-duplicated, sorted list or the same set of
+     * accounts in a different order becomes a second cache entry.
+     */
+    aiHeadlines: (keys: string[]) => ['me', 'ai-headlines', keys] as const,
   },
   account: {
     root: (key: string) => ['account', key] as const,
@@ -42,6 +41,16 @@ export const qk = {
     orders: (key: string) => ['account', key, 'orders'] as const,
     invoices: (key: string) => ['account', key, 'invoices'] as const,
     shipments: (key: string) => ['account', key, 'shipments'] as const,
+    /**
+     * The drill-in modals. Deliberately suffixes of `.orders` / `.shipments`
+     * so invalidating the header list also drops the line detail behind it —
+     * lines that outlive their header would show a modal contradicting the
+     * card that opened it.
+     */
+    orderLines: (key: string, orderId: string) =>
+      ['account', key, 'orders', orderId] as const,
+    shipmentLines: (key: string, packlistId: string) =>
+      ['account', key, 'shipments', packlistId] as const,
     notes: (key: string) => ['account', key, 'notes'] as const,
     contacts: (key: string) => ['account', key, 'contacts'] as const,
     activity: (key: string) => ['account', key, 'activity'] as const,

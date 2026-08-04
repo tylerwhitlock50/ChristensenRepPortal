@@ -1,26 +1,11 @@
 import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
+import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import type { Tables } from '@/types/database.types'
 
 export type Task = Tables<'tasks'>
-
-/**
- * Local key registry. These belong in `qk` (src/lib/queryClient.ts) eventually,
- * but that file is owned elsewhere, so tasks keep their keys here. They are
- * namespaced under 'tasks' so `taskKeys.root()` invalidates every task query in
- * one call, and scoped by user id so a sign-out/sign-in as someone else can't
- * read the previous user's cached list.
- */
-export const taskKeys = {
-  root: () => ['tasks'] as const,
-  mine: (userId: string) => ['tasks', 'mine', userId] as const,
-  due: (userId: string) => ['tasks', 'due', userId] as const,
-  closed: (userId: string) => ['tasks', 'closed', userId] as const,
-  forAccount: (userId: string, customerKey: string) =>
-    ['tasks', 'account', userId, customerKey] as const,
-} as const
 
 /** 'YYYY-MM-DD' in the rep's own timezone — due_date is a bare date, not an instant. */
 function today(): string {
@@ -43,7 +28,7 @@ export function useMyTasks() {
   const userId = computed(() => session.user?.id ?? '')
 
   return useQuery({
-    queryKey: computed(() => taskKeys.mine(userId.value)),
+    queryKey: computed(() => qk.tasks.mine(userId.value)),
     enabled: computed(() => !!userId.value),
     queryFn: async (): Promise<Task[]> => {
       const { data, error } = await supabase
@@ -83,7 +68,7 @@ export function useMyDueTasks() {
   const userId = computed(() => session.user?.id ?? '')
 
   return useQuery({
-    queryKey: computed(() => taskKeys.due(userId.value)),
+    queryKey: computed(() => qk.tasks.due(userId.value)),
     enabled: computed(() => !!userId.value),
     staleTime: 60_000,
     queryFn: async (): Promise<{ due: number; overdue: number }> => {
@@ -120,7 +105,7 @@ export function useClosedTasks(enabled: MaybeRef<boolean> = true) {
   const userId = computed(() => session.user?.id ?? '')
 
   return useQuery({
-    queryKey: computed(() => taskKeys.closed(userId.value)),
+    queryKey: computed(() => qk.tasks.closed(userId.value)),
     enabled: computed(() => !!userId.value && unref(enabled)),
     queryFn: async (): Promise<Task[]> => {
       const { data, error } = await supabase
@@ -144,7 +129,7 @@ export function useAccountTasks(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
 
   return useQuery({
-    queryKey: computed(() => taskKeys.forAccount(userId.value, key.value)),
+    queryKey: computed(() => qk.tasks.forAccount(userId.value, key.value)),
     enabled: computed(() => !!userId.value && !!key.value),
     queryFn: async (): Promise<Task[]> => {
       const { data, error } = await supabase
@@ -167,7 +152,7 @@ function useInvalidateTasks() {
   // the ['tasks'] root precisely so this stays one line. Keep it that way: the
   // nav badge and the Done list both depend on completing a task from Today
   // refreshing them without anyone wiring it up.
-  return () => void qc.invalidateQueries({ queryKey: taskKeys.root() })
+  return () => void qc.invalidateQueries({ queryKey: qk.tasks.root() })
 }
 
 /**

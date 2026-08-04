@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { FunctionsHttpError } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { qk } from '@/lib/queryClient'
 import { daysAgo, shortDate } from '@/lib/format'
 import type { Tables } from '@/types/database.types'
 
@@ -47,21 +48,6 @@ export type AiSummaryResult = {
 }
 
 /**
- * Query key. `qk` lives in src/lib/queryClient.ts, which this agent does not
- * own, so the key is defined here instead. It keeps the flat `['account',
- * key, …]` convention on purpose: `qk.account.root(customerKey)` is a prefix
- * of it, so every existing `invalidateQueries({ queryKey: qk.account.root(k) })`
- * already sweeps the summary too.
- *
- * Move it into `qk.account.aiSummary` whenever queryClient.ts is next edited.
- */
-export const aiSummaryKey = (customerKey: string) =>
-  ['account', customerKey, 'ai-summary'] as const
-
-/** Headlines for a set of accounts — the Today cards, not an account page. */
-export const aiHeadlinesKey = (keys: string[]) => ['me', 'ai-headlines', keys] as const
-
-/**
  * An AI headline is only better than the deterministic `reason` string while
  * it is current. The reason is rebuilt nightly from tonight's facts; a
  * headline from three weeks ago sitting on a card that says "Do this first"
@@ -86,7 +72,7 @@ export function useAiHeadlines(customerKeys: MaybeRef<string[]>) {
   const list = computed(() => [...new Set(unref(customerKeys))].sort())
 
   return useQuery({
-    queryKey: computed(() => aiHeadlinesKey(list.value)),
+    queryKey: computed(() => qk.me.aiHeadlines(list.value)),
     enabled: computed(() => list.value.length > 0),
     staleTime: 5 * 60_000,
     queryFn: async (): Promise<Record<string, AccountHeadline>> => {
@@ -151,7 +137,7 @@ export function useAiSummary(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
 
   const query = useQuery({
-    queryKey: computed(() => aiSummaryKey(key.value)),
+    queryKey: computed(() => qk.account.aiSummary(key.value)),
     enabled: computed(() => !!key.value),
     queryFn: async (): Promise<AiSummary | null> => {
       const { data, error } = await supabase
@@ -200,7 +186,7 @@ export function useGenerateAiSummary() {
       // row that is still in Postgres — which the 5-minute staleTime then
       // refuses to refetch.
       if (result.summary) {
-        qc.setQueryData(aiSummaryKey(customerKey), result.summary)
+        qc.setQueryData(qk.account.aiSummary(customerKey), result.summary)
       }
     },
   })

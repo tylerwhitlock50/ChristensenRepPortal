@@ -38,26 +38,6 @@ import { qk } from '@/lib/queryClient'
  */
 const db = supabase as unknown as SupabaseClient
 
-/* ------------------------------------------------------------------ keys */
-
-/**
- * Local keys rather than additions to `qk` — this file does not own
- * src/lib/queryClient.ts. They are built on `qk.account.root(key)` so the
- * existing `invalidateQueries({ queryKey: qk.account.root(key) })` in
- * useRecommendations / useAccountData still sweeps them up.
- */
-export const accountMetricsKeys = {
-  summary: (key: string) => [...qk.account.root(key), 'summary'] as const,
-  revenueMonthly: (key: string) =>
-    [...qk.account.root(key), 'revenue-monthly'] as const,
-  orderHeaders: (key: string) => qk.account.orders(key),
-  shipmentHeaders: (key: string) => qk.account.shipments(key),
-  orderLines: (key: string, orderId: string) =>
-    [...qk.account.orders(key), orderId] as const,
-  shipmentLines: (key: string, packlistId: string) =>
-    [...qk.account.shipments(key), packlistId] as const,
-}
-
 /* ----------------------------------------------------------------- rows */
 
 export interface AccountSummaryRow {
@@ -206,7 +186,7 @@ const ERP_STALE_TIME = 10 * 60_000
 export function useAccountSummary(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
-    queryKey: computed(() => accountMetricsKeys.summary(key.value)),
+    queryKey: computed(() => qk.account.summary(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
@@ -241,7 +221,7 @@ export function useAccountSummary(customerKey: MaybeRef<string>) {
 export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
-    queryKey: computed(() => accountMetricsKeys.revenueMonthly(key.value)),
+    queryKey: computed(() => qk.account.revenueMonthly(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
@@ -266,7 +246,7 @@ export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
 export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
-    queryKey: computed(() => accountMetricsKeys.orderHeaders(key.value)),
+    queryKey: computed(() => qk.account.orders(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
@@ -300,7 +280,7 @@ export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
 export function useAccountShipmentHeaders(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
-    queryKey: computed(() => accountMetricsKeys.shipmentHeaders(key.value)),
+    queryKey: computed(() => qk.account.shipments(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
@@ -342,9 +322,7 @@ export function useAccountOrderLines(
   const key = computed(() => unref(customerKey))
   const id = computed(() => unref(orderId))
   return useQuery({
-    queryKey: computed(() =>
-      accountMetricsKeys.orderLines(key.value, id.value ?? ''),
-    ),
+    queryKey: computed(() => qk.account.orderLines(key.value, id.value ?? '')),
     enabled: computed(() => !!key.value && !!id.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
@@ -383,7 +361,7 @@ export function useAccountShipmentLines(
   const id = computed(() => unref(packlistId))
   return useQuery({
     queryKey: computed(() =>
-      accountMetricsKeys.shipmentLines(key.value, id.value ?? ''),
+      qk.account.shipmentLines(key.value, id.value ?? ''),
     ),
     enabled: computed(() => !!key.value && !!id.value),
     staleTime: ERP_STALE_TIME,

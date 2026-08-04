@@ -8,15 +8,6 @@ import type { VisitFormValues } from '@/lib/visitSchema'
 
 export type Visit = Tables<'visits'>
 
-/**
- * `qk` (src/lib/queryClient.ts) is owned by the orchestrator, so the visits key
- * lives here instead. It is deliberately built under `qk.account.root(key)` —
- * `['account', key]` — so the existing root invalidation in
- * useRecommendations/useAccountData clears visits too.
- */
-export const visitsQueryKey = (customerKey: string) =>
-  [...qk.account.root(customerKey), 'visits'] as const
-
 /** Past surveys for one account. RLS scopes this; no owner filter needed. */
 export function useAccountVisits(
   customerKey: MaybeRef<string>,
@@ -25,7 +16,7 @@ export function useAccountVisits(
   const key = computed(() => unref(customerKey))
   const limit = options?.limit ?? 50
   return useQuery({
-    queryKey: computed(() => visitsQueryKey(key.value)),
+    queryKey: computed(() => qk.account.visits(key.value)),
     enabled: computed(() => !!key.value),
     queryFn: async (): Promise<Visit[]> => {
       const { data, error } = await supabase
