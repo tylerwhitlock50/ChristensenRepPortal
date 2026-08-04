@@ -57,12 +57,48 @@ export async function sha256Hex(input: string): Promise<string> {
     .join('')
 }
 
-/** Tolerant query unwrap — a missing slice of context never fails a brief. */
+/**
+ * A relation that is not deployed yet (the views land in their own
+ * migrations) — the ONE kind of failure a context build tolerates.
+ */
+// deno-lint-ignore no-explicit-any
+export function isMissingRelation(error: any): boolean {
+  const code = String(error?.code ?? '')
+  const message = String(error?.message ?? '')
+  return (
+    code === 'PGRST205' ||
+    code === 'PGRST202' ||
+    code === '42P01' ||
+    /could not find the (table|view|relation|function)|relation .* does not exist|function .* does not exist/i
+      .test(message)
+  )
+}
+
+/**
+ * Query unwrap for hash-bearing context. Tolerant ONLY of a relation that
+ * is not migrated yet; every other error (statement timeout, permission,
+ * network) THROWS.
+ *
+ * This used to swallow everything and return []. With the context queries
+ * running near the 8s statement_timeout, a slice would randomly vanish, the
+ * context hash flapped between calls, and the same unchanged territory
+ * alternated between "generated" (paid) and "cached" — or worse, a brief
+ * was generated and stored from partial data. A missing-by-migration view
+ * is a stable absence (hashes the same every time), so it stays tolerated.
+ */
 // deno-lint-ignore no-explicit-any
 export function rows(result: { data: any; error: any }, label: string): any[] {
   if (result.error) {
+    if (isMissingRelation(result.error)) {
+      console.warn(`context relation not deployed yet: ${label}`, result.error)
+      return []
+    }
     console.error(`context query failed: ${label}`, result.error)
-    return []
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the data behind this brief. Try again in a moment.',
+    )
   }
   return result.data ?? []
 }
