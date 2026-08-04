@@ -21,6 +21,8 @@
 ============================================================================*/
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
+import { HttpError } from './supabase.ts'
+import { isMissingRelation } from './ai.ts'
 
 export const MONTHS_OF_HISTORY = 24
 export const RECENT_ORDERS = 5
@@ -75,13 +77,26 @@ export async function sha256Hex(input: string): Promise<string> {
     .join('')
 }
 
+/**
+ * Tolerant ONLY of a relation that is not migrated yet (a stable absence —
+ * it hashes the same every time, and the prompt tolerates absent fields).
+ * Every other error THROWS: this context feeds the hash that decides
+ * whether a regenerate is paid or cached, and a slice that vanishes on a
+ * statement timeout makes the same unchanged account look "changed".
+ */
 // deno-lint-ignore no-explicit-any
 export function rows(result: { data: any; error: any }, label: string): any[] {
   if (result.error) {
+    if (isMissingRelation(result.error)) {
+      console.warn(`context relation not deployed yet: ${label}`, result.error)
+      return []
+    }
     console.error(`context query failed: ${label}`, result.error)
-    // A missing slice of context is not worth failing the whole summary over —
-    // the prompt is written to tolerate absent fields.
-    return []
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the account data behind this summary. Try again in a moment.',
+    )
   }
   return result.data ?? []
 }
@@ -302,7 +317,12 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       .select('order_id, order_date, bookings, backlog_amount, order_status_desc')
       .eq('customer_key', customerKey)
       .gte('order_date', orderSince)
+      // Secondary keys everywhere a LIMIT can split a tie: without them the
+      // row set at the boundary is nondeterministic and the context hash
+      // flaps on identical data.
       .order('order_date', { ascending: false })
+      .order('order_id', { ascending: true })
+      .order('line_num', { ascending: true })
       .limit(400),
 
     erp(client)
@@ -311,6 +331,8 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       .eq('customer_key', customerKey)
       .gte('ship_date', shipSince)
       .order('ship_date', { ascending: false })
+      .order('packlist_id', { ascending: true })
+      .order('line_num', { ascending: true })
       .limit(400),
 
     client
@@ -319,6 +341,7 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       .eq('customer_key', customerKey)
       .in('status', ['open', 'acted'])
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(10),
 
     // Note bodies only — no created_by, no author name (§5.1).
@@ -327,6 +350,7 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       .select('body, created_at')
       .eq('customer_key', customerKey)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(RECENT_NOTES),
 
     // Structured survey answers only — no user_id.
@@ -339,6 +363,7 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       )
       .eq('customer_key', customerKey)
       .order('visit_date', { ascending: false })
+      .order('id', { ascending: false })
       .limit(1)
       .maybeSingle(),
 
@@ -347,6 +372,7 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       .select('action_type, action_date')
       .eq('customer_key', customerKey)
       .order('action_date', { ascending: false })
+      .order('id', { ascending: false })
       .limit(50),
 
     // Product mix by family, this year vs last (v_sku_sales_by_account,
@@ -355,11 +381,39 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
     client
       .from('v_sku_sales_by_account')
       .select('product_family, sales_year, revenue')
-      .eq('customer_key', customerKey),
+      .eq('customer_key', customerKey)
+      // Deterministic row order → deterministic tie-breaks in topFamilies()
+      // (stable sort falls back to first-seen order).
+      .order('sales_year', { ascending: true })
+      .order('product_family', { ascending: true }),
   ])
 
+  // These three bypass rows() (single-row / count shapes) but feed the same
+  // hash — same rule: a real error must fail the build, not blank a slice.
   if (customerRes.error) {
     console.error('dim_customer read failed', customerRes.error)
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the account data behind this summary. Try again in a moment.',
+    )
+  }
+  if (invoiceCountRes.error) {
+    // A zero here flips the insufficient-data gate; never fake it.
+    console.error('fact_invoice_line count failed', invoiceCountRes.error)
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the account data behind this summary. Try again in a moment.',
+    )
+  }
+  if (visitRes.error && !isMissingRelation(visitRes.error)) {
+    console.error('visits read failed', visitRes.error)
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the account data behind this summary. Try again in a moment.',
+    )
   }
   const customer = (customerRes.data ?? {}) as Record<string, unknown>
   const invoiceLineCount = (invoiceCountRes.count as number | null) ?? 0

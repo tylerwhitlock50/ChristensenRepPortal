@@ -40,6 +40,7 @@ import {
   callOpenAI,
   canonical,
   envInt,
+  isMissingRelation,
   isoDaysAgo,
   round,
   rows,
@@ -96,24 +97,34 @@ async function buildTerritoryContext(
 
   const [accountsRes, recentRes, skuNowRes, skuPriorRes, freshRes] =
     await Promise.all([
-      // Unfiltered on purpose — RLS is the territory filter (025).
-      client.from('v_territory_account_yoy').select('*'),
+      // Unfiltered on purpose — RLS is the territory filter (025). Ordered
+      // by key because the top-N lists below use STABLE JS sorts: ties fall
+      // back to input order, and Postgres input order is otherwise
+      // arbitrary — another way the hash could flip on identical data.
+      client.from('v_territory_account_yoy').select('*').order('customer_key'),
+      // Secondary sort keys everywhere a LIMIT can split a tie: without
+      // them the boundary rows are nondeterministic, and a context that
+      // reshuffles on identical data flips the hash — which turns a free
+      // cached return into a paid regeneration.
       client
         .from('v_territory_recent_orders')
         .select('*')
         .order('order_date', { ascending: false })
+        .order('order_id', { ascending: true })
         .limit(15),
       client
         .from('v_territory_sku_sales')
         .select('part_id, part_description, product_family, chambering, revenue, qty')
         .eq('sales_year', yearNow)
         .order('revenue', { ascending: false })
+        .order('part_id', { ascending: true })
         .limit(15),
       client
         .from('v_territory_sku_sales')
         .select('part_id, part_description, product_family, chambering, revenue, qty')
         .eq('sales_year', yearNow - 1)
         .order('revenue', { ascending: false })
+        .order('part_id', { ascending: true })
         .limit(15),
       client.from('v_data_freshness').select('*').maybeSingle(),
     ])
@@ -208,6 +219,16 @@ async function buildTerritoryContext(
     qty: round(s.qty),
   })
 
+  // Same rule as rows(): only a not-yet-migrated view may go missing
+  // silently — a real error must not blank data_through out of the hash.
+  if (freshRes.error && !isMissingRelation(freshRes.error)) {
+    console.error('context query failed: v_data_freshness', freshRes.error)
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the data behind this brief. Try again in a moment.',
+    )
+  }
   const fresh = (freshRes.data ?? null) as Row | null
 
   const context = {

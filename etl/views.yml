@@ -62,6 +62,12 @@ column_map:
 # signals still refresh and scores still apply (the Today card, admin tuning
 # and future re-enable all read them) — only recommendation rows stop.
 post_load_sql:
+  # First, always: rebuild the territory rollups (migration 030) so the
+  # Overview and the AI brief read tonight's data. This must precede the
+  # recommendation/scoring statements — an exception in post_load_sql stops
+  # the list, and stale recommendations are survivable where a stale
+  # Overview is the first thing every rep sees.
+  - "select * from public.refresh_territory_rollups();"
   - "select public.generate_recommendations() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
   - "select public.refresh_account_signals() where not exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
   - "select public.apply_account_scores() where not exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
