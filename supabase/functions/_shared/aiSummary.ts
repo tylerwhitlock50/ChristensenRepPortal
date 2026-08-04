@@ -118,12 +118,15 @@ export async function callOpenAI(contextJson: string): Promise<Briefing> {
               type: 'string',
               description:
                 'One sentence, at most 140 characters. The single most ' +
-                'important thing about this account right now plus what it ' +
-                'implies the rep should do. No markdown.',
+                'important thing the data shows about this account right ' +
+                'now, stated as an observation — never an instruction. ' +
+                'No markdown.',
             },
             briefing: {
               type: 'string',
-              description: 'The four paragraphs described in the system prompt.',
+              description:
+                'The full Sales Brief described in the system prompt: the ' +
+                'HEADLINES block, then the three paragraphs.',
             },
           },
         },

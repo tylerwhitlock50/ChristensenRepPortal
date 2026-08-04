@@ -142,23 +142,33 @@ async function handle(req: Request): Promise<Response> {
   }
 
   /*
-    Per-user daily cap. Counted off ai_summaries rather than a dedicated
-    counter table so this function needs no schema of its own; the honest
-    limitation is that it counts DISTINCT ACCOUNTS summarised today, not total
-    generations (the table is one row per account). The cooldown above bounds
-    repeat generations on a single account, so the two together bound spend.
+    Per-user daily cap, counted from public.ai_usage_events (migration 028) —
+    one per-generation ledger shared with every other AI endpoint (ai-brief),
+    which is the point: one cap, all interactive AI spend. If the events
+    table is not migrated yet the count errors, and we fall back to the old
+    distinct-accounts count off ai_summaries rather than running unmetered.
 
-    Batch rows carry generated_by = null, so an overnight run never eats into
-    anyone's allowance.
+    The overnight batch never touches the ledger (it runs server-side on its
+    own budget), so a pre-generated morning never eats into anyone's
+    allowance.
   */
   if (DAILY_LIMIT > 0) {
     const startOfDay = new Date()
     startOfDay.setUTCHours(0, 0, 0, 0)
-    const usage = await client
-      .from('ai_summaries')
-      .select('customer_key', { count: 'exact', head: true })
-      .eq('generated_by', caller.id)
-      .gte('generated_at', startOfDay.toISOString())
+    let usage = await client
+      .from('ai_usage_events')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', caller.id)
+      .gte('created_at', startOfDay.toISOString())
+
+    if (usage.error) {
+      console.error('ai_usage_events count failed; falling back', usage.error)
+      usage = await client
+        .from('ai_summaries')
+        .select('customer_key', { count: 'exact', head: true })
+        .eq('generated_by', caller.id)
+        .gte('generated_at', startOfDay.toISOString())
+    }
 
     if (!usage.error && (usage.count ?? 0) >= DAILY_LIMIT) {
       throw new HttpError(
@@ -171,6 +181,15 @@ async function handle(req: Request): Promise<Response> {
   }
 
   const briefing = await callOpenAI(prepared.contextJson)
+
+  // Ledger the paid call, tolerantly — a failed insert must not discard the
+  // generation, but log loudly because it un-meters the cap.
+  const usageInsert = await client
+    .from('ai_usage_events')
+    .insert({ user_id: caller.id, action: 'account.summary' })
+  if (usageInsert.error) {
+    console.error('ai_usage_events insert failed', usageInsert.error)
+  }
 
   const row: SummaryRow = {
     customer_key: customerKey,

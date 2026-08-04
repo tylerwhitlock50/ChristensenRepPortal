@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { FunctionsHttpError } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { qk } from '@/lib/queryClient'
 import { daysAgo, shortDate } from '@/lib/format'
 import type { Tables } from '@/types/database.types'
 
@@ -47,16 +48,11 @@ export type AiSummaryResult = {
 }
 
 /**
- * Query key. `qk` lives in src/lib/queryClient.ts, which this agent does not
- * own, so the key is defined here instead. It keeps the flat `['account',
- * key, …]` convention on purpose: `qk.account.root(customerKey)` is a prefix
- * of it, so every existing `invalidateQueries({ queryKey: qk.account.root(k) })`
- * already sweeps the summary too.
- *
- * Move it into `qk.account.aiSummary` whenever queryClient.ts is next edited.
+ * Re-pointed at the canonical registry (the queryClient.ts header asked for
+ * this on the next edit). Still a suffix of `qk.account.root(key)`, so every
+ * existing account-root invalidation sweeps the summary too.
  */
-export const aiSummaryKey = (customerKey: string) =>
-  ['account', customerKey, 'ai-summary'] as const
+export const aiSummaryKey = qk.account.aiSummary
 
 /** Headlines for a set of accounts — the Today cards, not an account page. */
 export const aiHeadlinesKey = (keys: string[]) => ['me', 'ai-headlines', keys] as const

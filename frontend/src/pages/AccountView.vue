@@ -14,6 +14,7 @@ import {
 } from '@/composables/useAccountData'
 import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
 import { useAccountSummary } from '@/composables/useAccountMetrics'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -29,6 +30,8 @@ const AccountRevenueChart = defineAsyncComponent(
   () => import('@/components/AccountRevenueChart.vue'),
 )
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
+import AccountSkuSalesCard from '@/components/AccountSkuSalesCard.vue'
+import AccountBacklogCard from '@/components/AccountBacklogCard.vue'
 import AccountQuickActions from '@/components/AccountQuickActions.vue'
 import AccountTasksCard from '@/components/AccountTasksCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
@@ -65,6 +68,22 @@ const key = computed(() => props.customerKey)
 const qc = useQueryClient()
 const online = useOnline()
 const session = useSessionStore()
+
+/* Data-first restructure: the capture surfaces on this page (recommendations,
+   survey + photos, log-a-contact + notes + activity) render only while their
+   admin flags are on. Data underneath is untouched — flipping a flag back on
+   restores everything. */
+const flags = useFeatureFlags()
+
+/* The quick-action strip only offers chips whose target panels exist under
+   the current flags. Summary is data-side and always available. */
+const quickActions = computed<QuickAction[]>(() => {
+  const list: QuickAction[] = ['summary']
+  if (flags.visits.value) list.push('visit', 'photo')
+  if (flags.actionLogging.value) list.push('contact', 'note')
+  if (flags.tasks.value) list.push('task')
+  return list
+})
 
 const account = useAccount(key)
 // Same query AccountSummaryCard runs — vue-query dedupes it, so this costs
@@ -477,7 +496,7 @@ watch(key, () => {
 
         <!-- What the rep can do, before the numbers rather than after them. -->
         <div class="mt-4">
-          <AccountQuickActions @select="onQuickAction" />
+          <AccountQuickActions :include="quickActions" @select="onQuickAction" />
         </div>
       </header>
 
@@ -566,11 +585,12 @@ watch(key, () => {
     <AccountSummaryCard :customer-key="customerKey" />
     <AccountRevenueChart :customer-key="customerKey" />
 
-    <!-- AI summary — cached copy first, regeneration on request only. -->
+    <!-- The account Sales Brief — cached copy first, regeneration on request
+         only. HEADLINES-first structure comes from the prompt (v2). -->
     <section ref="summarySection" class="scroll-mt-16">
     <AppCard>
       <template #header>
-        <h2 class="u-label text-ink">The story so far</h2>
+        <h2 class="u-label text-ink">Sales Brief</h2>
         <AppButton
           variant="ghost"
           :loading="generate.isPending.value"
@@ -612,7 +632,7 @@ watch(key, () => {
     </section>
 
     <!-- Open recommendations -->
-    <section class="space-y-3">
+    <section v-if="flags.recommendations.value" class="space-y-3">
       <h2 class="font-label text-muted text-xs font-semibold tracking-[0.18em] uppercase">
         Needs attention
       </h2>
@@ -636,7 +656,11 @@ watch(key, () => {
     </section>
 
     <!-- Log a contact — the 10-second path. The full survey is below it. -->
-    <section ref="logSection" class="scroll-mt-16">
+    <section
+      v-if="flags.actionLogging.value"
+      ref="logSection"
+      class="scroll-mt-16"
+    >
     <div v-if="!logging">
       <AppButton variant="secondary" block @click="logging = true">
         Log a contact
@@ -682,7 +706,11 @@ watch(key, () => {
     </section>
 
     <!-- Visit survey — the one green button on this view. Opens inline. -->
-    <section ref="surveySection" class="scroll-mt-16 space-y-3">
+    <section
+      v-if="flags.visits.value"
+      ref="surveySection"
+      class="scroll-mt-16 space-y-3"
+    >
       <template v-if="!surveyOpen">
         <AppButton variant="primary" size="lg" block @click="openSurvey">
           Log a visit
@@ -755,15 +783,23 @@ watch(key, () => {
     <!-- Orders and shipments, straight off the rollup views. -->
     <AccountOrdersCard :customer-key="customerKey" />
 
+    <!-- What they buy and what they're owed, by SKU (data-first additions). -->
+    <AccountSkuSalesCard :customer-key="customerKey" />
+    <AccountBacklogCard :customer-key="customerKey" />
+
     <ContactsCard :customer-key="customerKey" />
 
     <!-- Personal follow-ups on this account. -->
-    <section ref="taskSection" class="scroll-mt-16">
+    <section v-if="flags.tasks.value" ref="taskSection" class="scroll-mt-16">
       <AccountTasksCard :customer-key="customerKey" />
     </section>
 
     <!-- Notes -->
-    <section ref="noteSection" class="scroll-mt-16">
+    <section
+      v-if="flags.actionLogging.value"
+      ref="noteSection"
+      class="scroll-mt-16"
+    >
     <AppCard title="Notes">
       <form class="mb-4" @submit.prevent="submitNote">
         <label class="sr-only" for="note">Add a note</label>
@@ -807,16 +843,16 @@ watch(key, () => {
     </section>
 
     <!-- Photos that aren't tied to a survey — an endcap on the way past. -->
-    <section ref="photoSection" class="scroll-mt-16">
+    <section v-if="flags.visits.value" ref="photoSection" class="scroll-mt-16">
       <AppCard title="Photos">
         <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
       </AppCard>
     </section>
 
-    <VisitHistoryCard :customer-key="customerKey" />
+    <VisitHistoryCard v-if="flags.visits.value" :customer-key="customerKey" />
 
     <!-- Activity -->
-    <AppCard title="Activity">
+    <AppCard v-if="flags.actionLogging.value" title="Activity">
       <AsyncState
         :loading="actions.isPending.value"
         :error="actions.error.value"

@@ -1,12 +1,23 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { until } from '@vueuse/core'
 import { useSessionStore } from '@/stores/session'
+import {
+  ensureSettings,
+  isFeatureEnabled,
+  type FeatureKey,
+} from '@/composables/useAppSettings'
 
 declare module 'vue-router' {
   interface RouteMeta {
     /** Reachable without a session. Everything else requires one. */
     public?: boolean
     adminOnly?: boolean
+    /**
+     * Route exists only while this app_settings flag is enabled; disabled
+     * flags redirect to the Overview. Lets hidden capture features (Today,
+     * Tasks) come back with a toggle instead of a deploy.
+     */
+    feature?: FeatureKey
     title?: string
   }
 }
@@ -22,16 +33,25 @@ const router = createRouter({
       meta: { public: true, title: 'Sign in' },
     },
     {
+      // The morning briefing IS the app's front door (data-first restructure):
+      // territory health, the AI sales brief, movers, worth-investigating.
       path: '/',
+      name: 'overview',
+      component: () => import('@/pages/OverviewView.vue'),
+      meta: { title: 'Overview' },
+    },
+    {
+      // The old landing page, kept intact behind the recommendations flag.
+      path: '/today',
       name: 'today',
       component: () => import('@/pages/TodayView.vue'),
-      meta: { title: 'Today' },
+      meta: { title: 'Today', feature: 'feature.recommendations' },
     },
     {
       path: '/tasks',
       name: 'tasks',
       component: () => import('@/pages/TasksView.vue'),
-      meta: { title: 'Tasks' },
+      meta: { title: 'Tasks', feature: 'feature.tasks' },
     },
     {
       path: '/accounts',
@@ -45,6 +65,37 @@ const router = createRouter({
       component: () => import('@/pages/AccountView.vue'),
       props: true,
       meta: { title: 'Account' },
+    },
+    {
+      path: '/intel',
+      component: () => import('@/pages/intel/SalesIntelLayout.vue'),
+      redirect: { name: 'intel-sku' },
+      children: [
+        {
+          path: 'sku-sales',
+          name: 'intel-sku',
+          component: () => import('@/pages/intel/SkuSalesIntel.vue'),
+          meta: { title: 'SKU Sales' },
+        },
+        {
+          path: 'backlog',
+          name: 'intel-backlog',
+          component: () => import('@/pages/intel/BacklogIntel.vue'),
+          meta: { title: 'Backlog' },
+        },
+        {
+          path: 'ats',
+          name: 'intel-ats',
+          component: () => import('@/pages/intel/AtsIntel.vue'),
+          meta: { title: 'ATS' },
+        },
+        {
+          path: 'global',
+          name: 'intel-global',
+          component: () => import('@/pages/intel/GlobalIntel.vue'),
+          meta: { title: 'Global' },
+        },
+      ],
     },
     {
       path: '/admin',
@@ -70,7 +121,7 @@ const router = createRouter({
           path: 'missions',
           name: 'admin-missions',
           component: () => import('@/pages/admin/AdminMissionsView.vue'),
-          meta: { title: 'Missions' },
+          meta: { title: 'Missions', feature: 'feature.recommendations' },
         },
         {
           path: 'activity',
@@ -104,7 +155,7 @@ router.beforeEach(async (to) => {
 
   if (to.meta.public) {
     // Don't strand a signed-in user on the login screen.
-    if (to.name === 'login' && session.isSignedIn) return { name: 'today' }
+    if (to.name === 'login' && session.isSignedIn) return { name: 'overview' }
     return true
   }
 
@@ -113,7 +164,21 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.adminOnly && !session.isAdmin) {
-    return { name: 'today' }
+    return { name: 'overview' }
+  }
+
+  if (to.meta.feature) {
+    // One round trip per session (ensureQueryData caches); a disabled feature
+    // lands on the Overview rather than a dead page. If the settings table
+    // itself is unreachable, fail closed to the Overview too.
+    try {
+      const settings = await ensureSettings()
+      if (!isFeatureEnabled(settings, to.meta.feature)) {
+        return { name: 'overview' }
+      }
+    } catch {
+      return { name: 'overview' }
+    }
   }
 
   return true

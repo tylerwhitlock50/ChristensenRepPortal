@@ -197,6 +197,72 @@ export function summariseRevenue(series: MonthlyRevenue[], today = new Date()) {
   }
 }
 
+/** Median of a non-empty number array; 0 for empty. */
+function median(values: number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+/**
+ * The buying-pattern block (prompt v3): cadence, typical order size, and the
+ * calendar months this account historically buys in. Pure derivation over
+ * data the context already fetched — no extra queries here.
+ */
+function summariseBuyingPatterns(
+  orders: Array<{ date: string | null; amount: number }>,
+  series: MonthlyRevenue[],
+) {
+  // Cadence: gaps between DISTINCT order dates, oldest→newest. Same-day
+  // orders are one buying event as far as cadence is concerned.
+  const dates = [...new Set(orders.map((o) => o.date).filter((d): d is string => !!d))].sort()
+  const gaps: number[] = []
+  for (let i = 1; i < dates.length; i++) {
+    const days = Math.round(
+      (new Date(dates[i]).getTime() - new Date(dates[i - 1]).getTime()) / 86_400_000,
+    )
+    if (days > 0) gaps.push(days)
+  }
+  const lastDate = dates[dates.length - 1] ?? null
+  const daysSinceLast = lastDate
+    ? Math.round((Date.now() - new Date(lastDate).getTime()) / 86_400_000)
+    : null
+
+  // Seasonality: revenue share by calendar month across the 24-month series.
+  const byCalMonth = new Array<number>(12).fill(0)
+  let total = 0
+  for (const r of series) {
+    const m = Number(r.month.slice(5, 7)) - 1
+    if (m >= 0 && m < 12) {
+      byCalMonth[m] += r.revenue
+      total += r.revenue
+    }
+  }
+  const peakMonths =
+    total > 0
+      ? byCalMonth
+          .map((rev, i) => ({ month: MONTH_NAMES[i], share: rev / total }))
+          .filter((m) => m.share >= 0.15)
+          .sort((a, b) => b.share - a.share)
+          .slice(0, 3)
+          .map((m) => m.month)
+      : []
+
+  return {
+    orders_last_400d: dates.length,
+    median_days_between_orders: gaps.length >= 2 ? round(median(gaps)) : null,
+    days_since_last_order: daysSinceLast,
+    median_order_amount: round(median(orders.map((o) => o.amount).filter((a) => a > 0))),
+    peak_buying_months: peakMonths,
+  }
+}
+
 export async function buildContext(client: SupabaseClient, customerKey: string) {
   const orderSince = isoDaysAgo(400)
   const shipSince = isoDaysAgo(180)
@@ -211,6 +277,7 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
     noteRes,
     visitRes,
     actionRes,
+    skuMixRes,
   ] = await Promise.all([
     erp(client)
       .from('dim_customer')
@@ -281,6 +348,14 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       .eq('customer_key', customerKey)
       .order('action_date', { ascending: false })
       .limit(50),
+
+    // Product mix by family, this year vs last (v_sku_sales_by_account,
+    // migration 025). Tolerated when the view is not applied yet — rows()
+    // returns [] and the buying_patterns block simply has no mix.
+    client
+      .from('v_sku_sales_by_account')
+      .select('product_family, sales_year, revenue')
+      .eq('customer_key', customerKey),
   ])
 
   if (customerRes.error) {
@@ -308,10 +383,34 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
       })
     }
   }
-  const recentOrders = Array.from(orderTotals.values())
+  const allOrders = Array.from(orderTotals.values())
+  const recentOrders = allOrders
     .sort((a, b) => ((a.date ?? '') < (b.date ?? '') ? 1 : -1))
     .slice(0, RECENT_ORDERS)
     .map((o) => ({ order_date: o.date, amount: round(o.amount) }))
+
+  // Product mix by family, this year vs last, top 6 families each.
+  const yearNow = new Date().getUTCFullYear()
+  const mixByYear = new Map<number, Map<string, number>>()
+  for (const r of rows(skuMixRes, 'v_sku_sales_by_account')) {
+    const year = Number(r.sales_year ?? 0)
+    if (year !== yearNow && year !== yearNow - 1) continue
+    const family = String(r.product_family ?? '').trim() || '(none)'
+    const byFamily = mixByYear.get(year) ?? new Map<string, number>()
+    byFamily.set(family, (byFamily.get(family) ?? 0) + Number(r.revenue ?? 0))
+    mixByYear.set(year, byFamily)
+  }
+  const topFamilies = (year: number) =>
+    Array.from(mixByYear.get(year)?.entries() ?? [])
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([family, rev]) => ({ family, revenue: round(rev) }))
+
+  const buyingPatterns = {
+    ...summariseBuyingPatterns(allOrders, revenue.series),
+    mix_this_year: topFamilies(yearNow),
+    mix_last_year: topFamilies(yearNow - 1),
+  }
 
   const shipmentLines = rows(shipmentRes, 'fact_shipment_line')
   const ninetyDaysAgo = isoDaysAgo(90)
@@ -362,6 +461,7 @@ export async function buildContext(client: SupabaseClient, customerKey: string) 
     },
     revenue_by_month: revenue.series,
     revenue_summary: summariseRevenue(revenue.series),
+    buying_patterns: buyingPatterns,
     orders: {
       recent: recentOrders,
       open_backlog_amount: round(openBacklog),

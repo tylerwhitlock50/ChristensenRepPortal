@@ -16,7 +16,14 @@
  * No `variant="primary"` here: the page's one green button is still "Log a
  * visit" in its own section. These are outlines on the ink header.
  */
+import { computed } from 'vue'
 import type { QuickAction } from '@/types/domain'
+
+/**
+ * `include` lets the page hide the chips whose target panels are behind a
+ * disabled feature flag (data-first restructure). Omitted = all six.
+ */
+const props = defineProps<{ include?: QuickAction[] }>()
 
 defineEmits<{ select: [action: QuickAction] }>()
 
@@ -29,6 +36,10 @@ const actions: { id: QuickAction; label: string; path: string }[] = [
   { id: 'task', label: 'Follow-up', path: 'M4 6h9M4 12h9M4 18h6M16 16l2.2 2.2L22 14' },
   { id: 'summary', label: 'Summary', path: 'M4 5h16M4 10h16M4 15h10M4 20h7' },
 ]
+
+const visible = computed(() =>
+  props.include ? actions.filter((a) => props.include!.includes(a.id)) : actions,
+)
 </script>
 
 <template>
@@ -40,7 +51,7 @@ const actions: { id: QuickAction; label: string; path: string }[] = [
     aria-label="Account actions"
   >
     <button
-      v-for="a in actions"
+      v-for="a in visible"
       :key="a.id"
       type="button"
       class="tap-target font-label text-canvas flex shrink-0 items-center gap-2 rounded-[2px] border border-[#4A4D44] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase hover:border-canvas"

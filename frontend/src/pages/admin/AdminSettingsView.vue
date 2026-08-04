@@ -4,6 +4,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import FeatureFlagsCard from '@/components/admin/FeatureFlagsCard.vue'
 import {
   FACTOR_HELP,
   FACTOR_LABELS,
@@ -191,6 +192,10 @@ function topWhy(row: (typeof previewRows.value)[number]): string {
         a change here lands on the whole book at once.
       </p>
     </header>
+
+    <!-- Feature flags (data-first restructure) sit above the scoring tuning:
+         which surfaces exist at all comes before how work is ranked. -->
+    <FeatureFlagsCard />
 
     <AsyncState
       :loading="settings.isPending.value || rules.isPending.value"
