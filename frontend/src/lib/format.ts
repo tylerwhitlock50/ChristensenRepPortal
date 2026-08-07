@@ -28,6 +28,12 @@ export function shortDate(value: string | Date | null | undefined): string {
   return d ? format(d, 'MMM d, yyyy') : '—'
 }
 
+/** Compact fixed-width date for dense grids. */
+export function isoDate(value: string | Date | null | undefined): string {
+  const d = toDate(value)
+  return d ? format(d, 'yyyy-MM-dd') : '—'
+}
+
 export function dayMonth(value: string | Date | null | undefined): string {
   const d = toDate(value)
   return d ? format(d, 'MMM d') : '—'

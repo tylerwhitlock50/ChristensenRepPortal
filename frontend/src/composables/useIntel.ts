@@ -183,6 +183,7 @@ export function pivotSkuYears(
 
 export interface BacklogSkuRow {
   customer_key: string
+  customer_id: string | null
   customer_name: string | null
   part_key: string
   part_id: string | null
@@ -193,12 +194,15 @@ export interface BacklogSkuRow {
   backlog_amount: number
   open_line_count: number
   earliest_promise_date: string | null
+  /** min(desired_ship_date) — shown to reps as "estimated production date". */
+  earliest_desired_ship_date: string | null
   latest_order_date: string | null
 }
 
 function mapBacklogRow(r: Record<string, unknown>): BacklogSkuRow {
   return {
     customer_key: String(r.customer_key),
+    customer_id: (r.customer_id as string | null) ?? null,
     customer_name: (r.customer_name as string | null) ?? null,
     part_key: String(r.part_key),
     part_id: (r.part_id as string | null) ?? null,
@@ -209,6 +213,8 @@ function mapBacklogRow(r: Record<string, unknown>): BacklogSkuRow {
     backlog_amount: num(r.backlog_amount),
     open_line_count: num(r.open_line_count),
     earliest_promise_date: (r.earliest_promise_date as string | null) ?? null,
+    earliest_desired_ship_date:
+      (r.earliest_desired_ship_date as string | null) ?? null,
     latest_order_date: (r.latest_order_date as string | null) ?? null,
   }
 }
