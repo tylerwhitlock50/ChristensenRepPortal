@@ -4,6 +4,7 @@
            JOIN  VECA.dbo.SHIPPER        (hdr: dates, site, rep, ship-to, status)
            JOIN  VECA.dbo.CUSTOMER_ORDER (ord: customer, ship-to fallback, promise)
            LEFT JOIN VECA.dbo.CUST_ORDER_LINE (oln: PART_ID + line promise date)
+           LEFT JOIN VECA.dbo.USER_DEF_FIELDS (trk: line-level tracking number)
            LEFT JOIN VECA.dbo.SALES_REP       (rep existence check for key)
            LEFT JOIN VECA.dbo.INVENTORY_TRANS (itx: ACTUAL COGS at ship time)
   Grain  : ONE ROW PER PACKLIST LINE = (PACKLIST_ID, LINE_NO).
@@ -17,6 +18,11 @@
       NULLABLE (misc / freight / service shipment lines) -> LEFT JOIN -> those
       rows land on the '(Unknown)' part sentinel. This is expected, not a bug.
     - SHIPPER_LINE has NO SITE_ID. Site comes from the SHIPPER header.
+    - Tracking number is the VMSHPENT shipper-line UDF UDF-0000028. Its UDF
+      definition targets TABLE_ID = 'tblShpLineItem', so the value joins on
+      (DOCUMENT_ID, LINE_NO) = (SHIPPER_LINE.PACKLIST_ID, SHIPPER_LINE.LINE_NO).
+      Blank and placeholder '0' values are exposed as NULL. This is distinct
+      from the packlist-header SHIPPER.WAYBILL_NUMBER.
     - Transacting rep = SHIPPER.SALESREP_ID (snapshotted at SHIP time). This is
       deliberately the ship-time rep, which can differ from the order's rep.
     - Ship-to = SHIPPER.SHIP_TO_ADDR_NO (header override) falling back to the
@@ -66,6 +72,7 @@ SELECT
     hdr.INVOICE_ID                        AS InvoiceID,
     hdr.BOL_ID                            AS BillOfLadingID,
     hdr.WAYBILL_NUMBER                    AS WaybillNumber,
+    NULLIF(NULLIF(LTRIM(RTRIM(trk.STRING_VAL)), N''), N'0') AS TrackingNumber,
     hdr.SHIP_VIA                          AS ShipVia,
     hdr.FREE_ON_BOARD                     AS FreeOnBoard,
     sl.MISC_REFERENCE                     AS MiscReference,
@@ -136,6 +143,14 @@ INNER JOIN dbo.CUSTOMER_ORDER AS ord
 LEFT JOIN dbo.CUST_ORDER_LINE AS oln
     ON oln.CUST_ORDER_ID = sl.CUST_ORDER_ID
    AND oln.LINE_NO       = sl.CUST_ORDER_LINE_NO
+-- VMSHPENT UDF-0000028 is defined on tblShpLineItem, so both the packlist and
+-- shipper-line number are required. Current source data is unique at this key;
+-- validation check B2a guards that assumption so this join cannot fan out.
+LEFT JOIN dbo.USER_DEF_FIELDS AS trk
+    ON trk.PROGRAM_ID  = N'VMSHPENT'
+   AND trk.ID          = N'UDF-0000028'
+   AND trk.DOCUMENT_ID = sl.PACKLIST_ID
+   AND trk.LINE_NO     = sl.LINE_NO
 LEFT JOIN dbo.SALES_REP AS rep
     ON rep.ID = hdr.SALESREP_ID
 -- Existence probe for the effective ship-to (packlist override, else order),

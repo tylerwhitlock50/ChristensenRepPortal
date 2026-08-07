@@ -9,7 +9,7 @@ import {
   useCanDeleteContacts,
   useContacts,
   useDeleteContact,
-  type Contact,
+  type AccountContact,
 } from '@/composables/useContacts'
 
 const props = defineProps<{ customerKey: string }>()
@@ -37,7 +37,12 @@ function startAdd() {
   deleteError.value = ''
 }
 
-function startEdit(contact: Contact) {
+/* ERP rows come from the nightly customer-contact load and have no id;
+   only rep-entered rows (source === 'rep') can be edited or deleted. The
+   null-guards below matter: with no panel open editingId is null, and an
+   ERP row's id is null too — bare `editingId === c.id` would match. */
+function startEdit(contact: AccountContact) {
+  if (contact.source !== 'rep' || contact.id === null) return
   editingId.value = contact.id
   adding.value = false
   confirmingDeleteId.value = null
@@ -50,12 +55,31 @@ function closePanels() {
   confirmingDeleteId.value = null
 }
 
-function askDelete(contact: Contact) {
+function askDelete(contact: AccountContact) {
+  if (contact.source !== 'rep' || contact.id === null) return
   confirmingDeleteId.value = contact.id
   deleteError.value = ''
 }
 
-async function confirmDelete(contact: Contact) {
+function isEditing(contact: AccountContact): boolean {
+  return contact.source === 'rep' && contact.id !== null && editingId.value === contact.id
+}
+
+function isConfirmingDelete(contact: AccountContact): boolean {
+  return (
+    contact.source === 'rep' &&
+    contact.id !== null &&
+    confirmingDeleteId.value === contact.id
+  )
+}
+
+/** ContactForm needs a non-null id; isEditing() has already guaranteed it. */
+function editSeed(contact: AccountContact) {
+  return { ...contact, id: contact.id as number }
+}
+
+async function confirmDelete(contact: AccountContact) {
+  if (contact.id === null) return
   deleteError.value = ''
   try {
     await remove.mutateAsync({ id: contact.id, customerKey: props.customerKey })
@@ -66,7 +90,7 @@ async function confirmDelete(contact: Contact) {
 }
 
 /** Title · phone · email, minus whatever is missing. */
-function subtitle(contact: Contact): string {
+function subtitle(contact: AccountContact): string {
   return [contact.title, contact.phone, contact.email].filter(Boolean).join(' · ')
 }
 
@@ -111,13 +135,13 @@ function telHref(phone: string): string {
       </template>
 
       <ul class="divide-y divide-line">
-        <li v-for="c in rows" :key="c.id" class="py-3 first:pt-0 last:pb-0">
+        <li v-for="c in rows" :key="c.contact_key" class="py-3 first:pt-0 last:pb-0">
           <!-- Edit replaces the row, so the rep never loses their place -->
           <ContactForm
-            v-if="editingId === c.id"
-            :key="`edit-${c.id}`"
+            v-if="isEditing(c)"
+            :key="`edit-${c.contact_key}`"
             :customer-key="customerKey"
-            :contact="c"
+            :contact="editSeed(c)"
             @saved="closePanels"
             @cancel="closePanels"
           />
@@ -128,6 +152,7 @@ function telHref(phone: string): string {
                 <p class="flex flex-wrap items-center gap-2 font-medium text-ink">
                   <span class="truncate">{{ c.name }}</span>
                   <AppBadge v-if="c.is_primary" tone="neutral">Primary</AppBadge>
+                  <AppBadge v-if="c.source === 'erp'" tone="neutral">ERP</AppBadge>
                 </p>
                 <p v-if="subtitle(c)" class="mt-0.5 text-sm break-words text-muted">
                   {{ subtitle(c) }}
@@ -155,6 +180,7 @@ function telHref(phone: string): string {
                 Email
               </a>
               <button
+                v-if="c.source === 'rep'"
                 type="button"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                 @click="startEdit(c)"
@@ -162,7 +188,7 @@ function telHref(phone: string): string {
                 Edit
               </button>
               <button
-                v-if="canDelete && confirmingDeleteId !== c.id"
+                v-if="c.source === 'rep' && canDelete && !isConfirmingDelete(c)"
                 type="button"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-danger underline underline-offset-2"
                 @click="askDelete(c)"
@@ -173,7 +199,7 @@ function telHref(phone: string): string {
 
             <!-- Two-tap confirm, inline. -->
             <div
-              v-if="confirmingDeleteId === c.id"
+              v-if="isConfirmingDelete(c)"
               class="border-line border-l-danger bg-surface mt-2 border border-l-[3px] p-3"
             >
               <p class="text-ink text-sm">
