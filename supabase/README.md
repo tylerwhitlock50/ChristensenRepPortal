@@ -29,18 +29,27 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `021_ai_summary_batch.sql` | `ai_summaries.headline`, `ai_batch_targets()` for the nightly pre-generation |
 | `022_job_run_duration.sql` | `log_job_run()` stamps `finished_at` with `clock_timestamp()`, so job durations are real |
 | `023_account_deactivations.sql` | `account_deactivations` — rep-side "stop working this account" override with reason + history; dismiss/de-score trigger; exclusions in `v_account_list`, `refresh_account_signals()`, `create_mission()`, coverage views |
+| `20260803223924_account_goals.sql` | `account_goals` (rep-entered annual goal, one per account/year), `v_account_goal_progress` (seasonal pace), `v_my_goal_rollup`, `v_rep_goal_attainment` — reconstructed from prod, where it was applied as "023_account_goals" |
 
 ## Applying
 
-With the Supabase CLI (recommended — keeps migration history):
+With the deployer that lives next to the ETL (recommended — runs on the same
+box, uses the same `.env`, and tracks history in `public.deployed_migrations`
+keyed by full filename, so duplicate numeric prefixes like the two `032_*`
+files can't collide):
 
 ```bash
-supabase link --project-ref <your-project-ref>
-for f in migrations/*.sql; do supabase db push --include-all; done
+python ../etl/deploy_migrations.py --dry-run   # list pending
+python ../etl/deploy_migrations.py             # apply pending, in order
 ```
 
-or paste each file in order into the Dashboard SQL editor, or apply via MCP
-`apply_migration` (one call per file, keep the numeric order).
+On a database that was previously migrated by hand, baseline first — see
+`etl/README.md → Deploying migrations`.
+
+Alternatively: the Supabase CLI (`supabase link` + `supabase db push` —
+note the CLI keys history on the numeric prefix, which the duplicate `032`
+filenames break), or paste each file in order into the Dashboard SQL editor,
+or apply via MCP `apply_migration` (one call per file, keep the order).
 
 ## Post-migration checklist (Dashboard)
 
@@ -87,3 +96,18 @@ or paste each file in order into the Dashboard SQL editor, or apply via MCP
   both. Deactivation never removes *access* — `my_customer_keys()` and
   `has_account_access()` are deliberately untouched, so the rep can still
   open the account and undo it.
+- **A goal belongs to the account, not to the rep who typed it.**
+  `account_goals` is unique on `(customer_key, period_year)`, so a principal
+  and their rep report against the same number and the admin rollup never has
+  to pick whose copy counts. `created_by`/`updated_by` record who touched it.
+- Goal pace is **seasonal, not straight-line**: `v_account_goal_progress`
+  takes the share of the goal that should be in by today from the account's
+  own prior-year shape, and only falls back to days-elapsed when there is no
+  prior year (`pace_basis` says which). A straight line tells a dealer that
+  books its year in the order season that it is behind every June, which
+  trains reps to ignore the number.
+- `erp.dim_customer.yearly_sales_goal` is **not** replaced by this. The UI
+  shows both, because the drift between the ERP's goal and the rep's is the
+  interesting part — and it is what an outbound push to Visual would
+  reconcile. Nothing in the app writes to `erp.*`.
+
