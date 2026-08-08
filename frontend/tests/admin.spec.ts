@@ -13,6 +13,7 @@ test.skip(!EMAIL || !PASSWORD, 'set E2E_EMAIL / E2E_PASSWORD')
 
 const ROUTES = [
   { path: '/admin', name: 'execution' },
+  { path: '/admin/goals', name: 'goals' },
   { path: '/admin/users', name: 'users' },
   { path: '/admin/missions', name: 'missions' },
   { path: '/admin/activity', name: 'activity' },

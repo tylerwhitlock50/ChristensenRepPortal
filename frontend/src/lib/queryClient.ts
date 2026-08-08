@@ -88,6 +88,7 @@ export const qk = {
   },
   admin: {
     execution: () => ['admin', 'execution'] as const,
+    goals: () => ['admin', 'goals'] as const,
     coverage: (range: { from: string; to: string }) =>
       ['admin', 'coverage', range] as const,
     users: () => ['admin', 'users'] as const,
