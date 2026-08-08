@@ -73,6 +73,19 @@ export const qk = {
     revenueMonthly: (key: string) => ['account', key, 'revenue-monthly'] as const,
     skuSales: (key: string) => ['account', key, 'sku-sales'] as const,
     backlogSku: (key: string) => ['account', key, 'backlog-sku'] as const,
+    goal: (key: string) => ['account', key, 'goal'] as const,
+  },
+  /**
+   * Rep-entered account goals (migration 023). The per-account read lives
+   * under `qk.account.goal` so account-root invalidation still sweeps it;
+   * these are the book-wide reads, which no account key covers.
+   */
+  goals: {
+    root: () => ['goals'] as const,
+    forAccounts: (year: number, keys: string[]) =>
+      ['goals', 'accounts', year, keys] as const,
+    behind: (year: number) => ['goals', 'behind', year] as const,
+    rollup: (year: number) => ['goals', 'rollup', year] as const,
   },
   /**
    * Personal follow-ups. Scoped by user id so signing in as someone else on a
@@ -98,6 +111,7 @@ export const qk = {
     salesReps: () => ['admin', 'sales-reps'] as const,
     scoreSettings: () => ['admin', 'score-settings'] as const,
     rules: () => ['admin', 'rules'] as const,
+    repGoals: () => ['admin', 'rep-goals'] as const,
   },
 } as const
 

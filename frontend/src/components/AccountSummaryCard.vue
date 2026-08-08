@@ -3,6 +3,7 @@ import { computed, toRef } from 'vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
+import AccountGoalPanel from '@/components/AccountGoalPanel.vue'
 import { count, daysAgo, money, shortDate } from '@/lib/format'
 import {
   deltaLabel,
@@ -13,10 +14,14 @@ import {
 /**
  * The four numbers a rep needs before walking into a dealer: how the year is
  * going, how it went last year, the rolling twelve, and what is still owed to
- * them.
+ * them — then the goal all of that is measured against.
  *
  * Every figure comes pre-aggregated from public.v_account_summary — see
  * useAccountMetrics.ts. Nothing here sums a fact table.
+ *
+ * AccountGoalPanel sits OUTSIDE the AsyncState below on purpose: it owns its
+ * own query and its own empty state, and an account with no ERP history yet
+ * is exactly the kind a rep wants to put a goal on.
  */
 const props = defineProps<{ customerKey: string }>()
 
@@ -116,5 +121,7 @@ const openOrdersSub = computed(() => {
         </div>
       </dl>
     </AsyncState>
+
+    <AccountGoalPanel :customer-key="customerKey" class="mt-4" />
   </AppCard>
 </template>

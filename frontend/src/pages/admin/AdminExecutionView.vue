@@ -3,15 +3,17 @@ import { computed } from 'vue'
 import { useCoverage } from '@/composables/useAdmin'
 import CoverageGrid from '@/components/CoverageGrid.vue'
 import RepExecutionGrid from '@/components/RepExecutionGrid.vue'
+import RepGoalGrid from '@/components/RepGoalGrid.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 
 /**
- * The headline numbers stay here; the two tables are now
- * RepExecutionGrid/CoverageGrid, which bring their own AppCard, AsyncState,
+ * The headline numbers stay here; the tables are RepExecutionGrid,
+ * RepGoalGrid and CoverageGrid, which bring their own AppCard, AsyncState,
  * sorting, filtering and CSV export (PRD acceptance criterion #4).
  *
- * This page calls useCoverage() and so do both grids — TanStack Query dedupes
- * on the key, so that is one request, not three.
+ * This page calls useCoverage() and so do the coverage grids — TanStack Query
+ * dedupes on the key, so that is one request, not three. RepGoalGrid runs its
+ * own query against the goal views (023) and shares nothing with them.
  */
 const coverage = useCoverage()
 
@@ -62,6 +64,7 @@ const dash = '—'
     </p>
 
     <RepExecutionGrid />
+    <RepGoalGrid />
     <CoverageGrid />
   </div>
 </template>

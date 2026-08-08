@@ -84,9 +84,13 @@ onBeforeUnmount(() => {
             <h2 class="u-label text-ink">{{ title }}</h2>
             <p v-if="subtitle" class="text-muted mt-0.5 text-sm">{{ subtitle }}</p>
           </div>
+          <!-- 48px square, not a bare glyph with padding: as `-m-2 p-2` this
+               measured 32x40 on a phone, under both the 44px floor and the
+               48px the design system claims (style.css). The negative margins
+               keep it from growing the header row. -->
           <button
             type="button"
-            class="text-muted hover:text-ink -m-2 p-2 text-2xl leading-none"
+            class="tap-target text-muted hover:text-ink -my-1 -mr-2 flex w-12 shrink-0 items-center justify-center text-2xl leading-none"
             aria-label="Close"
             @click="close"
           >

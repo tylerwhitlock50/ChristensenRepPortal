@@ -15,6 +15,7 @@ import {
 import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
 import { useAccountSummary } from '@/composables/useAccountMetrics'
 import { useFeatureFlags } from '@/composables/useAppSettings'
+import { useAccountGoal } from '@/composables/useAccountGoals'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -106,6 +107,24 @@ const lastOrderDate = computed(
 )
 const notes = useNotes(key)
 const actions = useAccountActions(key)
+
+/**
+ * The header's Goal tile. Same query AccountGoalPanel runs in the Performance
+ * card below — vue-query dedupes it — so the two can never show different
+ * numbers. The rep's goal wins when it exists; the ERP field is the fallback
+ * and stays named either way.
+ */
+const goal = useAccountGoal(key)
+const displayGoal = computed(
+  () => goal.data.value?.target_amount ?? account.data.value?.yearly_sales_goal ?? null,
+)
+const goalSource = computed(() => {
+  const erp = goal.data.value?.erp_yearly_sales_goal ?? account.data.value?.yearly_sales_goal
+  if (goal.data.value) {
+    return erp != null ? `your goal · ERP ${money(erp)}` : 'your goal'
+  }
+  return erp != null ? 'from ERP' : 'not set'
+})
 
 const openRecs = computed(
   () => (recs.data.value ?? []).filter((r) => r.status === 'open' || r.status === 'acted'),
@@ -524,13 +543,21 @@ watch(key, () => {
             {{ shortDate(account.data.value?.account_open_date) }}
           </dd>
         </div>
+        <!--
+          Goal: the rep's own number when they have set one, the ERP's field
+          otherwise. The sub-line always says which, and shows the ERP figure
+          alongside a rep goal — the drift between the two is the interesting
+          part, and hiding it would make the two screens disagree silently.
+          Setting and editing happen in the Performance card below.
+        -->
         <div class="bg-surface px-3 py-2.5">
           <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
             Goal
           </dt>
           <dd class="u-display mt-0.5 text-xl">
-            {{ money(account.data.value?.yearly_sales_goal) }}
+            {{ money(displayGoal) }}
           </dd>
+          <p class="text-muted mt-0.5 text-[11px]">{{ goalSource }}</p>
         </div>
         <div class="bg-surface px-3 py-2.5">
           <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
