@@ -112,7 +112,10 @@ function onExport() {
         </button>
       </div>
 
-      <label v-if="mode === 'account'" class="min-w-0 flex-1 sm:max-w-sm">
+      <label
+        v-if="mode === 'account'"
+        class="order-last w-full sm:order-none sm:w-auto sm:min-w-0 sm:flex-1 sm:max-w-sm"
+      >
         <span class="sr-only">Account</span>
         <select v-model="accountKey" class="field">
           <option value="">Choose an account…</option>
