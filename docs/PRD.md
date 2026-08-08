@@ -124,7 +124,7 @@ These are "CRM things" this product will **not** do, in any phase:
 - All answers stored as structured fields, not free text
 
 **AI account summary**
-- On-demand (button) per account; generated from the read data + recent notes/visits/outcomes via Claude API
+- On-demand (button) per account; generated from the read data + recent notes/visits/outcomes via OpenAI API
 - Cached with a generated-at timestamp; regenerate on demand
 - Plain-English: what the account is, trend, what changed, recommended next steps
 
@@ -179,7 +179,7 @@ SQL Server (ERP)
   → Supabase Postgres (read models, replace-on-load)
        + writable models (app data, RLS)
   → Vue 3 SPA on Vercel
-  → Claude API for account summaries
+  → OpenAI API for account summaries
 Nightly recommendation job → reads read-models → writes recommendation records
 ```
 

@@ -3,13 +3,13 @@
   Source : VECA.dbo.PART_LOCATION  (part x warehouse x location — the grain)
            LEFT JOIN VECA.dbo.WAREHOUSE  (w: SITE_ID for the cost join + SiteKey)
            LEFT JOIN VECA.dbo.PART_SITE  (ps: standard unit cost for valuation)
-  Grain  : ONE ROW PER (PART_ID, WAREHOUSE_ID, LOCATION_ID) = 327,217 bins.
+  Grain  : ONE ROW PER (PART_ID, WAREHOUSE_ID, LOCATION_ID).
            The BIN-LEVEL inventory detail snapshot — "where is the stock and in
            what state." Complements vw_FactInventoryOnHand (part-site
            authoritative). Bin QTY can drift slightly from the authoritative
-           PART_SITE.QTY_ON_HAND (verified ~0.13%: $21.559M vs $21.586M) — for a
-           number that ties to GL use FactInventoryOnHand; use this for
-           by-warehouse / by-location / hold-status analysis.
+           PART_SITE.QTY_ON_HAND; for a number that ties to GL use
+           FactInventoryOnHand, and use this view for by-warehouse /
+           by-location / hold-status analysis.
 
   SNAPSHOT SEMANTICS: current-state (as-of-refresh). The only date role is
   LastCountDateKey (cycle-count recency), role-played to DimDate.

@@ -7,9 +7,11 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
   (single-site rifle manufacturer) that full reloads beat incremental logic.
 - **Schedule:** daily minimum, hourly capable. Hook `push_to_supabase.py`
   into the existing scheduler, or run the container in `../docker`.
-- **Post-load:** after a full successful run it executes
-  `select public.generate_recommendations();` so recommendations are
-  generated the moment fresh data lands (see `views.yml → post_load_sql`).
+- **Post-load:** after a full successful run it rebuilds territory rollups,
+  refreshes account signals/scores, and conditionally generates recommendations
+  according to `feature.recommendations`. It then best-effort pre-generates AI
+  summaries when the required URL and batch secret are configured (see
+  `views.yml → post_load_sql` / `post_load_http`).
 
 ## Files
 

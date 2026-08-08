@@ -23,14 +23,14 @@ with rather than rediscovered.
 | Charts | **Chart.js via vue-chartjs** | 2–3 simple charts (PRD §7); ECharts/D3 is overkill |
 | Mobile | **vite-plugin-pwa** + IndexedDB draft queue + client-side image compression | Reps are in stores with bad signal; a lost survey is worse than a slow one |
 | API / data plane | **Supabase PostgREST + RLS** — no bespoke REST layer | RLS is the security boundary; a Node API in front of it would duplicate it |
-| Server-side code | **Supabase Edge Functions (Deno/TS)** — 2 of them | Only for things that need a secret or service_role |
+| Server-side code | **Supabase Edge Functions (Deno/TS)** | Only for things that need a secret or service_role |
 | Database | **Supabase Postgres**: `erp` (read, ETL-owned) + `public` (app, RLS) | Established in migrations 001–010 |
 | Auth | **Supabase Auth**, admin-created users, signups disabled | PRD §7; already wired via `handle_new_user()` trigger |
 | Account access | **Derived from the ERP hierarchy** (rep = `assigned_sales_rep_id`, group = `dim_sales_rep.vendor_id`) + grant/revoke overrides | §3.4 — no manual assignment exercise, always current, makes the P1 principal role nearly free |
 | Files | **Supabase Storage**, private bucket + signed URLs | Photos are dealer-premises images; never public |
 | ETL | **Python + Docker**, SQL Server → Postgres, truncate-and-load in one transaction per table | Existing tooling; transactional `TRUNCATE` means readers never see an empty table |
 | Nightly jobs | **SQL function called by the ETL scheduler**, `pg_cron` as fallback | Runs on fresh data, idempotent in SQL, auditable |
-| AI | **Claude API (Sonnet 5) via Edge Function**, cached summaries | Direct call beats MCP for a fixed-shape prompt |
+| AI | **OpenAI Chat Completions API via Edge Functions**, cached summaries and actions | Direct calls beat MCP for fixed-shape prompts; the model is configurable with `OPENAI_MODEL` |
 | MCP | **Dev-time now; product feature in M3** | See §6 — genuinely useful, but not in the v1 request path |
 | CI/CD | **GitHub Actions** (migrations, tests) + **Vercel** (frontend) | Two triggers, no orchestration needed |
 | Monorepo | **pnpm workspaces** | `frontend/`, `etl/`, `supabase/`, `docs/` in one repo |
@@ -223,13 +223,15 @@ constraint #2 above.
 
 ### 3.2 What actually needs server-side code
 
-Exactly two Supabase Edge Functions (Deno/TypeScript), each justified by
-holding a secret or needing `service_role`:
+The current Supabase Edge Functions (Deno/TypeScript) are each justified by
+holding a secret, needing `service_role`, or running a server-side batch:
 
 | Function | Why it can't be client-side |
 |---|---|
-| `ai-account-summary` | Holds `ANTHROPIC_API_KEY` |
-| `admin-create-user` | Needs `service_role` to create auth users + set passwords (PRD: no self-signup) |
+| `ai-account-summary` | Holds `OPENAI_API_KEY` and generates access-scoped account summaries |
+| `ai-brief` | Holds `OPENAI_API_KEY` and generates deterministic intelligence actions |
+| `ai-summary-batch` | Holds `OPENAI_API_KEY` plus the batch secret and pre-generates selected summaries |
+| `admin-create-user` / `admin-update-user` | Need `service_role` for administrator-controlled Auth changes |
 
 Photo upload/download does **not** need a function: the private bucket's
 Storage RLS (`009_storage.sql`) gates both directions on
@@ -237,9 +239,10 @@ Storage RLS (`009_storage.sql`) gates both directions on
 supabase-js talks to Storage directly with the user's JWT. Revisit signed
 URLs only if per-rep upload quotas become necessary.
 
-If a third candidate appears, the first question should be "can this be a
-Postgres function with `security definer` instead?" — usually yes, and that
-keeps the logic next to the data and inside the same transaction.
+For any new candidate, first ask whether it can be a Postgres function with
+`security definer` instead. When that privilege is genuinely required, keep
+the function narrowly scoped, pin its `search_path`, revoke default execution,
+and enforce authorization inside the function.
 
 ### 3.3 Database shape (already established, stated for completeness)
 
@@ -333,12 +336,13 @@ Implementation notes:
   with explicit `is not null` guards on both sides** and leave a comment saying
   why, because it looks like a redundant check to the next person reading it.
 - **Placeholder reps must never grant access.** `WEB`, `HOUSE`, and
-  `(Unknown)` are real rep IDs in this data. (There is no placeholder flag on
-  `vw_DimSalesRep` — only `IsUnknownSalesRep` — so this is enforced by two
-  things: `has_account_access()` hard-excludes null and `(Unknown)` keys, and
-  profiles are admin-created only, so a house code never gets stamped on one.
-  Don't add a flag column for this; the admin discipline plus the guard is
-  enough for an internal tool.)
+  `(Unknown)` are real rep IDs in this data. The governed `vw_DimSalesRep`
+  exposes `IsPlaceholderRep` for `WEB`/`HOUSE` and `IsUnknownSalesRep` for the
+  sentinel, and both fields land in `erp.dim_sales_rep`. Those descriptive
+  flags help reporting, but authorization must still fail closed:
+  `has_account_access()` hard-excludes null, placeholder, and `(Unknown)` keys,
+  while admin-created profiles must never be stamped with a house code. Do not
+  rely on a BI flag alone as the security boundary.
 - Both of the above go in the RLS test suite as named cases — a rep with a null
   `sales_rep_key`, a rep with `sales_rep_key = 'HOUSE'`, and a profile with a
   null `rep_group_vendor_id` must each return zero rows. These are the two ways
@@ -437,7 +441,7 @@ does.
 
 ## 5. AI layer
 
-### 5.1 v1: direct Claude API call, cached
+### 5.1 v1: direct OpenAI API call, cached
 
 Flow for the account summary:
 
@@ -449,22 +453,23 @@ Rep clicks "Summarize"
   → Function runs 3–4 fixed SQL queries to build a compact JSON context
     (12-mo revenue trend, recent orders/shipments, open recs, last 5 notes,
      last visit survey)
-  → One Claude call, structured prompt, low temperature
+  → One OpenAI chat-completions call with a structured prompt
   → Insert into public.ai_summaries with generated_at + a hash of the context
   → Return to client; client shows the cached copy with "as of <timestamp>"
 ```
 
 Details that matter:
 
-- **Model:** Sonnet 5 for this. The task is summarization over a small,
-  well-structured context — Opus is not worth the latency or cost per account,
-  and reps will hit this button a lot. Revisit for M3's next-best-action, which
-  is genuine reasoning.
+- **Model:** configurable through `OPENAI_MODEL`, currently defaulting to
+  `gpt-5-mini` with minimal reasoning effort. The request uses
+  `max_completion_tokens` and deliberately omits `temperature` because the
+  configured reasoning model accepts only its default.
 - **Cache key on a context hash**, not just a timestamp. If nothing about the
   account changed, the regenerate button should return the cached summary
   instantly and for free.
-- **Prompt caching** on the system prompt / instruction block — it's identical
-  across every account, so it's ~free after the first call each session.
+- **Prompt caching:** keep the system prompt first and byte-identical across
+  accounts so OpenAI's automatic prefix cache can engage; monitor
+  `usage.prompt_tokens_details.cached_tokens` rather than assuming a cache hit.
 - **Graceful degradation is a requirement** (PRD acceptance criterion #7).
   Handle it *before* the API call: if the account has < N invoice lines and no
   notes, return "Not enough activity to summarize" without spending a token.
@@ -503,7 +508,7 @@ migrations got written. Extend it rather than replace it:
 
 ### 6.2 v1 product AI — deliberately *not* MCP
 
-For the account summary, MCP would mean: give Claude tools and let it decide
+For the account summary, MCP would mean: give the model tools and let it decide
 what to query. That's the wrong trade for this use case.
 
 | | Direct SQL → prompt | MCP tool-loop |
@@ -527,8 +532,8 @@ tool. Two concrete forms:
 1. **A portal MCP server for sales ops (internal, high value, low effort).**
    Exposes read tools over the portal's own data: `coverage_status(rep, window)`,
    `recommendation_outcomes(rule_key)`, `untouched_accounts()`,
-   `visit_survey_trends(account)`. Then you can ask, in Claude Desktop or Claude
-   Code, "which rules produced the most 'false positive' outcomes last month,
+   `visit_survey_trends(account)`. Then you can ask, in an MCP-capable AI
+   client, "which rules produced the most 'false positive' outcomes last month,
    and what do those accounts have in common?" — which is exactly the PRD's
    rule-tuning loop, without building an analytics UI for an audience of one.
    This is worth building as soon as there's outcome data to query, likely well
@@ -588,7 +593,7 @@ you prefer.
 |---|---|
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Vercel env (public by design — RLS is the boundary) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Edge Function secrets + ETL runner **only**. Never in Vercel, never in the frontend bundle. |
-| `ANTHROPIC_API_KEY` | Edge Function secrets only |
+| `OPENAI_API_KEY` | Edge Function secrets only |
 | SQL Server creds | ETL runner only |
 
 Deploy triggers:
@@ -632,15 +637,15 @@ Observability:
 ## 10. Decisions I'd lock now
 
 1. Vite SPA, not Nuxt. (§2.1)
-2. No application server; PostgREST + RLS, with exactly two Edge Functions —
+2. No application server; PostgREST + RLS, with focused Edge Functions —
    photos upload direct to Storage under path-based RLS, no signed-URL
    function. (§3)
 3. Nightly recommendation job as a Postgres function called by the ETL
    scheduler. (§4.2) — *answers a PRD open question*
 4. Photo compression client-side to ~300 KB. (§2.5) — *answers the PRD Storage
    cost question*
-5. AI summary via direct Claude API (Sonnet 5) with context-hash caching, not
-   MCP. (§5, §6.2)
+5. AI summary via direct OpenAI API with a configurable model and context-hash
+   caching, not MCP. (§5, §6.2)
 6. `rule_settings` table from day one, even though the editing UI is P1. (§4.2)
 7. `supabase-sql/` renamed to `supabase/` for CLI compatibility — done. (§7)
 8. Two Supabase projects, dev and prod. (§8)

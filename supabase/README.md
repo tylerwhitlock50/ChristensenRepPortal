@@ -29,18 +29,45 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `021_ai_summary_batch.sql` | `ai_summaries.headline`, `ai_batch_targets()` for the nightly pre-generation |
 | `022_job_run_duration.sql` | `log_job_run()` stamps `finished_at` with `clock_timestamp()`, so job durations are real |
 | `023_account_deactivations.sql` | `account_deactivations` — rep-side "stop working this account" override with reason + history; dismiss/de-score trigger; exclusions in `v_account_list`, `refresh_account_signals()`, `create_mission()`, coverage views |
+| `20260803223924_account_goals.sql` | Reconstructed production migration for per-account yearly goals and goal-progress views; retains the real remote migration version |
+| `024_app_settings.sql` | Admin-managed feature flags and the `v_data_freshness` read path |
+| `025_intel_views.sql` | Territory-level sales, SKU, and backlog intelligence views |
+| `026_global_intel.sql` | Security-definer global product aggregates; superseded by the units-only output contract in 033 |
+| `027_ats.sql` | Legacy ATS landing design for the never-created `vw_FactATS`; superseded and removed by the certified ATS migration in the comprehensive 032 file |
+| `028_ai_actions.sql` | Per-user AI action cache and usage ledger |
+| `029_intel_view_filters.sql` | Aligns territory intelligence with active/external account filters |
+| `030_territory_rollups.sql` | Precomputed territory rollup tables and ETL refresh function |
+| `031_backlog_ship_date.sql` | Adds earliest desired-ship date to the backlog-by-SKU read path |
+| `032_shipment_line_tracking.sql` | Parallel-branch migration landing line-level shipment tracking |
+| `032_tracking_ats_contacts_reporting.sql` | Comprehensive BI catch-up: reporting hierarchy, tracking, certified ATS landing, ERP contacts, and merged read views |
+| `033_global_intel_units_only.sql` | Removes company-wide dollar outputs from global intelligence; exposes units and mix only |
 
 ## Applying
 
-With the Supabase CLI (recommended — keeps migration history):
+The project uses imperative, forward-only migrations. For a linked environment
+whose migration history already matches this repository, inspect the installed
+CLI's current options with `supabase db push --help` and then run one push—not a
+loop that repeats the same command for every file.
 
 ```bash
 supabase link --project-ref <your-project-ref>
-for f in migrations/*.sql; do supabase db push --include-all; done
+supabase db push --include-all
 ```
 
-or paste each file in order into the Dashboard SQL editor, or apply via MCP
-`apply_migration` (one call per file, keep the numeric order).
+### Legacy migration-version caveat
+
+Two replay-safe files have the same historical version prefix, `032`, because
+they arrived from parallel branches:
+
+- `032_shipment_line_tracking.sql`
+- `032_tracking_ats_contacts_reporting.sql`
+
+The comprehensive tracking/ATS/contacts migration repeats the tracking change
+and adds the remaining BI catch-up. Existing production history must not be
+renamed casually. Before bootstrapping a fresh project with the CLI, reconcile
+these two local filenames with the linked project's migration-history table or
+apply them in an explicitly recorded order through the approved migration
+workflow. Do not assume that sorting only by the numeric prefix is sufficient.
 
 ## Post-migration checklist (Dashboard)
 

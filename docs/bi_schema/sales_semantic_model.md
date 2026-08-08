@@ -441,12 +441,16 @@ are guaranteed, so the SQL is simple and safe. Only drop to the raw Visual schem
 (or the toolbox's canonical queries) when the question needs an entity this model
 doesn't expose.
 
-## 10. Current pricing extension (written; pending deployment)
+## 10. Current pricing extension (SQL views deployed; Power BI certification pending)
 
 The pricing extension is additive to the certified three-transaction-fact model.
-It is written in `20_facts/` but remains pending deployment and Power BI size /
-refresh certification. The full rollout and customer-master remediation plan is
-in `docs/pricing_model_change_map.md`.
+Both SQL views are deployed in the live `bi` schema. Adding them to the certified
+Power BI Sales model, including relationship setup and size / refresh
+certification, remains pending. Their source DDL lives in the sibling
+`power-bi-model/20_facts/` project and is not copied into ChristensenCRM because
+the portal ETL does not land either pricing fact. The full rollout and
+customer-master remediation plan is in the Power BI project's
+`docs/pricing_model_change_map.md`.
 
 ### `bi.vw_FactPublishedPriceList`
 

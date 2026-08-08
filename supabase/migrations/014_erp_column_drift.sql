@@ -1,19 +1,16 @@
 /*============================================================================
   014_erp_column_drift.sql
 
-  Captures columns the ETL added to the erp landing tables after
-  002_erp_read_tables.sql was written. They exist in this project's database
-  but were never in a migration, so a fresh environment (prod, a Supabase
-  branch, a local stack) would build erp tables that the ETL then fails to
-  load and that 011_account_views.sql cannot compile against —
-  v_account_summary reads fact_order_line.backlog_amount, and
-  v_account_recent_shipments reads fact_shipment_line.shipment_state.
+  Historical drift repair for columns the ETL added to the erp landing tables
+  after the original 002_erp_read_tables.sql deployment. The current repository
+  baseline now includes these columns in 002 so a brand-new environment starts
+  with the intended schema. This migration remains in forward history for
+  environments that applied the older 002 definition before the baseline was
+  reconciled.
 
-  002 is deliberately NOT edited. TECH_STACK §8: forward-only migrations, no
-  editing an applied file.
-
-  Every statement is `add column if not exists`, so this is a no-op against a
-  database that already has them and a repair against one that does not.
+  Every statement is `add column if not exists`, so it is a no-op against a
+  fresh build or a repaired database and still fixes an older environment that
+  does not have the columns.
   Types match what the ETL actually created — verified against
   information_schema before writing this.
 ============================================================================*/

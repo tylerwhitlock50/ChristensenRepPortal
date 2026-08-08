@@ -2,7 +2,7 @@
   Object : bi.vw_FactInventoryOnHand
   Source : VECA.dbo.PART_SITE   (part x site — the grain and the authoritative
                                   on-hand + current standard cost)
-  Grain  : ONE ROW PER (SITE_ID, PART_ID) = 21,051 rows (single site today).
+  Grain  : ONE ROW PER (SITE_ID, PART_ID).
            This is the AUTHORITATIVE current-inventory snapshot — PART_SITE.
            QTY_ON_HAND is the official on-hand that reconciles to the GL
            inventory control account. Bin-level detail lives in the separate

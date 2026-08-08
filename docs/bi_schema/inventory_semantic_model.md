@@ -3,7 +3,8 @@
 The **certified inventory semantic model**: current-state inventory snapshots in the
 `bi` schema. It reuses the conformed `DimPart`, `DimSite`, and `DimDate` from the
 sales/purchasing models and adds `DimWarehouse`. The golden rules are identical
-to the sales guide (`docs/sales_semantic_model.md` §1) — read that first.
+to the sales guide (`docs/bi_schema/sales_semantic_model.md` §1) — read that
+first.
 
 **What this model is for:** inventory *position, valuation, and available to
 sell* — how much stock we hold right now, where, what it's worth, and what
@@ -22,8 +23,8 @@ rows) is needed — deferred by design. Ask before assuming historical inventory
 
 | Fact | Grain (one row per…) | Use it for |
 |------|----------------------|-----------|
-| `bi.vw_FactInventoryOnHand` | part × site (21,051) | **The authoritative number.** On-hand qty + valuation that ties to GL. |
-| `bi.vw_FactInventoryLocation` | part × warehouse × location (327,217) | Bin-level detail — stock by warehouse/location + hold status. |
+| `bi.vw_FactInventoryOnHand` | part × site | **The authoritative number.** On-hand qty + valuation that ties to GL. |
+| `bi.vw_FactInventoryLocation` | part × warehouse × location | Bin-level detail — stock by warehouse/location + hold status. |
 | `bi.vw_FactAvailableToSell` | part × site with SHIPPING stock or open demand | **The governed sell list.** SHIPPING QOH outside R10 staging minus open Released/Firmed SO demand. |
 
 **Which to use:**
@@ -78,8 +79,9 @@ AvailableToSellQty = ShippingOnHandQty - OpenOrderQty
 ---
 
 ## 2. `DimWarehouse` — one row per warehouse (`WarehouseKey`). Sentinel `'(Unknown)'`.
-13 warehouses within the single site. `WarehouseName`, `Description`, `SiteID`,
-`RegionID`, address, and consignment attributes (`ConsignedType`,
+Business warehouses within the single operating site, plus the sentinel row.
+`WarehouseName`, `Description`, `SiteID`, `RegionID`, address, and
+consignment attributes (`ConsignedType`,
 `ConsignCustomerID`/`ConsignVendorID`). Its own dimension, distinct from
 `DimSite`. Related only to `FactInventoryLocation` — not to ATS (ATS is
 part×site grain with a degenerate `ShippableWarehouseID`).
