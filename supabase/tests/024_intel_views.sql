@@ -52,11 +52,22 @@ select 'foreign', customer_key from erp.dim_customer
    and assigned_sales_rep_id <> (select val from t_fix where name='rep_key')
  order by customer_key limit 1;
 
--- Superuser recomputation of the rep's territory SKU revenue (current year),
--- to compare against what the invoker view hands the rep.
+-- Superuser recomputation of the rep's territory SKU revenue and units
+-- (current year), to compare against what the invoker view / definer
+-- function hand the rep.
 create temporary table t_expect (name text primary key, v numeric) on commit drop;
 insert into t_expect
 select 'rep_sku_revenue_ytd', coalesce(sum(f.revenue), 0)
+from erp.fact_invoice_line f
+join erp.dim_customer c on c.customer_key = f.customer_key
+where c.assigned_sales_rep_id = (select val from t_fix where name='rep_key')
+  and c.active_flag = 'Y'
+  and coalesce(c.internal_customer_flag, 'N') <> 'Y'
+  and f.is_memo is not true
+  and f.invoice_date >= date_trunc('year', current_date)::date;
+
+insert into t_expect
+select 'rep_sku_qty_ytd', coalesce(sum(f.invoice_qty), 0)
 from erp.fact_invoice_line f
 join erp.dim_customer c on c.customer_key = f.customer_key
 where c.assigned_sales_rep_id = (select val from t_fix where name='rep_key')
@@ -97,6 +108,7 @@ declare
   n int;
   v numeric;
   v_expected numeric := (select e.v from t_expect e where e.name='rep_sku_revenue_ytd');
+  v_expected_qty numeric := (select e.v from t_expect e where e.name='rep_sku_qty_ytd');
 begin
   ----------------------------------------------------------------
   -- T1–T3: cross-tenant isolation on every customer-grained view.
@@ -157,24 +169,25 @@ begin
   if n = 0 then
     raise exception 'T6 FAILED: report_global_product_sales returned nothing for a rep';
   end if;
-  select coalesce(sum(revenue), 0) into v from public.report_global_product_sales(12, 2000);
-  if v < v_expected then
-    raise exception 'T6 FAILED: global revenue (%) below the rep''s own book (%) — not global', v, v_expected;
+  select coalesce(sum(qty), 0) into v from public.report_global_product_sales(12, 2000);
+  if v < v_expected_qty then
+    raise exception 'T6 FAILED: global units (%) below the rep''s own book (%) — not global', v, v_expected_qty;
   end if;
-  raise notice 'T6 ok (global rows for a rep; revenue % >= book %)', v, v_expected;
+  raise notice 'T6 ok (global rows for a rep; units % >= book %)', v, v_expected_qty;
 
   -- Structural: the function's output columns must never include customer
-  -- identifiers. This fails the moment someone adds one.
+  -- identifiers, nor any dollar figure (033 stripped revenue — reps get
+  -- units and mix only). This fails the moment someone adds either back.
   if exists (
     select 1 from information_schema.parameters
     where specific_schema = 'public'
       and specific_name like 'report_global_product_sales%'
       and parameter_mode = 'OUT'
-      and parameter_name ~* 'customer'
+      and parameter_name ~* 'customer|revenue|amount|price|dollar'
   ) then
-    raise exception 'T7 FAILED: report_global_product_sales exposes a customer column';
+    raise exception 'T7 FAILED: report_global_product_sales exposes a customer or dollar column';
   end if;
-  raise notice 'T7 ok (no customer columns in the global report)';
+  raise notice 'T7 ok (no customer or dollar columns in the global report)';
 
   ----------------------------------------------------------------
   -- T8: an empty-book user gets EMPTY territory intel, not an error.

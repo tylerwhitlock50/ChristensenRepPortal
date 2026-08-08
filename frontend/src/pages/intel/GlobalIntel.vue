@@ -12,12 +12,14 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
-import { count, money } from '@/lib/format'
+import { count, share } from '@/lib/format'
 
 /**
  * Global intel — company-wide best sellers, top chamberings, family mix.
- * Aggregates only, by design and by construction: the definer RPC (021)
+ * Aggregates only, by design and by construction: the definer RPC (033)
  * returns part-grain sums plus an account COUNT and nothing account-shaped.
+ * Units and mix proportions only — no dollars. Reps may see what sells
+ * company-wide, never company-level revenue.
  */
 const months = ref(12)
 const search = ref('')
@@ -28,9 +30,14 @@ const chamberings = computed(() => rollupBy(rows.value, 'chambering').slice(0, 1
 const families = computed(() => rollupBy(rows.value, 'product_family').slice(0, 10))
 
 const totals = computed(() => ({
-  revenue: rows.value.reduce((a, r) => a + r.revenue, 0),
   qty: rows.value.reduce((a, r) => a + r.qty, 0),
+  skus: rows.value.length,
 }))
+
+/** A row's (or rollup's) share of all units in the window. */
+function unitShare(qty: number): number | null {
+  return totals.value.qty > 0 ? qty / totals.value.qty : null
+}
 
 const columns: ColumnDef<GlobalSkuRow, any>[] = [
   { id: 'part_id', header: 'SKU', accessorKey: 'part_id' },
@@ -38,7 +45,8 @@ const columns: ColumnDef<GlobalSkuRow, any>[] = [
   { id: 'product_family', header: 'Family', accessorKey: 'product_family' },
   { id: 'chambering', header: 'Chambering', accessorKey: 'chambering' },
   { id: 'qty', header: 'Units', accessorKey: 'qty' },
-  { id: 'revenue', header: 'Revenue', accessorKey: 'revenue' },
+  // Share of units — sorts identically to qty, so reuse it as the accessor.
+  { id: 'mix', header: 'Mix', accessorKey: 'qty' },
   { id: 'account_count', header: 'Dealers', accessorKey: 'account_count' },
 ]
 
@@ -50,7 +58,14 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
   { key: 'product_family', header: 'Family' },
   { key: 'chambering', header: 'Chambering' },
   { key: 'qty', header: 'Units' },
-  { key: 'revenue', header: 'Revenue' },
+  {
+    key: 'unit_share_pct',
+    header: 'Unit share %',
+    format: (r) => {
+      const s = unitShare(r.qty)
+      return s == null ? null : Number((s * 100).toFixed(2))
+    },
+  },
   { key: 'account_count', header: 'Dealer count' },
 ]
 </script>
@@ -59,7 +74,8 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
   <div class="space-y-4">
     <div class="flex flex-wrap items-center gap-2">
       <p class="text-muted text-sm">
-        Company-wide numbers — every territory, aggregated. No account detail.
+        Company-wide units and mix — every territory, aggregated. No dollars,
+        no account detail.
       </p>
       <label class="ml-auto">
         <span class="sr-only">Window</span>
@@ -81,11 +97,11 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
     >
       <div class="border-line bg-line grid grid-cols-2 gap-px border">
         <StatTile
-          label="Company revenue"
-          :value="money(totals.revenue)"
+          label="Company units"
+          :value="count(totals.qty)"
           :sub="`last ${months} months`"
         />
-        <StatTile label="Units" :value="count(totals.qty)" />
+        <StatTile label="SKUs sold" :value="count(totals.skus)" />
       </div>
 
       <div class="mt-4 grid gap-4 lg:grid-cols-2">
@@ -100,7 +116,7 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
                 {{ c.label }}
               </span>
               <span class="text-ink-2 shrink-0 text-sm tabular-nums">
-                {{ count(c.qty) }} units · {{ money(c.revenue) }}
+                {{ count(c.qty) }} units · {{ share(unitShare(c.qty)) }} of mix
               </span>
             </li>
           </ul>
@@ -116,7 +132,7 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
                 {{ f.label }}
               </span>
               <span class="text-ink-2 shrink-0 text-sm tabular-nums">
-                {{ count(f.qty) }} units · {{ money(f.revenue) }}
+                {{ count(f.qty) }} units · {{ share(unitShare(f.qty)) }} of mix
               </span>
             </li>
           </ul>
@@ -137,7 +153,7 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
         <DataGrid
           :columns="columns"
           :data="rows"
-          :initial-sorting="[{ id: 'revenue', desc: true }]"
+          :initial-sorting="[{ id: 'qty', desc: true }]"
           searchable
           search-placeholder="Filter by SKU, description, chambering…"
           v-model:global-filter="search"
@@ -145,11 +161,11 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
           class="p-3"
           @rows-change="visible = $event"
         >
-          <template #cell-revenue="{ row }">
-            <span class="tabular-nums">{{ money(row.revenue) }}</span>
-          </template>
           <template #cell-qty="{ row }">
             <span class="tabular-nums">{{ count(row.qty) }}</span>
+          </template>
+          <template #cell-mix="{ row }">
+            <span class="tabular-nums">{{ share(unitShare(row.qty)) }}</span>
           </template>
           <template #cell-account_count="{ row }">
             <span class="tabular-nums">{{ count(row.account_count) }}</span>
@@ -163,7 +179,7 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
                 {{ row.product_family }} · {{ row.chambering }}
               </p>
               <p class="text-ink-2 mt-1 text-sm tabular-nums">
-                {{ count(row.qty) }} units · {{ money(row.revenue) }} ·
+                {{ count(row.qty) }} units · {{ share(unitShare(row.qty)) }} of mix ·
                 {{ count(row.account_count) }} dealers
               </p>
             </div>

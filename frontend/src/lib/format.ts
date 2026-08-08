@@ -17,6 +17,17 @@ export function count(value: number | null | undefined): string {
   return new Intl.NumberFormat('en-US').format(value)
 }
 
+const percent1 = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  maximumFractionDigits: 1,
+})
+
+/** Share of a whole, as a fraction (0–1) → "12.3%". Dash for missing. */
+export function share(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return percent1.format(value)
+}
+
 function toDate(value: string | Date | null | undefined): Date | null {
   if (!value) return null
   const d = value instanceof Date ? value : parseISO(value)
