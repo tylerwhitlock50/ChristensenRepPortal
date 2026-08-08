@@ -369,9 +369,12 @@ export function useGlobalProductSales(months: MaybeRef<number>) {
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<GlobalSkuRow[]> => {
+      // Ask for the function's max: ranking is by raw units, where component
+      // parts dominate — a small limit would crowd gun SKUs out of the page
+      // before the guns-only filter ever sees them.
       const { data, error } = await db.rpc('report_global_product_sales', {
         p_months: m.value,
-        p_limit: 500,
+        p_limit: 2000,
       })
       if (error) throw asDisplayError(error, '033_global_intel_units_only.sql')
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
@@ -390,14 +393,40 @@ export function useGlobalProductSales(months: MaybeRef<number>) {
   })
 }
 
-/** Rollup for the "top chamberings" table — pure, unit-testable. */
+/** ERP product code that marks component parts (OEM barrels etc.), not
+ *  finished firearms. Substring match — the ERP is free-form here. */
+const COMPONENT_PRODUCT_CODE = /component/i
+
+/** True when the spec field carries a real value — dim_part uses blank or
+ *  the literal string 'N/A' on parts the spec doesn't apply to. */
+function hasSpec(value: string | null): boolean {
+  const v = (value ?? '').trim()
+  return v !== '' && v.toUpperCase() !== 'N/A'
+}
+
+/**
+ * True when a global row looks like a finished firearm. Two-layer test:
+ * the component product code is out by name, and everything else must carry
+ * at least one firearm spec attribute — components and non-gun SKUs land
+ * with family and chambering blank/'N/A' (see vw_DimPart: Z_PRODUCT_DETAIL
+ * only specs finished goods). Pure, unit-testable.
+ */
+export function isGunRow(r: GlobalSkuRow): boolean {
+  if (r.product_code && COMPONENT_PRODUCT_CODE.test(r.product_code)) return false
+  return hasSpec(r.product_family) || hasSpec(r.chambering)
+}
+
+/** Rollup for the "top chamberings" table — pure, unit-testable. Rows with
+ *  a blank or 'N/A' value are skipped: a mix bucket named "(none)" is noise,
+ *  not a chambering. */
 export function rollupBy<K extends 'chambering' | 'product_family'>(
   rows: GlobalSkuRow[],
   key: K,
 ): { label: string; qty: number }[] {
   const map = new Map<string, { label: string; qty: number }>()
   for (const r of rows) {
-    const label = (r[key] ?? '').trim() || '(none)'
+    const label = (r[key] ?? '').trim()
+    if (!hasSpec(label)) continue
     const entry = map.get(label) ?? { label, qty: 0 }
     entry.qty += r.qty
     map.set(label, entry)

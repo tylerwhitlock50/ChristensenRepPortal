@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import {
+  isGunRow,
   rollupBy,
   useGlobalProductSales,
   type GlobalSkuRow,
@@ -23,8 +24,15 @@ import { count, share } from '@/lib/format'
  */
 const months = ref(12)
 const search = ref('')
+/** Reps sell guns; component SKUs (OEM barrels etc.) dominate raw units and
+ *  drown the mix, so the page defaults to firearms only. The toggle is the
+ *  escape hatch for anyone who does want the whole catalog. */
+const gunsOnly = ref(true)
 const query = useGlobalProductSales(months)
-const rows = computed(() => query.data.value ?? [])
+const allRows = computed(() => query.data.value ?? [])
+const rows = computed(() =>
+  gunsOnly.value ? allRows.value.filter(isGunRow) : allRows.value,
+)
 
 const chamberings = computed(() => rollupBy(rows.value, 'chambering').slice(0, 10))
 const families = computed(() => rollupBy(rows.value, 'product_family').slice(0, 10))
@@ -77,7 +85,15 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
         Company-wide units and mix — every territory, aggregated. No dollars,
         no account detail.
       </p>
-      <label class="ml-auto">
+      <label class="tap-target ml-auto flex items-center gap-2">
+        <input
+          v-model="gunsOnly"
+          type="checkbox"
+          class="size-5 shrink-0 rounded border-line-2"
+        />
+        <span class="text-ink-2 text-sm font-medium">Guns only</span>
+      </label>
+      <label>
         <span class="sr-only">Window</span>
         <select v-model.number="months" class="field">
           <option :value="3">Last 3 months</option>
