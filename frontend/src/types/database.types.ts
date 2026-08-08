@@ -1757,6 +1757,7 @@ export type Database = {
           ship_date: string | null
           shipped_qty: number | null
           shipped_revenue: number | null
+          tracking_number: string | null
         }
         Relationships: []
       }

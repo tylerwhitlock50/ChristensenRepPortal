@@ -25,6 +25,10 @@
   4. erp.dim_customer_contact NEW landing table for bi.vw_DimCustomerContact,
                                 plus public.v_account_contacts merging ERP
                                 contacts with rep-entered public.contacts.
+
+  Every statement is replay-safe (if not exists / or replace / drop-first):
+  prod received these objects through the Supabase MCP before this file
+  merged, so a later `db push` of this version must be a clean no-op.
 ============================================================================*/
 
 --------------------------------------------------------------------------
@@ -44,7 +48,10 @@ alter table erp.fact_shipment_line
 
 -- Same view as 018, one change: tracking_number now prefers the line-level
 -- UDF value and only falls back to the packlist header's waybill_number.
--- The source already NULLs blanks and the '0' placeholder.
+-- The source already NULLs blanks and the '0' placeholder. Header grain
+-- keeps ONE representative number (the UI links it straight to ups.com);
+-- when a packlist ships parcels under several numbers, the full set is on
+-- v_account_shipment_lines below — the drill-in the header opens anyway.
 create or replace view public.v_account_recent_shipment_headers
 with (security_invoker = true)
 as
@@ -81,9 +88,38 @@ where r.rn <= 20;
 
 comment on view public.v_account_recent_shipment_headers is
   'Most recent 20 packlists per account at header grain. tracking_number is '
-  'the line-level shipper UDF when present, else the header waybill_number. '
-  'security_invoker. Always query with .eq(customer_key). Lines for one '
-  'packlist come from v_account_shipment_lines.';
+  'one representative line-level shipper UDF value when present, else the '
+  'header waybill_number; per-parcel numbers live on '
+  'v_account_shipment_lines. security_invoker. Always query with '
+  '.eq(customer_key).';
+
+-- Line grain gets the tracking number too (same view as 018 plus the
+-- column), so multi-parcel packlists expose every number in the drill-in.
+create or replace view public.v_account_shipment_lines
+with (security_invoker = true)
+as
+select
+    s.customer_key,
+    s.packlist_id,
+    s.line_num,
+    s.order_id,
+    s.invoice_id,
+    s.ship_date,
+    s.actual_delivery_date,
+    s.part_key,
+    p.part_id,
+    p.part_description,
+    s.shipped_qty,
+    s.shipped_revenue,
+    s.tracking_number
+from erp.fact_shipment_line s
+left join erp.dim_part p on p.part_key = s.part_key;
+
+comment on view public.v_account_shipment_lines is
+  'All lines of one packlist for the account drill-in modal, including the '
+  'line-level tracking number. security_invoker. Always query with '
+  '.eq(customer_key) AND .eq(packlist_id) — packlist_id leads the fact '
+  'table''s primary key.';
 
 --------------------------------------------------------------------------
 -- 3. ATS: land bi.vw_FactAvailableToSell, retire erp.fact_ats
@@ -130,6 +166,7 @@ alter table erp.fact_available_to_sell enable row level security;
 
 -- Product availability is not customer-scoped — same reasoning as dim_part:
 -- every signed-in rep may see what the company can sell.
+drop policy if exists "authenticated reads ats" on erp.fact_available_to_sell;
 create policy "authenticated reads ats" on erp.fact_available_to_sell
   for select to authenticated using (true);
 
@@ -228,6 +265,7 @@ create index if not exists idx_dcc_customer
 
 -- Contact details are PII scoped to the account, so the read policy is the
 -- book policy from 010 — same as dim_customer itself.
+drop policy if exists "read own dim_customer_contact" on erp.dim_customer_contact;
 create policy "read own dim_customer_contact" on erp.dim_customer_contact
   for select to authenticated
   using ((select public.is_admin())
@@ -250,7 +288,7 @@ comment on table erp.dim_customer_contact is
 -- rows are editable. security_invoker: each arm is filtered by its own RLS
 -- (public.contacts by has_account_access, the ERP arm by the book policy
 -- above), so the union leaks nothing either table would not.
-create view public.v_account_contacts
+create or replace view public.v_account_contacts
 with (security_invoker = true)
 as
 select

@@ -391,7 +391,22 @@ function upsTrackUrl(trackingNumber: string): string {
                 {{ money(line.shipped_revenue) }}
               </td>
               <td class="py-2.5 whitespace-nowrap">
-                {{ line.order_id ?? '—' }}
+                <span class="block">{{ line.order_id ?? '—' }}</span>
+                <!-- Multi-parcel packlists: the header shows one number, so
+                     surface a line's own number when it's a different one. -->
+                <a
+                  v-if="
+                    line.tracking_number &&
+                    line.tracking_number !== openShipment?.tracking_number
+                  "
+                  :href="upsTrackUrl(line.tracking_number)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-muted block text-xs underline decoration-dotted underline-offset-2"
+                  :title="`Track ${line.tracking_number} on ups.com`"
+                >
+                  {{ line.tracking_number }}
+                </a>
               </td>
             </tr>
           </tbody>

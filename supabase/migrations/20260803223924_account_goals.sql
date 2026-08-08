@@ -1,13 +1,14 @@
 /*============================================================================
-  023a_account_goals.sql  —  RECONSTRUCTED, already applied to prod
+  20260803223924_account_goals.sql  —  RECONSTRUCTED, already applied to prod
 
-  Prod has migration 20260803223924 "023_account_goals" (applied 2026-08-03
-  between 022 and 024) but the file was never merged to main — the repo
-  jumped from 022 to 023_account_deactivations. This file is that migration
-  recovered verbatim from the live database (information_schema, pg_policies,
-  pg_get_functiondef, pg_views on 2026-08-07) so a fresh environment builds
-  the same objects. Named 023a so it sorts into its true position without
-  renaming the already-merged 023_account_deactivations.
+  Prod has migration version 20260803223924 "023_account_goals" (applied
+  2026-08-03 between 022 and 024) but the file was never merged to main —
+  the repo jumped from 022 to 023_account_deactivations. This file is that
+  migration recovered verbatim from the live database (information_schema,
+  pg_policies, pg_get_functiondef, pg_views on 2026-08-07) so a fresh
+  environment builds the same objects. It carries the REAL remote version
+  as its filename so `supabase db push` sees it as already applied instead
+  of replaying or rejecting it.
 
   Everything here is idempotent; running it against prod is a no-op.
 
