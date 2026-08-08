@@ -24,8 +24,10 @@ import {
  * run while a modal is open.
  *
  * Tracking numbers: everything ships UPS, so the number links straight to
- * UPS tracking. The ERP feed currently only carries waybills on old
- * shipments (see 018's header) — the column renders whenever data exists.
+ * UPS tracking. The header shows one number per packlist (line-level
+ * tracking_number, header waybill fallback — migration 032); the drill-in
+ * modal shows each line's own number, which is what differs on a
+ * multi-package shipment.
  *
  * Horizontal scroll lives on the table wrapper only. The page itself never
  * scrolls sideways (html has overflow-x: hidden in style.css); a table that
@@ -363,7 +365,8 @@ function upsTrackUrl(trackingNumber: string): string {
               <th scope="col" class="u-label py-2 pr-3 text-left">Part</th>
               <th scope="col" class="u-label py-2 pr-3 text-right">Qty</th>
               <th scope="col" class="u-label py-2 pr-3 text-right">Value</th>
-              <th scope="col" class="u-label py-2 text-left">Order</th>
+              <th scope="col" class="u-label py-2 pr-3 text-left">Order</th>
+              <th scope="col" class="u-label py-2 text-left">Tracking</th>
             </tr>
           </thead>
           <tbody>
@@ -390,8 +393,21 @@ function upsTrackUrl(trackingNumber: string): string {
               <td class="py-2.5 pr-3 text-right whitespace-nowrap tabular-nums">
                 {{ money(line.shipped_revenue) }}
               </td>
-              <td class="py-2.5 whitespace-nowrap">
+              <td class="py-2.5 pr-3 whitespace-nowrap">
                 {{ line.order_id ?? '—' }}
+              </td>
+              <td class="py-2.5 whitespace-nowrap">
+                <a
+                  v-if="line.tracking_number"
+                  :href="upsTrackUrl(line.tracking_number)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-ink underline decoration-dotted underline-offset-2"
+                  :title="`Track ${line.tracking_number} on ups.com`"
+                >
+                  {{ line.tracking_number }}
+                </a>
+                <span v-else class="text-muted">—</span>
               </td>
             </tr>
           </tbody>

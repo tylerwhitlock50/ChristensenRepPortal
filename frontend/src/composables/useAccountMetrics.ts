@@ -143,6 +143,8 @@ export interface AccountShipmentLineRow {
   part_description: string | null
   shipped_qty: number | null
   shipped_revenue: number | null
+  /** Line-level tracking number (waybill fallback) — migration 032. */
+  tracking_number: string | null
 }
 
 /* -------------------------------------------------------------- plumbing */
@@ -407,6 +409,7 @@ export function useAccountShipmentLines(
         part_description: (r.part_description as string | null) ?? null,
         shipped_qty: numOrNull(r.shipped_qty),
         shipped_revenue: numOrNull(r.shipped_revenue),
+        tracking_number: (r.tracking_number as string | null) ?? null,
       }))
     },
   })
