@@ -4,6 +4,7 @@ import type { ColumnDef } from '@tanstack/vue-table'
 import { useAtsList, type AtsRow } from '@/composables/useIntel'
 import { isViewMissing } from '@/composables/useOverview'
 import DataGrid from '@/components/DataGrid.vue'
+import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
@@ -19,7 +20,28 @@ import { count, shortDate } from '@/lib/format'
  */
 const search = ref('')
 const query = useAtsList()
-const rows = computed(() => query.data.value ?? [])
+
+/**
+ * "On the shelf" is the number reps keep asking for: physically in the
+ * building AND not spoken for (on hand minus committed). ats_qty stays the
+ * ERP's certified promise-able number — it can lean on inbound supply, so
+ * the two are shown side by side, never merged.
+ */
+type ShelfRow = AtsRow & {
+  shelf_qty: number
+  availability: 'shelf' | 'inbound' | 'none'
+}
+
+const rows = computed<ShelfRow[]>(() =>
+  (query.data.value ?? []).map((r) => {
+    const shelf_qty = Math.max(0, r.on_hand_qty - r.committed_qty)
+    return {
+      ...r,
+      shelf_qty,
+      availability: shelf_qty > 0 ? 'shelf' : r.inbound_qty > 0 ? 'inbound' : 'none',
+    }
+  }),
+)
 
 /** Feed-not-landed reads differently from a real failure. */
 const feedMissing = computed(() => isViewMissing(query.error.value))
@@ -27,31 +49,46 @@ const feedMissing = computed(() => isViewMissing(query.error.value))
 const totals = computed(() => {
   const r = rows.value
   return {
-    sellable: r.filter((x) => x.ats_qty > 0).length,
-    units: r.reduce((a, x) => a + Math.max(0, x.ats_qty), 0),
-    out: r.filter((x) => x.ats_qty <= 0).length,
+    onShelf: r.filter((x) => x.availability === 'shelf').length,
+    shelfUnits: r.reduce((a, x) => a + x.shelf_qty, 0),
+    inboundOnly: r.filter((x) => x.availability === 'inbound').length,
+    none: r.filter((x) => x.availability === 'none').length,
   }
 })
 
-const columns: ColumnDef<AtsRow, any>[] = [
+const availabilityLabel = {
+  shelf: 'On shelf',
+  inbound: 'Inbound only',
+  none: 'None',
+} as const
+const availabilityTone = { shelf: 'good', inbound: 'neutral', none: 'late' } as const
+
+const columns: ColumnDef<ShelfRow, any>[] = [
   { id: 'part_id', header: 'SKU', accessorKey: 'part_id' },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
   { id: 'product_family', header: 'Family', accessorKey: 'product_family' },
   { id: 'chambering', header: 'Chambering', accessorKey: 'chambering' },
+  {
+    id: 'availability',
+    header: 'Availability',
+    accessorFn: (r) => availabilityLabel[r.availability],
+  },
+  { id: 'shelf_qty', header: 'On shelf', accessorKey: 'shelf_qty' },
   { id: 'ats_qty', header: 'ATS', accessorKey: 'ats_qty' },
-  { id: 'on_hand_qty', header: 'On hand', accessorKey: 'on_hand_qty' },
   { id: 'inbound_qty', header: 'Inbound', accessorKey: 'inbound_qty' },
   { id: 'next_avail_date', header: 'Next avail', accessorKey: 'next_avail_date' },
 ]
 
-const visible = ref<AtsRow[]>([])
-const csvColumns: CsvColumn<AtsRow>[] = [
+const visible = ref<ShelfRow[]>([])
+const csvColumns: CsvColumn<ShelfRow>[] = [
   { key: 'part_id', header: 'SKU' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
   { key: 'chambering', header: 'Chambering' },
   { key: 'barrel_length', header: 'Barrel' },
   { key: 'upc', header: 'UPC' },
+  { key: 'availability', header: 'Availability', format: (r) => availabilityLabel[r.availability] },
+  { key: 'shelf_qty', header: 'On shelf (uncommitted)' },
   { key: 'ats_qty', header: 'ATS qty' },
   { key: 'on_hand_qty', header: 'On hand' },
   { key: 'committed_qty', header: 'Committed' },
@@ -83,15 +120,24 @@ const csvColumns: CsvColumn<AtsRow>[] = [
       :rows="4"
       @retry="query.refetch()"
     >
-      <div class="border-line bg-line grid grid-cols-3 gap-px border">
-        <StatTile label="Sellable SKUs" :value="count(totals.sellable)" />
-        <StatTile label="Units available" :value="count(totals.units)" />
+      <div class="border-line bg-line grid grid-cols-2 gap-px border md:grid-cols-4">
+        <StatTile label="On the shelf" :value="count(totals.onShelf)" sub="SKUs in stock, not spoken for" />
+        <StatTile label="Shelf units" :value="count(totals.shelfUnits)" sub="ready to ship today" />
+        <StatTile label="Inbound only" :value="count(totals.inboundOnly)" sub="planned — nothing on the shelf" />
         <StatTile
-          label="Out of stock"
-          :value="count(totals.out)"
-          :tone="totals.out > 0 ? 'alert' : 'default'"
+          label="Nothing available"
+          :value="count(totals.none)"
+          sub="no stock, no inbound"
+          :tone="totals.none > 0 ? 'alert' : 'default'"
         />
       </div>
+
+      <p class="text-muted mt-3 text-xs leading-relaxed">
+        <span class="text-ink-2 font-semibold">On shelf</span> = on hand minus
+        committed: physically in the building and not spoken for.
+        <span class="text-ink-2 font-semibold">ATS</span> is the ERP's certified
+        promise-able number and can count on inbound supply that hasn't arrived.
+      </p>
 
       <AppCard :padded="false" class="mt-4">
         <template #header>
@@ -107,42 +153,52 @@ const csvColumns: CsvColumn<AtsRow>[] = [
         <DataGrid
           :columns="columns"
           :data="rows"
-          :initial-sorting="[{ id: 'ats_qty', desc: true }]"
+          :initial-sorting="[{ id: 'shelf_qty', desc: true }]"
           searchable
           search-placeholder="Filter by SKU, description, chambering…"
           v-model:global-filter="search"
-          :get-row-id="(r: AtsRow) => r.part_key"
+          :get-row-id="(r: ShelfRow) => r.part_key"
           class="p-3"
           @rows-change="visible = $event"
         >
-          <template #cell-ats_qty="{ row }">
+          <template #cell-availability="{ row }">
+            <AppBadge :tone="availabilityTone[row.availability]">
+              {{ availabilityLabel[row.availability] }}
+            </AppBadge>
+          </template>
+          <template #cell-shelf_qty="{ row }">
             <span
               class="font-semibold tabular-nums"
-              :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink'"
+              :class="row.shelf_qty <= 0 ? 'text-accent' : 'text-ink'"
             >
-              {{ count(row.ats_qty) }}
+              {{ count(row.shelf_qty) }}
             </span>
           </template>
-          <template #cell-on_hand_qty="{ row }">
-            <span class="tabular-nums">{{ count(row.on_hand_qty) }}</span>
+          <template #cell-ats_qty="{ row }">
+            <span class="text-ink-2 tabular-nums">{{ count(row.ats_qty) }}</span>
           </template>
           <template #cell-inbound_qty="{ row }">
             <span class="tabular-nums">{{ count(row.inbound_qty) }}</span>
           </template>
           <template #cell-next_avail_date="{ row }">
-            {{ row.ats_qty > 0 ? '—' : shortDate(row.next_avail_date) }}
+            {{ row.availability === 'shelf' ? '—' : shortDate(row.next_avail_date) }}
           </template>
           <template #card="{ row }">
             <div class="px-1">
-              <p class="text-ink text-[15px] font-semibold">
-                {{ row.part_id }} · {{ row.part_description }}
-              </p>
+              <div class="flex items-start justify-between gap-2">
+                <p class="text-ink text-[15px] font-semibold">
+                  {{ row.part_id }} · {{ row.part_description }}
+                </p>
+                <AppBadge :tone="availabilityTone[row.availability]">
+                  {{ availabilityLabel[row.availability] }}
+                </AppBadge>
+              </div>
               <p class="text-muted mt-0.5 text-xs">
                 {{ row.product_family }} · {{ row.chambering }}
               </p>
-              <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
-                ATS {{ count(row.ats_qty) }}
-                <template v-if="row.ats_qty <= 0 && row.next_avail_date">
+              <p class="mt-1 text-sm tabular-nums" :class="row.shelf_qty <= 0 ? 'text-accent' : 'text-ink-2'">
+                On shelf {{ count(row.shelf_qty) }} · ATS {{ count(row.ats_qty) }}
+                <template v-if="row.availability !== 'shelf' && row.next_avail_date">
                   · next {{ shortDate(row.next_avail_date) }}
                 </template>
               </p>
