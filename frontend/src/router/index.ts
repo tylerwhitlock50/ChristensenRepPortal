@@ -112,6 +112,12 @@ const router = createRouter({
           meta: { title: 'Execution' },
         },
         {
+          path: 'goals',
+          name: 'admin-goals',
+          component: () => import('@/pages/admin/AdminGoalsView.vue'),
+          meta: { title: 'Goals' },
+        },
+        {
           path: 'users',
           name: 'admin-users',
           component: () => import('@/pages/admin/AdminUsersView.vue'),
