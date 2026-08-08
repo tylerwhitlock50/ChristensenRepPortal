@@ -416,6 +416,18 @@ export function isGunRow(r: GlobalSkuRow): boolean {
   return hasSpec(r.product_family) || hasSpec(r.chambering)
 }
 
+/** SMU screen for the best-sellers list. Special makeup units are
+ *  dealer-exclusive runs, so they reach only a handful of accounts; the ERP
+ *  has no explicit SMU flag, so dealer breadth is the proxy. "More than
+ *  three dealers" per the CEO's ask — tune here if the line moves. */
+export const BEST_SELLER_MIN_DEALERS = 4
+
+/** True when enough distinct dealers bought the SKU for it to count as a
+ *  regular catalog item rather than an SMU. Pure, unit-testable. */
+export function isBroadlyStocked(r: GlobalSkuRow): boolean {
+  return r.account_count >= BEST_SELLER_MIN_DEALERS
+}
+
 /** Rollup for the "top chamberings" table — pure, unit-testable. Rows with
  *  a blank or 'N/A' value are skipped: a mix bucket named "(none)" is noise,
  *  not a chambering. */

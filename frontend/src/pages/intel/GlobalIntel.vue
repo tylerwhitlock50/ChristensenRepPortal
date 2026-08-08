@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import {
+  BEST_SELLER_MIN_DEALERS,
+  isBroadlyStocked,
   isGunRow,
   rollupBy,
   useGlobalProductSales,
@@ -28,10 +30,17 @@ const search = ref('')
  *  drown the mix, so the page defaults to firearms only. The toggle is the
  *  escape hatch for anyone who does want the whole catalog. */
 const gunsOnly = ref(true)
+/** SMUs (dealer-exclusive runs) reach so few dealers they're noise on a
+ *  best-sellers list; default them out. Grid-only — the mix cards and tiles
+ *  keep every sale, and the toggle shows the full list on demand. */
+const excludeSmus = ref(true)
 const query = useGlobalProductSales(months)
 const allRows = computed(() => query.data.value ?? [])
 const rows = computed(() =>
   gunsOnly.value ? allRows.value.filter(isGunRow) : allRows.value,
+)
+const bestSellerRows = computed(() =>
+  excludeSmus.value ? rows.value.filter(isBroadlyStocked) : rows.value,
 )
 
 const chamberings = computed(() => rollupBy(rows.value, 'chambering').slice(0, 10))
@@ -158,6 +167,19 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
       <AppCard :padded="false" class="mt-4">
         <template #header>
           <h2 class="u-label text-ink">Best sellers</h2>
+          <label
+            class="tap-target ml-auto flex items-center gap-2"
+            :title="`Hide SKUs bought by fewer than ${BEST_SELLER_MIN_DEALERS} dealers (SMUs / dealer exclusives)`"
+          >
+            <input
+              v-model="excludeSmus"
+              type="checkbox"
+              class="size-5 shrink-0 rounded border-line-2"
+            />
+            <span class="text-ink-2 text-sm font-medium">
+              {{ BEST_SELLER_MIN_DEALERS }}+ dealers
+            </span>
+          </label>
           <AppButton
             variant="ghost"
             :disabled="visible.length === 0"
@@ -168,7 +190,7 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
         </template>
         <DataGrid
           :columns="columns"
-          :data="rows"
+          :data="bestSellerRows"
           :initial-sorting="[{ id: 'qty', desc: true }]"
           searchable
           search-placeholder="Filter by SKU, description, chambering…"
