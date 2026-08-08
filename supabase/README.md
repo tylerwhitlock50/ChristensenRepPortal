@@ -32,15 +32,23 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 
 ## Applying
 
-With the Supabase CLI (recommended — keeps migration history):
+With the deployer that lives next to the ETL (recommended — runs on the same
+box, uses the same `.env`, and tracks history in `public.deployed_migrations`
+keyed by full filename, so duplicate numeric prefixes like the two `032_*`
+files can't collide):
 
 ```bash
-supabase link --project-ref <your-project-ref>
-for f in migrations/*.sql; do supabase db push --include-all; done
+python ../etl/deploy_migrations.py --dry-run   # list pending
+python ../etl/deploy_migrations.py             # apply pending, in order
 ```
 
-or paste each file in order into the Dashboard SQL editor, or apply via MCP
-`apply_migration` (one call per file, keep the numeric order).
+On a database that was previously migrated by hand, baseline first — see
+`etl/README.md → Deploying migrations`.
+
+Alternatively: the Supabase CLI (`supabase link` + `supabase db push` —
+note the CLI keys history on the numeric prefix, which the duplicate `032`
+filenames break), or paste each file in order into the Dashboard SQL editor,
+or apply via MCP `apply_migration` (one call per file, keep the order).
 
 ## Post-migration checklist (Dashboard)
 

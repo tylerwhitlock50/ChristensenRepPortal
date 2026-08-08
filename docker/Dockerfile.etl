@@ -12,10 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir pyodbc "psycopg[binary]" pyyaml
+RUN pip install --no-cache-dir pyodbc "psycopg[binary]" pyyaml python-dotenv
 
 WORKDIR /app
-COPY etl/views.yml etl/push_to_supabase.py ./
+COPY etl/views.yml etl/push_to_supabase.py etl/deploy_migrations.py ./
+COPY supabase/migrations /supabase/migrations
 
 # MSSQL_CONN and PG_CONN come from the environment / compose env_file
 CMD ["python", "push_to_supabase.py"]

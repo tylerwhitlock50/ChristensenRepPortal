@@ -1,5 +1,7 @@
 # Run the ETL push on demand (or from any scheduler that can `docker compose run`):
 #   docker compose -f docker/docker-compose.yml run --rm etl
+# Deploy pending Supabase migrations first (same image, same .env):
+#   docker compose -f docker/docker-compose.yml run --rm etl python deploy_migrations.py
 services:
   etl:
     build:
