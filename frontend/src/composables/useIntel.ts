@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { isViewMissing } from '@/composables/useOverview'
 
@@ -83,11 +84,22 @@ export function useTerritorySkuSales() {
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<SkuYearRow[]> => {
-      const { data, error } = await db
-        .from('v_territory_sku_sales')
-        .select('*') // unfiltered on purpose — RLS is the territory filter
-      if (error) throw asDisplayError(error, '025_intel_views.sql')
-      return ((data ?? []) as Record<string, unknown>[]).map(mapSkuRow)
+      // SKU × year over the whole book blows past PostgREST's 1,000-row cap
+      // for a large territory or an admin — page it. (part_key, sales_year)
+      // is the view's grain, so ordering by both is a total order.
+      try {
+        const data = await fetchAllRows<Record<string, unknown>>((from, to) =>
+          db
+            .from('v_territory_sku_sales')
+            .select('*', { count: 'exact' }) // unfiltered on purpose — RLS is the territory filter
+            .order('part_key')
+            .order('sales_year')
+            .range(from, to),
+        )
+        return data.map(mapSkuRow)
+      } catch (error) {
+        throw asDisplayError(error, '025_intel_views.sql')
+      }
     },
   })
 }
@@ -226,12 +238,23 @@ export function useTerritoryBacklog() {
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<BacklogSkuRow[]> => {
-      const { data, error } = await db
-        .from('v_backlog_by_sku')
-        .select('*') // unfiltered on purpose — RLS is the territory filter
-        .order('backlog_amount', { ascending: false })
-      if (error) throw asDisplayError(error, '025_intel_views.sql')
-      return ((data ?? []) as Record<string, unknown>[]).map(mapBacklogRow)
+      // Account × SKU across the territory can exceed the 1,000-row cap.
+      // The (customer_key, part_key) tiebreakers make the sort total so
+      // pages never overlap on equal backlog amounts.
+      try {
+        const data = await fetchAllRows<Record<string, unknown>>((from, to) =>
+          db
+            .from('v_backlog_by_sku')
+            .select('*', { count: 'exact' }) // unfiltered on purpose — RLS is the territory filter
+            .order('backlog_amount', { ascending: false })
+            .order('customer_key')
+            .order('part_key')
+            .range(from, to),
+        )
+        return data.map(mapBacklogRow)
+      } catch (error) {
+        throw asDisplayError(error, '025_intel_views.sql')
+      }
     },
   })
 }
@@ -285,12 +308,21 @@ export function useAtsList() {
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<AtsRow[]> => {
-      const { data, error } = await db
-        .from('v_ats_list')
-        .select('*')
-        .order('ats_qty', { ascending: false })
-      if (error) throw asDisplayError(error, '027_ats.sql')
-      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      // One row per part, but a full catalog can top 1,000 SKUs — page it.
+      let data: Record<string, unknown>[]
+      try {
+        data = await fetchAllRows<Record<string, unknown>>((from, to) =>
+          db
+            .from('v_ats_list')
+            .select('*', { count: 'exact' })
+            .order('ats_qty', { ascending: false })
+            .order('part_key')
+            .range(from, to),
+        )
+      } catch (error) {
+        throw asDisplayError(error, '027_ats.sql')
+      }
+      return data.map((r) => ({
         part_key: String(r.part_key),
         part_id: (r.part_id as string | null) ?? null,
         part_description: (r.part_description as string | null) ?? null,

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
 import { supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 
 /**
@@ -102,11 +103,22 @@ export function useTerritoryAccounts() {
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<TerritoryAccountRow[]> => {
-      const { data, error } = await db
-        .from('v_territory_account_yoy')
-        .select('*') // unfiltered on purpose — RLS is the territory filter
-      if (error) throw asDisplayError(error)
-      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      // "A few hundred rows" holds for a rep; an admin's book is every
+      // active account and sails past PostgREST's 1,000-row cap — page on
+      // the view's unique customer_key.
+      let data: Record<string, unknown>[]
+      try {
+        data = await fetchAllRows<Record<string, unknown>>((from, to) =>
+          db
+            .from('v_territory_account_yoy')
+            .select('*', { count: 'exact' }) // unfiltered on purpose — RLS is the territory filter
+            .order('customer_key')
+            .range(from, to),
+        )
+      } catch (error) {
+        throw asDisplayError(error)
+      }
+      return data.map((r) => ({
         customer_key: String(r.customer_key),
         customer_name: (r.customer_name as string | null) ?? null,
         sold_to_city: (r.sold_to_city as string | null) ?? null,
