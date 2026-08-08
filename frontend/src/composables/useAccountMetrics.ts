@@ -143,6 +143,7 @@ export interface AccountShipmentLineRow {
   part_description: string | null
   shipped_qty: number | null
   shipped_revenue: number | null
+  /** Line-level tracking number (waybill fallback) — migration 032. */
   tracking_number: string | null
 }
 

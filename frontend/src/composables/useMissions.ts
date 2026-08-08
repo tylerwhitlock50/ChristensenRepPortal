@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import type { Tables } from '@/types/database.types'
 import type { MissionScope } from '@/types/domain'
@@ -37,15 +38,19 @@ export function useMissionDetail(batchId: MaybeRef<number | null>) {
     queryKey: computed(() => qk.admin.missionDetail(id.value ?? 0)),
     enabled: computed(() => id.value != null),
     queryFn: async (): Promise<MissionDetail[]> => {
-      const { data, error } = await supabase
-        .from('v_mission_detail')
-        .select('*')
-        .eq('batch_id', id.value!)
-        .order('status')
-        .order('customer_name')
-        .limit(5000)
-      if (error) throw error
-      return data ?? []
+      // .limit(5000) was a lie — PostgREST truncates at max-rows (1,000)
+      // regardless of the requested limit, so a big batch silently lost its
+      // tail. Page instead; `id` is unique, making the sort total.
+      return fetchAllRows((from, to) =>
+        supabase
+          .from('v_mission_detail')
+          .select('*', { count: 'exact' })
+          .eq('batch_id', id.value!)
+          .order('status')
+          .order('customer_name')
+          .order('id')
+          .range(from, to),
+      )
     },
   })
 }

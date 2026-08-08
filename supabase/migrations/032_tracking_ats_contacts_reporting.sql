@@ -95,6 +95,9 @@ comment on view public.v_account_recent_shipment_headers is
 
 -- Line grain gets the tracking number too (same view as 018 plus the
 -- column), so multi-parcel packlists expose every number in the drill-in.
+-- Definition kept IDENTICAL to 032_shipment_line_tracking.sql (the same
+-- change made on a parallel branch) so file order can never matter:
+-- waybill fallback per line keeps pre-2022 shipments linkable.
 create or replace view public.v_account_shipment_lines
 with (security_invoker = true)
 as
@@ -111,14 +114,14 @@ select
     p.part_description,
     s.shipped_qty,
     s.shipped_revenue,
-    s.tracking_number
+    coalesce(s.tracking_number, s.waybill_number) as tracking_number
 from erp.fact_shipment_line s
 left join erp.dim_part p on p.part_key = s.part_key;
 
 comment on view public.v_account_shipment_lines is
-  'All lines of one packlist for the account drill-in modal, including the '
-  'line-level tracking number. security_invoker. Always query with '
-  '.eq(customer_key) AND .eq(packlist_id) — packlist_id leads the fact '
+  'All lines of one packlist for the account drill-in modal, each with its '
+  'own tracking number (waybill fallback). security_invoker. Always query '
+  'with .eq(customer_key) AND .eq(packlist_id) — packlist_id leads the fact '
   'table''s primary key.';
 
 --------------------------------------------------------------------------

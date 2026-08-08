@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import type { Tables } from '@/types/database.types'
 
@@ -29,13 +30,19 @@ export function useCoverage() {
   return useQuery({
     queryKey: qk.admin.coverage({ from: 'rolling', to: '30d' }),
     queryFn: async (): Promise<Coverage[]> => {
-      const { data, error } = await supabase
-        .from('account_coverage')
-        .select('*')
-        .order('last_contact_date', { ascending: true, nullsFirst: true })
-        .limit(5000)
-      if (error) throw error
-      return data ?? []
+      // .limit(5000) never delivered more than PostgREST's max-rows (1,000),
+      // so an admin's coverage table silently dropped accounts. Page it;
+      // (customer_key, user_id) is the view's grain, so the tiebreakers
+      // make the date sort total.
+      return fetchAllRows((from, to) =>
+        supabase
+          .from('account_coverage')
+          .select('*', { count: 'exact' })
+          .order('last_contact_date', { ascending: true, nullsFirst: true })
+          .order('customer_key')
+          .order('user_id')
+          .range(from, to),
+      )
     },
   })
 }
