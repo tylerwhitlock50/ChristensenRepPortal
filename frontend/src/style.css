@@ -37,12 +37,25 @@
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
-    /* Never let a wide table or long account name scroll the page sideways */
-    overflow-x: hidden;
+    /* Never let a wide table or long account name scroll the page sideways.
+       `hidden` on html alone still lets mobile Safari/Chrome pan the page
+       horizontally when something overflows the body; `clip` forbids the pan
+       outright — and unlike `hidden` it can also go on body without turning
+       body into a scroll container, which would unstick the sticky app
+       header. (An @supports fallback, not a duplicate declaration: the CSS
+       minifier drops same-property fallbacks.) */
+    overflow-x: clip;
+  }
+
+  @supports not (overflow-x: clip) {
+    html {
+      overflow-x: hidden;
+    }
   }
 
   body {
     margin: 0;
+    overflow-x: clip;
     min-height: 100svh;
     background: var(--color-canvas);
     color: var(--color-ink);

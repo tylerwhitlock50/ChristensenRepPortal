@@ -352,13 +352,16 @@ export interface GlobalSkuRow {
   product_family: string | null
   chambering: string | null
   barrel_length: string | null
-  revenue: number
   qty: number
   invoice_count: number
   account_count: number
 }
 
-/** Company-wide best sellers via the definer RPC — aggregates only. */
+/**
+ * Company-wide best sellers via the definer RPC — aggregates only, and
+ * units only: 033 stripped revenue from the function so reps never receive
+ * company-level dollars, even in the payload.
+ */
 export function useGlobalProductSales(months: MaybeRef<number>) {
   const m = computed(() => unref(months))
   return useQuery({
@@ -370,7 +373,7 @@ export function useGlobalProductSales(months: MaybeRef<number>) {
         p_months: m.value,
         p_limit: 500,
       })
-      if (error) throw asDisplayError(error, '026_global_intel.sql')
+      if (error) throw asDisplayError(error, '033_global_intel_units_only.sql')
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
         part_key: String(r.part_key),
         part_id: (r.part_id as string | null) ?? null,
@@ -379,7 +382,6 @@ export function useGlobalProductSales(months: MaybeRef<number>) {
         product_family: (r.product_family as string | null) ?? null,
         chambering: (r.chambering as string | null) ?? null,
         barrel_length: (r.barrel_length as string | null) ?? null,
-        revenue: num(r.revenue),
         qty: num(r.qty),
         invoice_count: num(r.invoice_count),
         account_count: num(r.account_count),
@@ -392,14 +394,13 @@ export function useGlobalProductSales(months: MaybeRef<number>) {
 export function rollupBy<K extends 'chambering' | 'product_family'>(
   rows: GlobalSkuRow[],
   key: K,
-): { label: string; revenue: number; qty: number }[] {
-  const map = new Map<string, { label: string; revenue: number; qty: number }>()
+): { label: string; qty: number }[] {
+  const map = new Map<string, { label: string; qty: number }>()
   for (const r of rows) {
     const label = (r[key] ?? '').trim() || '(none)'
-    const entry = map.get(label) ?? { label, revenue: 0, qty: 0 }
-    entry.revenue += r.revenue
+    const entry = map.get(label) ?? { label, qty: 0 }
     entry.qty += r.qty
     map.set(label, entry)
   }
-  return [...map.values()].sort((a, b) => b.revenue - a.revenue)
+  return [...map.values()].sort((a, b) => b.qty - a.qty)
 }
