@@ -10,7 +10,7 @@ import { useSessionStore } from '@/stores/session'
  * `useContacts` query in the app.
  */
 export { useContacts } from '@/composables/useAccountData'
-export type { Contact } from '@/composables/useAccountData'
+export type { Contact, AccountContact } from '@/composables/useAccountData'
 
 /** What the form collects. Blank strings become NULL on the way to Postgres. */
 export type ContactInput = {

@@ -78,6 +78,13 @@ export type Database = {
             referencedColumns: ["user_id"]
           },
           {
+            foreignKeyName: "account_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+          {
             foreignKeyName: "account_assignments_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
@@ -96,6 +103,196 @@ export type Database = {
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_assignments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      account_deactivations: {
+        Row: {
+          customer_key: string
+          deactivated_at: string
+          deactivated_by: string
+          id: number
+          note: string | null
+          reactivated_at: string | null
+          reactivated_by: string | null
+          reason: string
+        }
+        Insert: {
+          customer_key: string
+          deactivated_at?: string
+          deactivated_by?: string
+          id?: never
+          note?: string | null
+          reactivated_at?: string | null
+          reactivated_by?: string | null
+          reason: string
+        }
+        Update: {
+          customer_key?: string
+          deactivated_at?: string
+          deactivated_by?: string
+          id?: never
+          note?: string | null
+          reactivated_at?: string | null
+          reactivated_by?: string | null
+          reason?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_deactivations_deactivated_by_fkey"
+            columns: ["deactivated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_deactivated_by_fkey"
+            columns: ["deactivated_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_deactivated_by_fkey"
+            columns: ["deactivated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_deactivated_by_fkey"
+            columns: ["deactivated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_reactivated_by_fkey"
+            columns: ["reactivated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_reactivated_by_fkey"
+            columns: ["reactivated_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_reactivated_by_fkey"
+            columns: ["reactivated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_deactivations_reactivated_by_fkey"
+            columns: ["reactivated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      account_goals: {
+        Row: {
+          created_at: string
+          created_by: string
+          customer_key: string
+          id: number
+          note: string | null
+          period_year: number
+          target_amount: number
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string
+          customer_key: string
+          id?: never
+          note?: string | null
+          period_year: number
+          target_amount: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          customer_key?: string
+          id?: never
+          note?: string | null
+          period_year?: number
+          target_amount?: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
             referencedColumns: ["user_id"]
           },
         ]
@@ -263,6 +460,75 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "actions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      ai_briefs: {
+        Row: {
+          action: string
+          content: string
+          context_hash: string | null
+          generated_at: string
+          model: string | null
+          prompt_version: string | null
+          subject_key: string
+          user_id: string
+        }
+        Insert: {
+          action: string
+          content: string
+          context_hash?: string | null
+          generated_at?: string
+          model?: string | null
+          prompt_version?: string | null
+          subject_key?: string
+          user_id: string
+        }
+        Update: {
+          action?: string
+          content?: string
+          context_hash?: string | null
+          generated_at?: string
+          model?: string | null
+          prompt_version?: string | null
+          subject_key?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_briefs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_briefs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_briefs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_briefs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
       }
       ai_summaries: {
@@ -318,7 +584,91 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "ai_summaries_generated_by_fkey"
+            columns: ["generated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
+      }
+      ai_usage_events: {
+        Row: {
+          action: string
+          created_at: string
+          id: number
+          user_id: string
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          id?: never
+          user_id: string
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          id?: never
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_usage_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_usage_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_usage_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "ai_usage_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      app_settings: {
+        Row: {
+          description: string | null
+          enabled: boolean
+          params: Json
+          setting_key: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          description?: string | null
+          enabled?: boolean
+          params?: Json
+          setting_key: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          description?: string | null
+          enabled?: boolean
+          params?: Json
+          setting_key?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
       }
       contacts: {
         Row: {
@@ -380,6 +730,13 @@ export type Database = {
             columns: ["created_by"]
             isOneToOne: false
             referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "contacts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
             referencedColumns: ["user_id"]
           },
         ]
@@ -452,6 +809,13 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "login_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
       }
       mission_batches: {
@@ -510,6 +874,13 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
       }
       notes: {
@@ -554,6 +925,13 @@ export type Database = {
             columns: ["created_by"]
             isOneToOne: false
             referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "notes_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
             referencedColumns: ["user_id"]
           },
         ]
@@ -609,6 +987,13 @@ export type Database = {
             columns: ["created_by"]
             isOneToOne: false
             referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "photos_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
             referencedColumns: ["user_id"]
           },
           {
@@ -754,6 +1139,13 @@ export type Database = {
             referencedColumns: ["user_id"]
           },
           {
+            foreignKeyName: "recommendations_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+          {
             foreignKeyName: "recommendations_created_by_fkey"
             columns: ["created_by"]
             isOneToOne: false
@@ -772,6 +1164,13 @@ export type Database = {
             columns: ["created_by"]
             isOneToOne: false
             referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "recommendations_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
             referencedColumns: ["user_id"]
           },
           {
@@ -857,6 +1256,13 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "score_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
       }
       tasks: {
@@ -910,6 +1316,13 @@ export type Database = {
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "tasks_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
             referencedColumns: ["user_id"]
           },
         ]
@@ -995,6 +1408,13 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "visits_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
       }
     }
@@ -1050,6 +1470,13 @@ export type Database = {
             referencedRelation: "v_rep_activity"
             referencedColumns: ["user_id"]
           },
+          {
+            foreignKeyName: "mission_batches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
         ]
       }
       rep_execution_summary: {
@@ -1091,6 +1518,112 @@ export type Database = {
         }
         Relationships: []
       }
+      v_account_contacts: {
+        Row: {
+          contact_key: string | null
+          customer_key: string | null
+          email: string | null
+          id: number | null
+          is_primary: boolean | null
+          name: string | null
+          notes: string | null
+          phone: string | null
+          source: string | null
+          title: string | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
+      v_account_goal_progress: {
+        Row: {
+          active_flag: string | null
+          as_of: string | null
+          attainment_pct: number | null
+          created_by: string | null
+          customer_key: string | null
+          customer_name: string | null
+          days_elapsed: number | null
+          days_remaining: number | null
+          days_total: number | null
+          erp_yearly_sales_goal: number | null
+          expected_amount: number | null
+          expected_pct: number | null
+          gap_to_goal: number | null
+          gap_to_pace: number | null
+          goal_id: number | null
+          note: string | null
+          on_track: boolean | null
+          pace_basis: string | null
+          period_end: string | null
+          period_start: string | null
+          period_year: number | null
+          projected_amount: number | null
+          revenue_to_date: number | null
+          sold_to_city: string | null
+          sold_to_state: string | null
+          target_amount: number | null
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "rep_execution_summary"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_activity"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "account_goals_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "v_rep_goal_attainment"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
       v_account_list: {
         Row: {
           active_flag: string | null
@@ -1098,32 +1631,12 @@ export type Database = {
           assigned_sales_rep_name: string | null
           customer_key: string | null
           customer_name: string | null
+          deactivated_at: string | null
+          deactivation_reason: string | null
           last_order_date: string | null
           sold_to_city: string | null
           sold_to_state: string | null
           territory: string | null
-        }
-        Insert: {
-          active_flag?: string | null
-          assigned_sales_rep_id?: string | null
-          assigned_sales_rep_name?: string | null
-          customer_key?: string | null
-          customer_name?: string | null
-          last_order_date?: never
-          sold_to_city?: string | null
-          sold_to_state?: string | null
-          territory?: string | null
-        }
-        Update: {
-          active_flag?: string | null
-          assigned_sales_rep_id?: string | null
-          assigned_sales_rep_name?: string | null
-          customer_key?: string | null
-          customer_name?: string | null
-          last_order_date?: never
-          sold_to_city?: string | null
-          sold_to_state?: string | null
-          territory?: string | null
         }
         Relationships: []
       }
@@ -1244,6 +1757,7 @@ export type Database = {
           ship_date: string | null
           shipped_qty: number | null
           shipped_revenue: number | null
+          tracking_number: string | null
         }
         Relationships: []
       }
@@ -1258,6 +1772,53 @@ export type Database = {
           revenue_prior_ytd: number | null
           revenue_trailing_12m: number | null
           revenue_ytd: number | null
+        }
+        Relationships: []
+      }
+      v_ats_list: {
+        Row: {
+          ats_qty: number | null
+          availability_status: string | null
+          backlog_qty: number | null
+          barrel_length: string | null
+          chambering: string | null
+          committed_qty: number | null
+          inbound_qty: number | null
+          is_oversold: boolean | null
+          loaded_at: string | null
+          next_avail_date: string | null
+          on_hand_qty: number | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          product_family: string | null
+          upc: string | null
+        }
+        Relationships: []
+      }
+      v_backlog_by_sku: {
+        Row: {
+          backlog_amount: number | null
+          backlog_qty: number | null
+          chambering: string | null
+          customer_id: string | null
+          customer_key: string | null
+          customer_name: string | null
+          earliest_desired_ship_date: string | null
+          earliest_promise_date: string | null
+          latest_order_date: string | null
+          open_line_count: number | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          product_family: string | null
+        }
+        Relationships: []
+      }
+      v_data_freshness: {
+        Row: {
+          data_loaded_at: string | null
+          data_through: string | null
         }
         Relationships: []
       }
@@ -1294,6 +1855,19 @@ export type Database = {
           },
         ]
       }
+      v_my_goal_rollup: {
+        Row: {
+          accounts_behind: number | null
+          accounts_with_goal: number | null
+          attainment_pct: number | null
+          expected_pct: number | null
+          expected_total: number | null
+          period_year: number | null
+          revenue_total: number | null
+          target_total: number | null
+        }
+        Relationships: []
+      }
       v_rep_activity: {
         Row: {
           actions_30d: number | null
@@ -1308,6 +1882,84 @@ export type Database = {
           sales_rep_key: string | null
           user_id: string | null
           vendor_id: string | null
+        }
+        Relationships: []
+      }
+      v_rep_goal_attainment: {
+        Row: {
+          accounts_behind: number | null
+          accounts_with_goal: number | null
+          active: boolean | null
+          assigned_accounts: number | null
+          attainment_pct: number | null
+          expected_pct: number | null
+          full_name: string | null
+          period_year: number | null
+          revenue_total: number | null
+          target_total: number | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
+      v_sku_sales_by_account: {
+        Row: {
+          chambering: string | null
+          customer_key: string | null
+          invoice_count: number | null
+          last_invoice_date: string | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          product_family: string | null
+          qty: number | null
+          revenue: number | null
+          sales_year: number | null
+          upc: string | null
+        }
+        Relationships: []
+      }
+      v_territory_account_yoy: {
+        Row: {
+          backlog_amount: number | null
+          backlog_qty: number | null
+          customer_key: string | null
+          customer_name: string | null
+          last_invoice_date: string | null
+          open_order_value: number | null
+          revenue_prior_ytd: number | null
+          revenue_trailing_12m: number | null
+          revenue_ytd: number | null
+          sold_to_city: string | null
+          sold_to_state: string | null
+          yearly_sales_goal: number | null
+        }
+        Relationships: []
+      }
+      v_territory_recent_orders: {
+        Row: {
+          customer_key: string | null
+          customer_name: string | null
+          has_backlog: boolean | null
+          line_count: number | null
+          order_amount: number | null
+          order_date: string | null
+          order_id: string | null
+        }
+        Relationships: []
+      }
+      v_territory_sku_sales: {
+        Row: {
+          chambering: string | null
+          invoice_count: number | null
+          last_invoice_date: string | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          product_family: string | null
+          qty: number | null
+          revenue: number | null
+          sales_year: number | null
+          upc: string | null
         }
         Relationships: []
       }
@@ -1411,6 +2063,29 @@ export type Database = {
         }[]
       }
       refresh_account_signals: { Args: never; Returns: number }
+      refresh_territory_rollups: {
+        Args: never
+        Returns: {
+          rollup_name: string
+          row_count: number
+        }[]
+      }
+      report_global_product_sales: {
+        Args: { p_limit?: number; p_months?: number }
+        Returns: {
+          account_count: number
+          barrel_length: string
+          chambering: string
+          invoice_count: number
+          part_description: string
+          part_id: string
+          part_key: string
+          product_code: string
+          product_family: string
+          qty: number
+          revenue: number
+        }[]
+      }
       rule_in_cooldown: {
         Args: { p_customer_key: string; p_params: Json; p_rule_key: string }
         Returns: boolean

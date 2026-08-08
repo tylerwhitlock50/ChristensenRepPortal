@@ -9,6 +9,25 @@ export type Note = Tables<'notes'>
 export type Action = Tables<'actions'>
 export type Contact = Tables<'contacts'>
 
+/**
+ * One row of public.v_account_contacts (032): rep-entered contacts merged
+ * with the ERP's active customer contacts. `id` is set — and the row is
+ * editable — only when source === 'rep'.
+ */
+export type AccountContact = {
+  contact_key: string
+  source: 'rep' | 'erp'
+  id: number | null
+  customer_key: string
+  name: string
+  title: string | null
+  phone: string | null
+  email: string | null
+  is_primary: boolean
+  notes: string | null
+  updated_at: string | null
+}
+
 export function useNotes(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
@@ -50,15 +69,15 @@ export function useContacts(customerKey: MaybeRef<string>) {
   return useQuery({
     queryKey: computed(() => qk.account.contacts(key.value)),
     enabled: computed(() => !!key.value),
-    queryFn: async (): Promise<Contact[]> => {
+    queryFn: async (): Promise<AccountContact[]> => {
       const { data, error } = await supabase
-        .from('contacts')
+        .from('v_account_contacts')
         .select('*')
         .eq('customer_key', key.value)
         .order('is_primary', { ascending: false })
         .order('name')
       if (error) throw error
-      return data ?? []
+      return (data ?? []) as AccountContact[]
     },
   })
 }

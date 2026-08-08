@@ -54,11 +54,19 @@
            no site row still survives. If a second site is ever added this join
            fans out and must move to a customer-site bridge (A4 check flags it).
 
-           CARMS BUYGROUP: CarmsCustomerGroup / CarmsCustomerSubGroup come from
-           CUSTOMER_CARMS (1:1 on CUSTOMER.ID, verified). The business-maintained
-           distribution-channel classification (BIG BOX, EVERYTHING ELSE, ...)
-           the sales scorecards slice on — distinct from the native Visual
-           CustomerGroupID.
+           CUSTOMER REPORTING HIERARCHY:
+           - CarmsCustomerGroup / CarmsCustomerSubGroup / CarmsCustomerName are
+             the raw CUSTOMER_CARMS outputs (1:1 on CUSTOMER.ID, verified). They
+             remain visible for source audit and backward compatibility.
+           - CustomerReportingGroup / CustomerReportingSubGroup /
+             CustomerReportingName are the governed reporting hierarchy. It
+             starts with explicit named-program overrides (Ducks Unlimited,
+             RMEF, NWTF), separates the CUSTOMER_SITE customer types that CARMS
+             currently leaves in EVERYTHING ELSE (Employee, Prostaff, LE,
+             Military, VIP, distributor rewards), and then applies the CARMS
+             channel before falling back to DISCOUNT_CODE / CUSTOMER_TYPE.
+           - The hierarchy is descriptive only. It does not alter pricing or
+             customer-master data and does not replace the raw source columns.
 
            SALES REGION: SalesRegion is looked up from z_REGIONS on the
            CUSTOMER's own STATE (HQ / sold-to), NOT a ship-to — region follows
@@ -100,12 +108,17 @@ SELECT
     -- fan out the customer grain.
     rgn.REGION                            AS SalesRegion,
     c.CUSTOMER_GROUP_ID                   AS CustomerGroupID,
-    -- CARMS buygroup / distribution-channel classification (e.g. BIG BOX vs
-    -- EVERYTHING ELSE). 1:1 with CUSTOMER (verified). Distinct from the native
-    -- CustomerGroupID above — this is the business-maintained channel grouping
-    -- the sales scorecards slice on.
+    -- Raw CARMS outputs. Keep these source values available even when the
+    -- governed reporting hierarchy below overrides the legacy EVERYTHING ELSE.
     cc.CUSTOMER_GROUP                     AS CarmsCustomerGroup,
     cc.CUSTOMER_SUB_GROUP                 AS CarmsCustomerSubGroup,
+    cc.CUSTOMER_NAME                      AS CarmsCustomerName,
+    -- Governed reporting hierarchy. Use these three fields together in new
+    -- reports: Group -> SubGroup -> Name. See the CROSS APPLY blocks below for
+    -- the explicit precedence and the semantic-model guide for the mapping.
+    reporting_group.CustomerReportingGroup,
+    reporting_detail.CustomerReportingSubGroup,
+    reporting_detail.CustomerReportingName,
     c.PRICE_GROUP                         AS PriceGroup,
     c.PRIORITY                            AS Priority,
     c.MARKET_ID                           AS MarketID,
@@ -169,6 +182,152 @@ LEFT JOIN VFIN.dbo.RECEIVABLES_CUSTOMER_ENTITY AS rce
     ON rce.CUSTOMER_ID = c.ID
 LEFT JOIN dbo.CUSTOMER_CARMS AS cc
     ON cc.ID = c.ID
+CROSS APPLY (
+    -- Normalize once so every classification comparison is trim/case safe.
+    SELECT
+        UPPER(LTRIM(RTRIM(COALESCE(c.NAME, N''))))              AS CustomerNameNormalized,
+        UPPER(LTRIM(RTRIM(COALESCE(c.DISCOUNT_CODE, N''))))     AS DiscountCodeNormalized,
+        UPPER(LTRIM(RTRIM(COALESCE(cs.CUSTOMER_TYPE, N''))))    AS CustomerTypeNormalized,
+        UPPER(LTRIM(RTRIM(COALESCE(c.CUSTOMER_GROUP_ID, N'')))) AS CustomerGroupIDNormalized,
+        UPPER(LTRIM(RTRIM(COALESCE(c.ADDR_3, N''))))            AS Address3Normalized,
+        UPPER(LTRIM(RTRIM(COALESCE(c.INTERNAL_CUSTOMER, N'')))) AS InternalCustomerNormalized
+) AS classification_input
+CROSS APPLY (
+    -- Precedence matters: named/affinity programs first, then the trusted
+    -- CARMS channel, then master-data fallbacks. This keeps the groups mutually
+    -- exclusive and prevents special programs from falling back to DTC/Dealer.
+    SELECT CASE
+        WHEN c.ID = N'RMEF'
+          OR classification_input.CustomerNameNormalized LIKE N'%ROCKY%MOUNTAIN%ELK%'
+            THEN N'Special Programs'
+        WHEN c.ID = N'NATI WILD'
+          OR UPPER(c.ID) LIKE N'NWTF%'
+          OR classification_input.CustomerNameNormalized LIKE N'%NATIONAL%WILD%TURKEY%'
+            THEN N'Special Programs'
+        WHEN UPPER(c.ID) LIKE N'DUCK UNL%'
+          OR classification_input.CustomerNameNormalized LIKE N'%DUCK%UNLIMIT%'
+            THEN N'Special Programs'
+        WHEN classification_input.CustomerTypeNormalized IN
+             (N'EMPLOYEE', N'PROSTAFF', N'LE', N'MIL', N'VIP', N'DIST_REWARD', N'REWARD')
+          OR classification_input.DiscountCodeNormalized IN
+             (N'EMPLOYEE', N'PROSTAFF', N'NON-PROF', N'INDUSTRY')
+          OR classification_input.Address3Normalized LIKE N'%LAW%ENFORCEMENT%'
+          OR classification_input.Address3Normalized LIKE N'%MILITARY%'
+            THEN N'Special Programs'
+        WHEN cc.CUSTOMER_GROUP = N'BIG BOX'
+            THEN N'Big Box'
+        WHEN cc.CUSTOMER_GROUP = N'DISTRIBUTION'
+          OR classification_input.DiscountCodeNormalized = N'DISTRIBUTOR'
+          OR classification_input.CustomerTypeNormalized = N'DISTRIBUTOR'
+            THEN N'Distribution'
+        WHEN cc.CUSTOMER_GROUP = N'BUY GROUP'
+          OR classification_input.DiscountCodeNormalized = N'BUYGROUP'
+          OR classification_input.CustomerTypeNormalized = N'BUY_GROUP'
+            THEN N'Buy Group'
+        WHEN classification_input.DiscountCodeNormalized = N'INTERNATIONAL'
+            THEN N'International'
+        WHEN c.ID = N'WEBORDER'
+          OR classification_input.CustomerTypeNormalized = N'WEB'
+          OR classification_input.DiscountCodeNormalized IN (N'DTC', N'RETAIL')
+            THEN N'Direct to Consumer'
+        WHEN classification_input.DiscountCodeNormalized IN (N'DEALER', N'NATIONAL', N'MASTER')
+          OR classification_input.CustomerTypeNormalized IN (N'DEALER', N'MSTR_DLR')
+            THEN N'Dealer'
+        WHEN classification_input.DiscountCodeNormalized = N'INTERNAL'
+          OR classification_input.InternalCustomerNormalized = N'Y'
+            THEN N'Internal'
+        ELSE N'Other'
+    END AS CustomerReportingGroup
+) AS reporting_group
+CROSS APPLY (
+    SELECT
+        CASE reporting_group.CustomerReportingGroup
+            WHEN N'Special Programs' THEN
+                CASE
+                    WHEN c.ID = N'RMEF'
+                      OR classification_input.CustomerNameNormalized LIKE N'%ROCKY%MOUNTAIN%ELK%'
+                        THEN N'Rocky Mountain Elk Foundation'
+                    WHEN c.ID = N'NATI WILD'
+                      OR UPPER(c.ID) LIKE N'NWTF%'
+                      OR classification_input.CustomerNameNormalized LIKE N'%NATIONAL%WILD%TURKEY%'
+                        THEN N'National Wild Turkey Foundation'
+                    WHEN UPPER(c.ID) LIKE N'DUCK UNL%'
+                      OR classification_input.CustomerNameNormalized LIKE N'%DUCK%UNLIMIT%'
+                        THEN N'Ducks Unlimited'
+                    WHEN classification_input.CustomerTypeNormalized = N'LE'
+                      OR classification_input.Address3Normalized LIKE N'%LAW%ENFORCEMENT%'
+                        THEN N'Law Enforcement'
+                    WHEN classification_input.CustomerTypeNormalized = N'MIL'
+                      OR classification_input.Address3Normalized LIKE N'%MILITARY%'
+                        THEN N'Military'
+                    WHEN classification_input.CustomerTypeNormalized = N'EMPLOYEE'
+                      OR classification_input.DiscountCodeNormalized = N'EMPLOYEE'
+                        THEN N'Employee'
+                    WHEN classification_input.CustomerTypeNormalized = N'VIP'
+                        THEN N'VIP'
+                    WHEN classification_input.CustomerTypeNormalized IN (N'DIST_REWARD', N'REWARD')
+                        THEN N'Distributor Reward'
+                    WHEN classification_input.DiscountCodeNormalized = N'INDUSTRY'
+                        THEN N'Industry'
+                    WHEN classification_input.DiscountCodeNormalized = N'NON-PROF'
+                        THEN N'Other Non-Profit'
+                    ELSE N'Prostaff'
+                END
+            WHEN N'Big Box' THEN N'Big Box'
+            WHEN N'Distribution' THEN N'Distributor'
+            WHEN N'Buy Group' THEN
+                CASE
+                    WHEN cc.CUSTOMER_SUB_GROUP = N'NBS' THEN N'NBS'
+                    WHEN cc.CUSTOMER_SUB_GROUP = N'SPORTS INC' THEN N'Sports Inc'
+                    WHEN cc.CUSTOMER_SUB_GROUP = N'WORLDWIDE' THEN N'Worldwide'
+                    WHEN cc.CUSTOMER_SUB_GROUP = N'MID STATES' THEN N'Mid States'
+                    WHEN REPLACE(classification_input.CustomerGroupIDNormalized, N' ', N'') = N'NBS'
+                        THEN N'NBS'
+                    WHEN REPLACE(classification_input.CustomerGroupIDNormalized, N' ', N'') = N'SPORTSINC'
+                        THEN N'Sports Inc'
+                    WHEN REPLACE(classification_input.CustomerGroupIDNormalized, N' ', N'') = N'WORLDWIDE'
+                        THEN N'Worldwide'
+                    WHEN REPLACE(classification_input.CustomerGroupIDNormalized, N' ', N'') = N'MIDSTATES'
+                        THEN N'Mid States'
+                    ELSE N'Other Buy Group'
+                END
+            WHEN N'Dealer' THEN
+                CASE
+                    WHEN classification_input.DiscountCodeNormalized IN (N'NATIONAL', N'MASTER')
+                      OR classification_input.CustomerTypeNormalized = N'MSTR_DLR'
+                        THEN N'National / Master Dealer'
+                    ELSE N'Independent Dealer'
+                END
+            WHEN N'International' THEN N'International'
+            WHEN N'Direct to Consumer' THEN
+                CASE
+                    WHEN c.ID = N'WEBORDER'
+                      OR classification_input.CustomerTypeNormalized = N'WEB'
+                      OR classification_input.DiscountCodeNormalized = N'DTC'
+                        THEN N'Web / E-commerce'
+                    ELSE N'Retail / Consumer'
+                END
+            WHEN N'Internal' THEN N'Internal'
+            ELSE N'Unclassified'
+        END AS CustomerReportingSubGroup,
+        CASE
+            WHEN c.ID = N'RMEF'
+              OR classification_input.CustomerNameNormalized LIKE N'%ROCKY%MOUNTAIN%ELK%'
+                THEN N'Rocky Mountain Elk Foundation'
+            WHEN c.ID = N'NATI WILD'
+              OR UPPER(c.ID) LIKE N'NWTF%'
+              OR classification_input.CustomerNameNormalized LIKE N'%NATIONAL%WILD%TURKEY%'
+                THEN N'National Wild Turkey Foundation'
+            WHEN UPPER(c.ID) LIKE N'DUCK UNL%'
+              OR classification_input.CustomerNameNormalized LIKE N'%DUCK%UNLIMIT%'
+                THEN N'Ducks Unlimited'
+            ELSE COALESCE(
+                NULLIF(LTRIM(RTRIM(cc.CUSTOMER_NAME)), N''),
+                NULLIF(LTRIM(RTRIM(c.NAME)), N''),
+                c.ID
+            )
+        END AS CustomerReportingName
+) AS reporting_detail
 LEFT JOIN (
     -- One region per state. WHERE STATE IS NOT NULL drops the two junk
     -- NULL-state rows; GROUP BY guarantees 1 row/state so DimCustomer can't

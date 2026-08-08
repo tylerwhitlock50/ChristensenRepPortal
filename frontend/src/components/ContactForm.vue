@@ -12,8 +12,12 @@ import {
 
 const props = defineProps<{
   customerKey: string
-  /** Present = edit mode. Absent = add mode. */
-  contact?: Contact | null
+  /** Present = edit mode. Absent = add mode. Only the editable fields are
+      needed, so a merged v_account_contacts rep row works too. */
+  contact?: Pick<
+    Contact,
+    'id' | 'name' | 'title' | 'phone' | 'email' | 'is_primary' | 'notes'
+  > | null
 }>()
 
 const emit = defineEmits<{

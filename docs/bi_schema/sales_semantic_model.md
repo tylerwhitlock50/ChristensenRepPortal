@@ -37,16 +37,20 @@ All objects live in the `bi` schema on the VECA SQL Server instance
 
 ---
 
-## 2. The star schema
+## 2. The star schema (plus one customer-contact leaf)
 
 ```
                          ┌──────────────┐
                          │   DimDate    │  (role-played: one physical view,
                          └──────┬───────┘   referenced as many date roles)
                                 │
-   ┌────────────┐        ┌──────┴───────┐        ┌────────────┐
+   ┌──────────────────┐
+   │DimCustomerContact│ (*) CRM/master-data leaf; no fact relationship
+   └────────┬─────────┘
+            │
+   ┌────────┴───┐        ┌──────┴───────┐        ┌────────────┐
    │ DimCustomer│────────│              │────────│  DimPart   │
-   └────────────┘        │   3 FACTS    │        └────────────┘
+   └────────────┘  (1)   │   3 FACTS    │        └────────────┘
    ┌────────────┐        │ OrderLine    │        ┌────────────┐
    │ DimShipTo  │────────│ ShipmentLine │────────│  DimSite   │
    └────────────┘        │ InvoiceLine  │        └────────────┘
@@ -55,9 +59,11 @@ All objects live in the `bi` schema on the VECA SQL Server instance
    └────────────┘        └──────────────┘   filtered by the SHARED dimensions.
 ```
 
-Every dimension relates to every fact the same way: **dimension (one) → fact
-(many)**, joining `Dim.<Key> = Fact.<Key>`. Dimensions never relate to other
-dimensions (no snowflaking — descriptive attributes are flattened as columns).
+Every fact-facing dimension relates to every fact the same way: **dimension
+(one) → fact (many)**, joining `Dim.<Key> = Fact.<Key>`. The sole exception to
+the otherwise-flat star is `DimCustomerContact`, a one-to-many leaf under
+`DimCustomer` for CRM/customer-master lookup. It never relates directly to a
+fact and must not use bidirectional filtering.
 
 ### Lifecycle
 **Order → Shipment → Invoice.** Each stage is a separate fact:
@@ -88,6 +94,16 @@ Join each fact key to the matching dimension key (`many → one`):
 | `bi.vw_DimSite` | `SiteKey` | `SiteKey` on all 3 facts |
 | `bi.vw_DimDate` | `DateKey` | one key per **date role** (below) |
 
+The one dimension-to-dimension relationship is:
+
+| Parent (one) | Leaf (many) | Join | Cross-filter |
+|---|---|---|---|
+| `bi.vw_DimCustomer` | `bi.vw_DimCustomerContact` | `CustomerKey` | Single direction, customer → contacts |
+
+`DimCustomerContact` is not a fact slicer. Do not join it to transaction facts
+or enable bidirectional filtering; doing so can multiply measures by a
+customer's contact count or create ambiguous filter paths.
+
 ### Date roles (role-playing `DimDate`)
 `DimDate` is one physical view joined multiple times — once per meaningful date
 on a fact. Join `bi.vw_DimDate.DateKey = Fact.<RoleKey>`.
@@ -115,11 +131,51 @@ Sold-to **and** bill-to addresses are inline (1:1). The customer's *assigned* re
 transacting rep on an order (that's `DimSalesRep`).
 
 - **Identity/geography:** `CustomerID`, `CustomerName`, `SoldToCity/State/ZipCode/Country`, `BillTo*`
-- **Region/classification:** `SalesRegion` (driven by the customer's **own state** — account HQ, not ship-to), `Territory`, `MarketID`, `CustomerGroupID`, `CarmsCustomerGroup` / `CarmsCustomerSubGroup` (distribution channel, e.g. BIG BOX), `CustomerType`, `PriceGroup`, `Priority`, `SICCode`, `IndustryCode`, `InternalCustomerFlag`
+- **Region/classification:** `SalesRegion` (driven by the customer's **own state** — account HQ, not ship-to), `Territory`, `MarketID`, `CustomerGroupID`, raw `CarmsCustomerGroup` / `CarmsCustomerSubGroup` / `CarmsCustomerName`, governed `CustomerReportingGroup` / `CustomerReportingSubGroup` / `CustomerReportingName`, `CustomerType`, `PriceGroup`, `Priority`, `SICCode`, `IndustryCode`, `InternalCustomerFlag`
 - **Terms/tax/status:** `DiscountCode`, `CurrencyID`, `DefaultSalesTaxGroupID`, `TaxExemptFlag`, `ActiveFlag`, `AccountOpenDate`, `LastOrderDate`
 - **Goal:** `YearlySalesGoal` (numeric) / `YearlySalesGoalRaw` (text)
 - **Credit/AR (from VFIN):** `CreditStatus`, `CreditLimitAmount`, `ARTermsRuleID`, `ARPaymentMethodID`, `FinanceChargePct`, `ReceivablesAccountID`, `BillToParentFlag`, email/statement delivery config
 - **Compliance:** `FFLLicenseNumber`, `FFLExpirationRaw` (customer-master default; the authoritative FFL is on `DimShipTo`)
+
+For channel reporting, use the governed hierarchy in this order:
+`CustomerReportingGroup` → `CustomerReportingSubGroup` →
+`CustomerReportingName`. The raw `Carms*` fields remain available to reconcile
+the source view and support older reports, but its `EVERYTHING ELSE` value is
+too broad for executive reporting.
+
+| Customer reporting group | Subgroups |
+|---|---|
+| Big Box | Big Box |
+| Distribution | Distributor |
+| Buy Group | NBS, Sports Inc, Worldwide, Mid States, Other Buy Group |
+| Dealer | Independent Dealer, National / Master Dealer |
+| International | International |
+| Direct to Consumer | Web / E-commerce, Retail / Consumer |
+| Special Programs | Ducks Unlimited, Rocky Mountain Elk Foundation, National Wild Turkey Foundation, Employee, Prostaff, Law Enforcement, Military, VIP, Distributor Reward, Industry, Other Non-Profit |
+| Internal | Internal |
+| Other | Unclassified |
+
+Classification precedence is named special programs, other special-program
+customer types, CARMS channel, then `DISCOUNT_CODE` / `CUSTOMER_TYPE` fallback.
+This makes the groups mutually exclusive. It is reporting logic only and does
+not change ERP pricing or customer setup.
+
+### `bi.vw_DimCustomerContact` — customer-contact assignments (`CustomerContactKey`). No sentinel row.
+
+The model's one deliberate snowflake leaf. Grain is one normalized
+`CustomerKey + ContactID` assignment from `CUST_CONTACT -> CONTACT`; a
+`ContactID` can belong to multiple customers, so use `CustomerContactKey` as the
+row key. Query it directly for CRM/master-data use or relate it
+`DimCustomer[CustomerKey]` **1 → many** `DimCustomerContact[CustomerKey]` with
+single-direction filtering from customer to contacts. It has no fact
+relationship.
+
+- **Identity/role:** `ContactID`, `ContactNumber`, `FirstName`, `LastName`, `ContactName`, `MiddleName`, `Position`, `Salutation`, `Honorific`, `PrimaryContactFlag`
+- **Communication:** `Phone`, `PhoneExtension`, `Mobile`, `Fax`, `Email`, `PreferredContactMethodCode`
+- **Consent/status:** `DoNotCallPhoneFlag`, `DoNotCallMobileFlag`, `DoNotEmailFlag`, `ContactActiveFlag`
+- **Address/profile:** `Address1-3`, `City`, `State`, `ZipCode`, `Country`, `LinkedInURL`, `TwitterURL`, `FacebookURL`
+- `PrimaryContactFlag` is optional; do not assume every customer has one. Filter active/consent flags explicitly—the view keeps all rows.
+- Web credentials, birth date, gender, marital status, and ungoverned contact UDFs are intentionally excluded.
 
 ### `bi.vw_DimShipTo` — ship-to destinations (`ShipToKey`). Sentinel `'(Unknown)'`.
 Ship-to is 1:many off a customer, so it is its own dimension. **`ShipToKey` =
@@ -183,12 +239,17 @@ flags `'WEB'`/`'HOUSE'` placeholder codes.
 
 ### `bi.vw_FactShipmentLine` — fulfillment. Grain: `(PacklistID, LineNum)`.
 - **Keys:** `CustomerKey`, `ShipToKey`, `SalesRepKey`, `PartKey`, `SiteKey`; dates `ShipDateKey`, `InvoicedDateKey`, `ActualDeliveryDateKey`, `PromiseDateKey`
-- **Degenerate / tags:** `PacklistID`, `LineNum`, `OrderID`, `OrderLineNo`, `ShipperStatus`/`ShipperStatusDesc`, `ShipmentState` (Shipped/In Review), `InvoiceID`, `WaybillNumber`, `BillOfLadingID`, `ShipVia`, `RMAID`, `NoInvoiceFlag`, `InventoryTransID`
+- **Degenerate / tags:** `PacklistID`, `LineNum`, `OrderID`, `OrderLineNo`, `ShipperStatus`/`ShipperStatusDesc`, `ShipmentState` (Shipped/In Review), `InvoiceID`, `TrackingNumber`, `WaybillNumber`, `BillOfLadingID`, `ShipVia`, `RMAID`, `NoInvoiceFlag`, `InventoryTransID`
 - **Measures:**
   - *Additive:* `ShippedQty` (stock UM), `ShippedQtySellingUM`, **`ShippedRevenue`** (net shipped revenue booked to AR), `COGSAmount` (actual cost at ship time), `GrossMarginAmount` (= ShippedRevenue − COGS), `COGSMaterial`/`COGSLabor`/`COGSBurden`/`COGSService`, `ActualFreight`, `ShippingWeight`
   - *Non-additive:* `UnitPrice`, `TradeDiscountPct`, `CommissionPct`
 - Use `ShipDateKey` for "what shipped when." `ShippedRevenue` is the per-line
   shipped revenue — timely, before the AR invoice posts.
+- **Tracking is line-level:** `TrackingNumber` comes from Visual ship-entry UDF
+  `UDF-0000028` (`VMSHPENT`, `tblShpLineItem`) on the exact
+  `(PacklistID, LineNum)` key. Blank and placeholder `'0'` values are returned
+  as NULL. `WaybillNumber` remains the separate packlist-header value from
+  `SHIPPER.WAYBILL_NUMBER`; do not substitute one for the other.
 - **COGS is actual cost**, pulled from `INVENTORY_TRANS` via the shipment's
   inventory movement (not standard cost — `DimPart` holds the static standard).
   It's signed to match returns (`TYPE='I'` return = negative) and is **NULL on
@@ -322,6 +383,20 @@ JOIN bi.vw_DimPart p     ON p.PartKey     = f.PartKey
 WHERE c.CustomerName LIKE '%LIPSEY%' AND f.HasLinkedWorkOrder = 1;
 ```
 
+**Customer contacts for a CRM account lookup:**
+```sql
+SELECT CustomerContactKey, ContactID, ContactNumber, ContactName, Position,
+       Phone, PhoneExtension, Mobile, Email, PrimaryContactFlag,
+       PreferredContactMethodCode, DoNotCallPhoneFlag, DoNotCallMobileFlag,
+       DoNotEmailFlag, ContactActiveFlag
+FROM bi.vw_DimCustomerContact
+WHERE CustomerKey = @CustomerID
+ORDER BY CASE WHEN PrimaryContactFlag = N'Y' THEN 0 ELSE 1 END,
+         ContactName, ContactID;
+```
+This returns all assigned contacts so the CRM can apply channel-specific active
+and consent rules explicitly. Do not join this result to a transaction fact.
+
 ---
 
 ## 8. Gotchas / install-specific assumptions
@@ -348,9 +423,10 @@ WHERE c.CustomerName LIKE '%LIPSEY%' AND f.HasLinkedWorkOrder = 1;
 ## 9. Scope — what this model does and does not cover
 
 **Covers (use these views):** the commercial sales lifecycle — bookings,
-backlog, shipments, fulfillment, AR revenue, and slicing by customer, ship-to /
-geography, sales rep, part / product family, site, and any date role. This is the
-right source for sales reporting, commercial dashboards, and most "how much did
+backlog, shipments, fulfillment, AR revenue, slicing by customer, ship-to /
+geography, sales rep, part / product family, site, and any date role — plus
+customer-contact lookup for CRM/master-data use. This is the right source for
+sales reporting, commercial dashboards, contact lookup, and most "how much did
 we sell / ship / bill, to whom, of what" questions.
 
 **Does NOT cover (use the SQL Toolbox / raw schema):** production & work-order
@@ -364,3 +440,54 @@ columns in this document, prefer these views — the grain, keys, and additivity
 are guaranteed, so the SQL is simple and safe. Only drop to the raw Visual schema
 (or the toolbox's canonical queries) when the question needs an entity this model
 doesn't expose.
+
+## 10. Current pricing extension (written; pending deployment)
+
+The pricing extension is additive to the certified three-transaction-fact model.
+It is written in `20_facts/` but remains pending deployment and Power BI size /
+refresh certification. The full rollout and customer-master remediation plan is
+in `docs/pricing_model_change_map.md`.
+
+### `bi.vw_FactPublishedPriceList`
+
+Current published price book at one row per `PartKey` and `PriceListType` for the
+latest `reporting.active_parts_pricelist` effective date with
+`pl_status='EXISTING'`. The source's thirteen price columns are normalized into:
+
+- **Keys/context:** `PartKey`, `PriceListDateKey`, `PriceListEffectiveDate`,
+  `PriceListTypeKey`, `PriceListType`, `PriceListTypeSortOrder`.
+- **Non-additive rate:** `PublishedUnitPrice` (never sum).
+- **Provenance:** `PriceListSourceFile`, `PriceListLoadedAt`.
+
+Relate `PartKey` to `DimPart` and `PriceListDateKey` to a role-played
+`Price List Date`. Sort `PriceListType` by `PriceListTypeSortOrder`.
+
+### `bi.vw_FactCustomerPartPrice`
+
+Current operational default-price book at one row per active
+`CustomerKey + PartKey + SiteKey + SellingUM + PriceListDateKey`. It is limited
+to active customers and current published parts; it is not transaction history.
+
+- **Keys/context:** `CustomerKey`, `PartKey`, `SiteKey`, `PriceListDateKey`,
+  `PriceListEffectiveDate`, `SellingUM`, `CurrencyID`.
+- **Resolved result:** `PricingSourceRank`, `PricingSource`,
+  `EffectiveDefaultUnitPrice`, `IsMissingPrice`.
+- **Audit candidates:** `CustomerDefaultUnitPrice`,
+  `DiscountDefaultUnitPrice`, `MarketDefaultUnitPrice`,
+  `PartDefaultUnitPrice`.
+
+Resolution is the first non-null default price in this order:
+`CUSTOMER_PRICE -> DISCOUNT_PRICE -> MARKET_PRICE ->
+PART_SITE_VIEW.UNIT_PRICE`. Zero is a valid price. The fact uses the part stock
+UM; all current published parts are EA. Quantity breaks are not expanded because
+none is populated in production today.
+
+Relate it single-direction from `DimCustomer`, `DimPart`, `DimSite`, and the
+role-played `Price List Date`. Never relate it to an order, shipment, invoice, or
+published-price fact. Use `SELECTEDVALUE(EffectiveDefaultUnitPrice)` in a single
+customer/part/site context; do not sum any unit-price field.
+
+`DimCustomer` already supplies `DiscountCode`, `MarketID`, `CurrencyID`,
+`PriceGroup`, `CarmsCustomerGroup`, and `CarmsCustomerSubGroup`. `DimPart`
+already supplies the `Z_PRODUCT_DETAIL` attributes, so neither set is duplicated
+on the pricing facts.

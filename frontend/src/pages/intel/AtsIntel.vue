@@ -9,13 +9,15 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
-import { count, shortDate } from '@/lib/format'
+import { count } from '@/lib/format'
 
 /**
  * ATS — what the company can actually sell right now, straight from the
- * ERP's certified calculation (erp.fact_ats). Until the bi.vw_FactATS feed
- * lands, the view exists but is empty (or missing pre-022) — both get a
- * plain-English state instead of an error.
+ * ERP's certified calculation (erp.fact_available_to_sell, landed from
+ * bi.vw_FactAvailableToSell). On hand is the SHIPPING warehouse net of
+ * staging; committed = allocated open orders; backlog = all open demand;
+ * ATS is signed, so negatives mean oversold. The upstream model does not
+ * (yet) certify inbound supply or a next-available date.
  */
 const search = ref('')
 const query = useAtsList()
@@ -40,8 +42,8 @@ const columns: ColumnDef<AtsRow, any>[] = [
   { id: 'chambering', header: 'Chambering', accessorKey: 'chambering' },
   { id: 'ats_qty', header: 'ATS', accessorKey: 'ats_qty' },
   { id: 'on_hand_qty', header: 'On hand', accessorKey: 'on_hand_qty' },
-  { id: 'inbound_qty', header: 'Inbound', accessorKey: 'inbound_qty' },
-  { id: 'next_avail_date', header: 'Next avail', accessorKey: 'next_avail_date' },
+  { id: 'committed_qty', header: 'Committed', accessorKey: 'committed_qty' },
+  { id: 'backlog_qty', header: 'Backlog', accessorKey: 'backlog_qty' },
 ]
 
 const visible = ref<AtsRow[]>([])
@@ -56,8 +58,6 @@ const csvColumns: CsvColumn<AtsRow>[] = [
   { key: 'on_hand_qty', header: 'On hand' },
   { key: 'committed_qty', header: 'Committed' },
   { key: 'backlog_qty', header: 'Backlog' },
-  { key: 'inbound_qty', header: 'Inbound' },
-  { key: 'next_avail_date', header: 'Next available' },
 ]
 </script>
 
@@ -68,8 +68,8 @@ const csvColumns: CsvColumn<AtsRow>[] = [
     <AppCard v-if="feedMissing" title="ATS list">
       <p class="text-ink-2 text-[15px] leading-relaxed">
         The ATS feed hasn't landed yet. Once the ERP-side view
-        (<code>bi.vw_FactATS</code>) ships and the nightly load runs, this
-        page fills in on its own.
+        (<code>bi.vw_FactAvailableToSell</code>) ships and the nightly load
+        runs, this page fills in on its own.
       </p>
     </AppCard>
 
@@ -126,11 +126,11 @@ const csvColumns: CsvColumn<AtsRow>[] = [
           <template #cell-on_hand_qty="{ row }">
             <span class="tabular-nums">{{ count(row.on_hand_qty) }}</span>
           </template>
-          <template #cell-inbound_qty="{ row }">
-            <span class="tabular-nums">{{ count(row.inbound_qty) }}</span>
+          <template #cell-committed_qty="{ row }">
+            <span class="tabular-nums">{{ count(row.committed_qty) }}</span>
           </template>
-          <template #cell-next_avail_date="{ row }">
-            {{ row.ats_qty > 0 ? '—' : shortDate(row.next_avail_date) }}
+          <template #cell-backlog_qty="{ row }">
+            <span class="tabular-nums">{{ count(row.backlog_qty) }}</span>
           </template>
           <template #card="{ row }">
             <div class="px-1">
@@ -141,10 +141,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
                 {{ row.product_family }} · {{ row.chambering }}
               </p>
               <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
-                ATS {{ count(row.ats_qty) }}
-                <template v-if="row.ats_qty <= 0 && row.next_avail_date">
-                  · next {{ shortDate(row.next_avail_date) }}
-                </template>
+                ATS {{ count(row.ats_qty) }} · on hand {{ count(row.on_hand_qty) }}
               </p>
             </div>
           </template>
