@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, toRef } from 'vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppCard from '@/components/ui/AppCard.vue'
+import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
 import {
   useAccountOrderHeaders,
@@ -14,9 +15,18 @@ import {
 
 /**
  * Recent ORDERS and recent SHIPMENTS at header grain — one row per order /
- * per packlist — side by side on a laptop, stacked on a phone. Tapping a row
- * opens a modal with that document's lines. A rep looking for "order 51234"
- * scans 20 orders, not 20 arbitrary lines of three orders.
+ * per packlist. Tapping a row opens a modal with that document's lines. A rep
+ * looking for "order 51234" scans 20 orders, not 20 arbitrary lines of three
+ * orders.
+ *
+ * ── Stacked and collapsed, not side by side ───────────────────────────────
+ * These were two columns on a laptop, which meant each 34rem table lived in a
+ * half-width box and scrolled sideways inside its own column while the page
+ * scrolled down past 40 rows nobody asked for. Full width kills the sideways
+ * scroll (the tables now fit outright at laptop width), and collapsing by
+ * default keeps the cards two headers tall until a rep actually wants the
+ * history. The header hint carries the count and the latest date, so the
+ * decision to open is made without opening.
  *
  * Both lists come back capped at 20 headers per account by
  * public.v_account_recent_order_headers / _shipment_headers (migration 018);
@@ -56,6 +66,26 @@ const shipmentsQuery = useAccountShipmentHeaders(customerKey)
 const orders = computed(() => ordersQuery.data.value ?? [])
 const shipments = computed(() => shipmentsQuery.data.value ?? [])
 
+/**
+ * What the collapsed headers say. Both lists come back newest first, so row 0
+ * is the latest — "12 · latest Jul 9" tells a rep whether there is anything
+ * recent in here before they spend a tap on it.
+ */
+function withLatest(rows: { length: number }, latest: string | null): string {
+  return latest ? `${rows.length} · latest ${shortDate(latest)}` : String(rows.length)
+}
+
+const ordersHint = computed(
+  () =>
+    cardHintState(ordersQuery, orders.value.length) ??
+    withLatest(orders.value, orders.value[0]?.order_date ?? null),
+)
+const shipmentsHint = computed(
+  () =>
+    cardHintState(shipmentsQuery, shipments.value.length) ??
+    withLatest(shipments.value, shipments.value[0]?.ship_date ?? null),
+)
+
 /* ---- drill-in modals ---------------------------------------------------- */
 
 const openOrderId = ref<string | null>(null)
@@ -84,8 +114,8 @@ function upsTrackUrl(trackingNumber: string): string {
   <!-- grid-cols-1 matters: it makes the track minmax(0,1fr), so the cards can
        shrink below the tables' min-w and the overflow-x-auto wrappers scroll
        instead of the whole card getting clipped at the phone edge. -->
-  <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-    <AppCard title="Recent orders" hint="Last 20 orders">
+  <div class="grid grid-cols-1 gap-4">
+    <AppCollapsibleCard title="Recent orders" :hint="ordersHint">
       <AsyncState
         :loading="ordersQuery.isPending.value"
         :error="ordersQuery.error.value"
@@ -185,9 +215,9 @@ function upsTrackUrl(trackingNumber: string): string {
           </table>
         </div>
       </AsyncState>
-    </AppCard>
+    </AppCollapsibleCard>
 
-    <AppCard title="Recent shipments" hint="Last 20 shipments">
+    <AppCollapsibleCard title="Recent shipments" :hint="shipmentsHint">
       <AsyncState
         :loading="shipmentsQuery.isPending.value"
         :error="shipmentsQuery.error.value"
@@ -303,7 +333,7 @@ function upsTrackUrl(trackingNumber: string): string {
           </table>
         </div>
       </AsyncState>
-    </AppCard>
+    </AppCollapsibleCard>
   </div>
 
   <!-- Order drill-in -->

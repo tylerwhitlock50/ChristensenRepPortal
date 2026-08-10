@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { pivotSkuYears, useSkuSalesByAccount } from '@/composables/useIntel'
-import AppCard from '@/components/ui/AppCard.vue'
+import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import { cardHintState } from '@/components/ui/cardHint'
 import { count, money } from '@/lib/format'
 
 /**
  * What this account buys, by SKU — this year against last, top sellers
- * first. The preview keeps the page scannable on a phone; "Show all"
+ * first. Collapsed on arrival like the rest of the history below the fold;
+ * once open, the preview keeps it scannable on a phone and "Show all"
  * expands in place (no navigation — the rep is standing in the store).
+ *
+ * The year pair used to live in the header hint, but a collapsed card wants
+ * to say how much there is to read; every row spells out both years anyway.
  */
 const props = defineProps<{ customerKey: string }>()
 const key = computed(() => props.customerKey)
@@ -23,14 +28,14 @@ const expanded = ref(false)
 const shown = computed(() =>
   expanded.value ? pivoted.value : pivoted.value.slice(0, PREVIEW),
 )
+
+const hint = computed(
+  () => cardHintState(query, pivoted.value.length) ?? `${pivoted.value.length} SKUs`,
+)
 </script>
 
 <template>
-  <AppCard
-    title="Sales by SKU"
-    :hint="`${yearNow} vs ${yearNow - 1}`"
-    :padded="false"
-  >
+  <AppCollapsibleCard title="Sales by SKU" :hint="hint" :padded="false">
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
@@ -60,5 +65,5 @@ const shown = computed(() =>
         </AppButton>
       </div>
     </AsyncState>
-  </AppCard>
+  </AppCollapsibleCard>
 </template>

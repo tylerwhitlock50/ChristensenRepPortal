@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useAccountBacklog } from '@/composables/useIntel'
-import AppCard from '@/components/ui/AppCard.vue'
+import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import { cardHintState } from '@/components/ui/cardHint'
 import { count, money, shortDate } from '@/lib/format'
 
 /**
  * What this account is still owed, by SKU — the "when is my stuff coming"
  * conversation, answered before the buyer asks it.
+ *
+ * Collapsed on arrival, but the dollars owed stay in the header: that number
+ * is the whole reason to open it, and "None" says the conversation is moot
+ * without costing a tap.
  */
 const props = defineProps<{ customerKey: string }>()
 const key = computed(() => props.customerKey)
@@ -15,14 +20,16 @@ const key = computed(() => props.customerKey)
 const query = useAccountBacklog(key)
 const rows = computed(() => query.data.value ?? [])
 const total = computed(() => rows.value.reduce((a, r) => a + r.backlog_amount, 0))
+
+const hint = computed(
+  () =>
+    cardHintState(query, rows.value.length) ??
+    `${rows.value.length} · ${money(total.value)}`,
+)
 </script>
 
 <template>
-  <AppCard
-    title="On backorder"
-    :hint="rows.length ? money(total) : undefined"
-    :padded="false"
-  >
+  <AppCollapsibleCard title="On backorder" :hint="hint" :padded="false">
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
@@ -47,5 +54,5 @@ const total = computed(() => rows.value.reduce((a, r) => a + r.backlog_amount, 0
         </li>
       </ul>
     </AsyncState>
-  </AppCard>
+  </AppCollapsibleCard>
 </template>
