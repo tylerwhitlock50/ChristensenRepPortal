@@ -34,6 +34,7 @@ const AccountRevenueChart = defineAsyncComponent(
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
 import AccountSkuSalesCard from '@/components/AccountSkuSalesCard.vue'
 import AccountBacklogCard from '@/components/AccountBacklogCard.vue'
+import AccountOpportunityCard from '@/components/AccountOpportunityCard.vue'
 import AccountQuickActions from '@/components/AccountQuickActions.vue'
 import AccountTasksCard from '@/components/AccountTasksCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
@@ -881,6 +882,11 @@ watch(key, () => {
     <!-- What they buy and what they're owed, by SKU (data-first additions). -->
     <AccountSkuSalesCard :customer-key="customerKey" />
     <AccountBacklogCard :customer-key="customerKey" />
+
+    <!-- …and what they DON'T buy that we could ship today. Sits directly
+         under "Sales by SKU" because it is the same question asked the other
+         way round, and reads best against what they already carry. -->
+    <AccountOpportunityCard :customer-key="customerKey" />
 
     <ContactsCard :customer-key="customerKey" />
 

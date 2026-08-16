@@ -77,6 +77,7 @@ export const qk = {
     backlogSku: (key: string) => ['account', key, 'backlog-sku'] as const,
     goal: (key: string) => ['account', key, 'goal'] as const,
     signals: (key: string) => ['account', key, 'signals'] as const,
+    skuGaps: (key: string) => ['account', key, 'sku-gaps'] as const,
   },
   /**
    * Rep-entered account goals (migration 023). The per-account read lives
