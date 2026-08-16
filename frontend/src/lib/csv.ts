@@ -138,3 +138,67 @@ export function exportCsv<T>(
 ): void {
   downloadCsv(csvFilename(prefix), toCsv(rows, columns))
 }
+
+/**
+ * The other direction: RFC 4180 text → rows of fields. Exists for the admin
+ * price-list item upload ("Save as CSV" from the approved Excel sheet), and
+ * stays dependency-free for the same reason everything above does.
+ *
+ * Handles quoted fields, doubled quotes inside them, embedded commas and
+ * newlines, CRLF/LF/CR line ends, and a leading BOM. Blank lines are
+ * dropped (a trailing newline is not a row). It does NOT undo Excel's
+ * ="0123" wrapper or our own formula-guard apostrophe — the upload preview
+ * shows exactly what will be saved, which is the honest behaviour.
+ */
+export function parseCsv(text: string): string[][] {
+  const input = text.startsWith(CSV_BOM) ? text.slice(CSV_BOM.length) : text
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  let sawAny = false
+
+  const endField = () => {
+    row.push(field)
+    field = ''
+  }
+  const endRow = () => {
+    endField()
+    // A row of nothing but empty fields is a blank line, not data.
+    if (row.some((f) => f !== '')) rows.push(row)
+    row = []
+  }
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (input[i + 1] === '"') {
+          field += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        field += ch
+      }
+      continue
+    }
+    if (ch === '"' && field === '') {
+      inQuotes = true
+      sawAny = true
+    } else if (ch === ',') {
+      endField()
+      sawAny = true
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && input[i + 1] === '\n') i++
+      endRow()
+    } else {
+      field += ch
+      sawAny = true
+    }
+  }
+  if (sawAny && (field !== '' || row.length > 0)) endRow()
+
+  return rows
+}

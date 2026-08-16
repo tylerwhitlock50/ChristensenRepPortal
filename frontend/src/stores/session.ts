@@ -24,6 +24,7 @@ export const useSessionStore = defineStore('session', () => {
     () => (profile.value?.role as Role | undefined) ?? null,
   )
   const isAdmin = computed(() => role.value === 'admin')
+  const isOrderEntry = computed(() => role.value === 'order_entry')
   const displayName = computed(
     () => profile.value?.full_name || user.value?.email || 'Signed in',
   )
@@ -160,6 +161,7 @@ export const useSessionStore = defineStore('session', () => {
     isSignedIn,
     role,
     isAdmin,
+    isOrderEntry,
     displayName,
     init,
     loadProfile,
