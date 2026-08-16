@@ -10,6 +10,11 @@ import {
   percentChange,
   useAccountSummary,
 } from '@/composables/useAccountMetrics'
+import {
+  cadenceSentence,
+  isOverdueForCadence,
+  useAccountSignals,
+} from '@/composables/useAccountSignals'
 
 /**
  * The four numbers a rep needs before walking into a dealer: how the year is
@@ -50,6 +55,16 @@ const ytdSub = computed(() => {
   if (!s.revenue_prior_ytd) return 'No revenue this time last year'
   return `${deltaLabel(deltaPct.value)} vs ${money(s.revenue_prior_ytd)} last year`
 })
+
+/**
+ * The account's own ordering rhythm (public.account_signals, migration 019).
+ * Its own query and its own absence: an account with no signal row — new,
+ * inactive, or no activity in 24 months — simply renders nothing extra, and
+ * the card is what it was before.
+ */
+const signals = useAccountSignals(toRef(props, 'customerKey'))
+const cadence = computed(() => cadenceSentence(signals.data.value ?? null))
+const overdue = computed(() => isOverdueForCadence(signals.data.value ?? null))
 
 const openOrdersSub = computed(() => {
   const s = summary.value
@@ -120,6 +135,21 @@ const openOrdersSub = computed(() => {
           </dd>
         </div>
       </dl>
+
+      <!--
+        Their own ordering rhythm, from the nightly signals. Sits directly
+        under "Last order" because it is the sentence that gives that date
+        meaning: 60 days is nothing for an annual buyer and an emergency for
+        a weekly one. Renders only when there is something true to say —
+        cadenceSentence() returns null unless the rhythm is confident.
+      -->
+      <p
+        v-if="cadence"
+        class="mt-2 text-[13px]"
+        :class="overdue ? 'text-accent font-semibold' : 'text-muted'"
+      >
+        {{ cadence }}
+      </p>
     </AsyncState>
 
     <AccountGoalPanel :customer-key="customerKey" class="mt-4" />

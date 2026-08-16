@@ -51,6 +51,8 @@ export const qk = {
     backlog: () => ['intel', 'backlog'] as const,
     ats: () => ['intel', 'ats'] as const,
     global: (months: number) => ['intel', 'global', months] as const,
+    /** public.account_signals across the book — the nightly behaviour scores. */
+    signals: () => ['intel', 'signals'] as const,
   },
   /** Cached AI Action output (public.ai_briefs). subject '' = territory. */
   aiBrief: (action: string, subject = '') =>
@@ -74,6 +76,8 @@ export const qk = {
     skuSales: (key: string) => ['account', key, 'sku-sales'] as const,
     backlogSku: (key: string) => ['account', key, 'backlog-sku'] as const,
     goal: (key: string) => ['account', key, 'goal'] as const,
+    signals: (key: string) => ['account', key, 'signals'] as const,
+    skuGaps: (key: string) => ['account', key, 'sku-gaps'] as const,
   },
   /**
    * Rep-entered account goals (migration 023). The per-account read lives

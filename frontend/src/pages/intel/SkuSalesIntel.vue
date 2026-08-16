@@ -8,6 +8,7 @@ import {
   type SkuPivotRow,
 } from '@/composables/useIntel'
 import { useTerritoryAccounts } from '@/composables/useOverview'
+import AccountPicker from '@/components/AccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -33,6 +34,9 @@ const picker = useTerritoryAccounts()
 
 const active = computed(() => (mode.value === 'territory' ? territory : account))
 const yearNow = new Date().getFullYear()
+
+/** "By account" with nothing chosen yet — a prompt, not an empty result. */
+const nothingPicked = computed(() => mode.value === 'account' && !accountKey.value)
 
 const pivoted = computed(() =>
   mode.value === 'account' && !accountKey.value
@@ -112,18 +116,13 @@ function onExport() {
         </button>
       </div>
 
-      <label
+      <AccountPicker
         v-if="mode === 'account'"
-        class="order-last w-full sm:order-none sm:w-auto sm:min-w-0 sm:flex-1 sm:max-w-sm"
-      >
-        <span class="sr-only">Account</span>
-        <select v-model="accountKey" class="field">
-          <option value="">Choose an account…</option>
-          <option v-for="a in accounts" :key="a.customer_key" :value="a.customer_key">
-            {{ a.customer_name || a.customer_key }}
-          </option>
-        </select>
-      </label>
+        v-model="accountKey"
+        :accounts="accounts"
+        placeholder="Choose an account…"
+        class="order-last w-full sm:order-none sm:w-auto sm:min-w-0 sm:max-w-sm sm:flex-1"
+      />
 
       <AppButton
         variant="ghost"
@@ -135,13 +134,28 @@ function onExport() {
       </AppButton>
     </div>
 
+    <!--
+      The empty arm was missing, so a scope with no SKU history fell through
+      to tiles reading $0 / 0 / 0 above DataGrid's generic "Nothing to show."
+      Gated on `nothingPicked` so the pick-an-account prompt below still owns
+      that state rather than being replaced by an empty-title.
+    -->
     <AsyncState
-      :loading="active.isPending.value && !(mode === 'account' && !accountKey)"
+      :loading="active.isPending.value && !nothingPicked"
       :error="active.error.value"
+      :empty="!active.isPending.value && !nothingPicked && pivoted.length === 0"
+      :empty-title="
+        mode === 'account' ? 'Nothing bought yet' : 'No SKU history'
+      "
+      :empty-body="
+        mode === 'account'
+          ? 'This account has no invoiced lines in the last four years.'
+          : 'Nothing has been invoiced in your territory in the last four years. If that seems wrong, ask your admin to check the nightly load.'
+      "
       :rows="4"
       @retry="active.refetch()"
     >
-      <p v-if="mode === 'account' && !accountKey" class="text-muted text-[15px]">
+      <p v-if="nothingPicked" class="text-muted text-[15px]">
         Pick an account to see what they bought, by SKU, this year and the
         three before it.
       </p>

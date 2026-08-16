@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRef } from 'vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
+import AppButton from '@/components/ui/AppButton.vue'
 import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
@@ -28,10 +29,20 @@ import {
  * history. The header hint carries the count and the latest date, so the
  * decision to open is made without opening.
  *
- * Both lists come back capped at 20 headers per account by
- * public.v_account_recent_order_headers / _shipment_headers (migration 018);
- * the modal's line queries fetch one document by its primary key and only
- * run while a modal is open.
+ * ── Paged and searchable, not capped at 20 ───────────────────────────────
+ * 018 wrote `where rn <= 20` into the header views, so an account's 21st
+ * order was unreachable by any query — a rep chasing something from last
+ * season simply could not get to it. 035 uncapped the views; these lists now
+ * page 20 at a time with "Load older…", and both carry a filter box.
+ *
+ * The filter runs over what is LOADED, not over the server. That is a real
+ * limitation and the row counts under each list state it outright ("12 of 40
+ * loaded · more available") so a filtered miss can never be misread as "this
+ * account never had that order". Searching the whole history regardless of
+ * account is what the Lookup page is for.
+ *
+ * The modal's line queries fetch one document by its primary key and only run
+ * while a modal is open.
  *
  * Tracking numbers: everything ships UPS, so the number links straight to
  * UPS tracking. The header shows one number per packlist (line-level
@@ -63,8 +74,42 @@ const customerKey = toRef(props, 'customerKey')
 const ordersQuery = useAccountOrderHeaders(customerKey)
 const shipmentsQuery = useAccountShipmentHeaders(customerKey)
 
-const orders = computed(() => ordersQuery.data.value ?? [])
-const shipments = computed(() => shipmentsQuery.data.value ?? [])
+/* Paged as of migration 035 — flatten the pages the same way AccountsView
+   flattens its book. */
+const allOrders = computed(
+  () => ordersQuery.data.value?.pages.flat() ?? [],
+)
+const allShipments = computed(
+  () => shipmentsQuery.data.value?.pages.flat() ?? [],
+)
+
+/* ---- search ------------------------------------------------------------
+   "Did my PO land?" is the question this card exists to answer, and until
+   035 it could not: the PO number was not in the payload and only the newest
+   20 orders were reachable at all. The filter runs over what has been loaded;
+   "Load more" extends that, and the row counts below always say which of the
+   two the rep is looking at so a filtered list can never be mistaken for the
+   whole history.
+------------------------------------------------------------------------- */
+const orderSearch = ref('')
+const shipmentSearch = ref('')
+
+function matches(haystack: (string | null)[], term: string): boolean {
+  const t = term.trim().toLowerCase()
+  if (!t) return true
+  return haystack.some((v) => (v ?? '').toLowerCase().includes(t))
+}
+
+const orders = computed(() =>
+  allOrders.value.filter((o) =>
+    matches([o.order_id, o.customer_po_number, o.order_status_desc], orderSearch.value),
+  ),
+)
+const shipments = computed(() =>
+  allShipments.value.filter((s) =>
+    matches([s.packlist_id, s.order_ids, s.tracking_number], shipmentSearch.value),
+  ),
+)
 
 /**
  * What the collapsed headers say. Both lists come back newest first, so row 0
@@ -77,13 +122,13 @@ function withLatest(rows: { length: number }, latest: string | null): string {
 
 const ordersHint = computed(
   () =>
-    cardHintState(ordersQuery, orders.value.length) ??
-    withLatest(orders.value, orders.value[0]?.order_date ?? null),
+    cardHintState(ordersQuery, allOrders.value.length) ??
+    withLatest(allOrders.value, allOrders.value[0]?.order_date ?? null),
 )
 const shipmentsHint = computed(
   () =>
-    cardHintState(shipmentsQuery, shipments.value.length) ??
-    withLatest(shipments.value, shipments.value[0]?.ship_date ?? null),
+    cardHintState(shipmentsQuery, allShipments.value.length) ??
+    withLatest(allShipments.value, allShipments.value[0]?.ship_date ?? null),
 )
 
 /* ---- drill-in modals ---------------------------------------------------- */
@@ -97,11 +142,13 @@ const shipmentLinesQuery = useAccountShipmentLines(customerKey, openPacklistId)
 const orderLines = computed(() => orderLinesQuery.data.value ?? [])
 const shipmentLines = computed(() => shipmentLinesQuery.data.value ?? [])
 
+/* Resolved against the UNFILTERED lists: clearing the search box while a
+   modal is open must not empty the modal's header. */
 const openOrder = computed(
-  () => orders.value.find((o) => o.order_id === openOrderId.value) ?? null,
+  () => allOrders.value.find((o) => o.order_id === openOrderId.value) ?? null,
 )
 const openShipment = computed(
-  () => shipments.value.find((s) => s.packlist_id === openPacklistId.value) ?? null,
+  () => allShipments.value.find((s) => s.packlist_id === openPacklistId.value) ?? null,
 )
 
 /** ups.com's tracking page accepts the number straight in the query string. */
@@ -127,6 +174,18 @@ function upsTrackUrl(trackingNumber: string): string {
         :rows="3"
         @retry="ordersQuery.refetch()"
       >
+        <label class="mb-3 block">
+          <span class="sr-only">Search orders</span>
+          <input
+            v-model="orderSearch"
+            type="search"
+            placeholder="Order # or the dealer's PO #"
+            autocapitalize="none"
+            spellcheck="false"
+            class="field"
+          />
+        </label>
+
         <!-- Phone: one tappable row per order. The whole row is the button —
              a nested link would be invalid inside it, and everything a rep
              might tap through to is in the drill-in a tap away. -->
@@ -150,6 +209,14 @@ function upsTrackUrl(trackingNumber: string): string {
                 {{ shortDate(row.order_date) }} · {{ count(row.line_count) }} lines ·
                 {{ count(row.order_qty) }} pcs
               </span>
+              <!-- The dealer's own paperwork number — the thing they quote
+                   down the phone, and the whole point of migration 035. -->
+              <span
+                v-if="row.customer_po_number"
+                class="text-ink-2 text-[13px] break-words"
+              >
+                Their PO {{ row.customer_po_number }}
+              </span>
               <AppBadge v-if="row.open_line_count > 0" tone="high">
                 Open {{ count(row.backlog_qty) }}
               </AppBadge>
@@ -163,11 +230,12 @@ function upsTrackUrl(trackingNumber: string): string {
         <div class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
-              The 20 most recent orders for this account — select one for its lines
+              Orders for this account, newest first — select one for its lines
             </caption>
             <thead>
               <tr class="border-line border-b">
                 <th scope="col" class="u-label py-2 pr-3 text-left">Ordered</th>
+                <th scope="col" class="u-label py-2 pr-3 text-left">Their PO</th>
                 <th scope="col" class="u-label py-2 pr-3 text-right">Lines</th>
                 <th scope="col" class="u-label py-2 pr-3 text-right">Qty</th>
                 <th scope="col" class="u-label py-2 pr-3 text-right">Value</th>
@@ -193,6 +261,9 @@ function upsTrackUrl(trackingNumber: string): string {
                     {{ row.order_id }}
                   </button>
                 </td>
+                <td class="text-ink-2 py-2.5 pr-3">
+                  {{ row.customer_po_number ?? '—' }}
+                </td>
                 <td class="py-2.5 pr-3 text-right whitespace-nowrap tabular-nums">
                   {{ count(row.line_count) }}
                 </td>
@@ -214,6 +285,29 @@ function upsTrackUrl(trackingNumber: string): string {
             </tbody>
           </table>
         </div>
+
+        <!-- Always says how much of the history is on screen. A paged list
+             that just stops is indistinguishable from a complete one, and
+             with a filter applied it is worse: "no results" could mean "not
+             loaded yet". Same contract as AccountsView's footer. -->
+        <div class="border-line mt-3 border-t pt-3 text-center">
+          <p class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums">
+            <template v-if="orderSearch.trim()">
+              {{ count(orders.length) }} of {{ count(allOrders.length) }} loaded
+            </template>
+            <template v-else>{{ count(allOrders.length) }} loaded</template>
+            <template v-if="ordersQuery.hasNextPage.value"> · more available</template>
+          </p>
+          <AppButton
+            v-if="ordersQuery.hasNextPage.value"
+            variant="secondary"
+            class="mt-2"
+            :loading="ordersQuery.isFetchingNextPage.value"
+            @click="ordersQuery.fetchNextPage()"
+          >
+            Load older orders
+          </AppButton>
+        </div>
       </AsyncState>
     </AppCollapsibleCard>
 
@@ -231,6 +325,18 @@ function upsTrackUrl(trackingNumber: string): string {
         :rows="3"
         @retry="shipmentsQuery.refetch()"
       >
+        <label class="mb-3 block">
+          <span class="sr-only">Search shipments</span>
+          <input
+            v-model="shipmentSearch"
+            type="search"
+            placeholder="Packlist #, order #, or tracking #"
+            autocapitalize="none"
+            spellcheck="false"
+            class="field"
+          />
+        </label>
+
         <!-- Phone: same shape as the orders list. The tracking link is NOT
              here — an <a> inside the row button would be invalid interactive
              nesting, and the drill-in renders it as a proper link one tap
@@ -331,6 +437,27 @@ function upsTrackUrl(trackingNumber: string): string {
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div class="border-line mt-3 border-t pt-3 text-center">
+          <p class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums">
+            <template v-if="shipmentSearch.trim()">
+              {{ count(shipments.length) }} of {{ count(allShipments.length) }} loaded
+            </template>
+            <template v-else>{{ count(allShipments.length) }} loaded</template>
+            <template v-if="shipmentsQuery.hasNextPage.value">
+              · more available
+            </template>
+          </p>
+          <AppButton
+            v-if="shipmentsQuery.hasNextPage.value"
+            variant="secondary"
+            class="mt-2"
+            :loading="shipmentsQuery.isFetchingNextPage.value"
+            @click="shipmentsQuery.fetchNextPage()"
+          >
+            Load older shipments
+          </AppButton>
         </div>
       </AsyncState>
     </AppCollapsibleCard>
