@@ -217,10 +217,18 @@ async function signOut() {
                   </template>
                 </p>
               </div>
+              <RouterLink
+                :to="{ name: 'connect' }"
+                role="menuitem"
+                class="tap-target font-label hover:bg-canvas flex w-full items-center px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase"
+                @click="menuOpen = false"
+              >
+                Connect Claude
+              </RouterLink>
               <button
                 type="button"
                 role="menuitem"
-                class="tap-target font-label w-full px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase hover:bg-canvas"
+                class="tap-target font-label border-line w-full border-t px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase hover:bg-canvas"
                 @click="signOut"
               >
                 Sign out

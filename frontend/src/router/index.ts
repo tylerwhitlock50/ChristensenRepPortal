@@ -98,6 +98,14 @@ const router = createRouter({
       ],
     },
     {
+      // Reached from the account menu, not the nav bar: a rep sets this up
+      // once and never comes back, so it does not earn a tab.
+      path: '/connect',
+      name: 'connect',
+      component: () => import('@/pages/ConnectView.vue'),
+      meta: { title: 'Connect Claude' },
+    },
+    {
       path: '/admin',
       component: () => import('@/pages/admin/AdminLayout.vue'),
       // adminOnly on the parent covers every child — vue-router merges parent
