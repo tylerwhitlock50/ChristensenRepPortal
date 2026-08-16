@@ -49,6 +49,13 @@ begin
   if not exists (select 1 from pg_roles where rolname = 'service_role') then
     create role service_role;
   end if;
+  /* On Supabase service_role carries BYPASSRLS — it is how the ETL and the
+     nightly jobs write past every policy in 007/010. It is a role ATTRIBUTE,
+     not a grant, so `grant … to service_role` in _local_harness_grants.sql
+     cannot stand in for it: without this, anything asserting job-path
+     behaviour fails on an RLS violation that would never happen in
+     production. Needs superuser, which the setup in this file's header has. */
+  alter role service_role bypassrls;
 end $$;
 
 --------------------------------------------------------------------------
@@ -71,11 +78,19 @@ create table if not exists auth.users (
     is_super_admin     boolean
 );
 
-/* The real auth.uid() reads the request's JWT claims. The tests set
-   request.jwt.claim.sub directly, which is what this reads. */
+/* The real auth.uid() reads the request's JWT claims, and the test files
+   disagree about how they set them: 010_access_rules.sql sets the whole
+   `request.jwt.claims` JSON blob (what PostgREST actually sends), while
+   others set `request.jwt.claim.sub` directly. Reading only the latter made
+   auth.uid() null throughout 010 on this harness, which does not error — it
+   silently resolves an empty book and fails at the first assertion that
+   expects rows. Accept both. */
 create or replace function auth.uid() returns uuid
 language sql stable as $$
-  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+  select coalesce(
+    nullif(current_setting('request.jwt.claim.sub', true), ''),
+    nullif(current_setting('request.jwt.claims', true), '')::json ->> 'sub'
+  )::uuid
 $$;
 
 --------------------------------------------------------------------------

@@ -80,8 +80,14 @@ const session = useSessionStore()
 const flags = useFeatureFlags()
 
 /* The quick-action strip only offers chips whose target panels exist under
-   the current flags. Summary is data-side and always available. */
+   the current flags. Summary is data-side and always available.
+
+   Every one of these six ends in a write, "summary" included — it caches to
+   public.ai_summaries — so an admin viewing as a rep gets none of them. The
+   database would refuse anyway (20260816140000), but refusing after someone
+   has filled in a visit survey is not the same as not offering it. */
 const quickActions = computed<QuickAction[]>(() => {
+  if (!session.canWrite) return []
   const list: QuickAction[] = ['summary']
   if (flags.visits.value) list.push('visit', 'photo')
   if (flags.actionLogging.value) list.push('contact', 'note')
@@ -753,7 +759,7 @@ watch(key, () => {
 
     <!-- Log a contact — the 10-second path. The full survey is below it. -->
     <section
-      v-if="flags.actionLogging.value"
+      v-if="flags.actionLogging.value && session.canWrite"
       ref="logSection"
       class="scroll-mt-16"
     >
@@ -801,9 +807,11 @@ watch(key, () => {
     </AppCard>
     </section>
 
-    <!-- Visit survey — the one green button on this view. Opens inline. -->
+    <!-- Visit survey — the one green button on this view. Opens inline.
+         Hidden while viewing as a rep: the survey is the longest form in the
+         app, and the database refuses the insert at the end of it. -->
     <section
-      v-if="flags.visits.value"
+      v-if="flags.visits.value && session.canWrite"
       ref="surveySection"
       class="scroll-mt-16 space-y-3"
     >
@@ -902,7 +910,9 @@ watch(key, () => {
       class="scroll-mt-16"
     >
     <AppCard title="Notes">
-      <form class="mb-4" @submit.prevent="submitNote">
+      <!-- The notes themselves stay: reading what the rep has written on this
+           account is most of the point of looking at it as them. -->
+      <form v-if="session.canWrite" class="mb-4" @submit.prevent="submitNote">
         <label class="sr-only" for="note">Add a note</label>
         <textarea
           id="note"
@@ -943,8 +953,13 @@ watch(key, () => {
     </AppCard>
     </section>
 
-    <!-- Photos that aren't tied to a survey — an endcap on the way past. -->
-    <section v-if="flags.visits.value" ref="photoSection" class="scroll-mt-16">
+    <!-- Photos that aren't tied to a survey — an endcap on the way past.
+         Upload-only, so it has nothing to show a read-only viewer. -->
+    <section
+      v-if="flags.visits.value && session.canWrite"
+      ref="photoSection"
+      class="scroll-mt-16"
+    >
       <AppCard title="Photos">
         <PhotoPicker :customer-key="customerKey" @uploaded="invalidateAccount" />
       </AppCard>

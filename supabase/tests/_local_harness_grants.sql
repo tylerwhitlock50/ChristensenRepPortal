@@ -34,6 +34,18 @@ grant execute on all functions in schema erp to authenticated;
 
 alter default privileges in schema public grant execute on functions to authenticated;
 
+/* service_role is what the ETL and the nightly jobs connect as, and on
+   Supabase it arrives with blanket grants plus BYPASSRLS. A bare cluster
+   gives it nothing, so any test that asserts something about the job path
+   fails with "permission denied" long before it reaches the behaviour it
+   meant to check. BYPASSRLS is a role attribute rather than a grant, so it
+   is set alongside the role itself in _local_harness.sql, not here. */
+grant usage on schema public, erp to service_role;
+grant select, insert, update, delete on all tables    in schema public to service_role;
+grant usage, select                  on all sequences in schema public to service_role;
+grant execute                        on all functions in schema public to service_role;
+grant select, insert, update, delete on all tables    in schema erp    to service_role;
+
 --------------------------------------------------------------------------
 -- Re-apply the revokes the migrations make deliberately. The blanket grants
 -- above are broader than Supabase's and would otherwise undo them, which

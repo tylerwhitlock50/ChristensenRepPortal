@@ -79,6 +79,9 @@ watch(
   () => briefQuery.isSuccess.value,
   (ready) => {
     if (!ready || autoFired.value) return
+    // Generating caches a row, so it is a write. Viewing as a rep shows the
+    // rep's existing brief and stops there.
+    if (!session.canWrite) return
     autoFired.value = true
     const generatedAt = briefQuery.brief.value?.generated_at
     const staleBrief =

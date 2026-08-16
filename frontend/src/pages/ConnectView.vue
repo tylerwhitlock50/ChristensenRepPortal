@@ -4,6 +4,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import { useSessionStore } from '@/stores/session'
 import { shortDate, daysAgo } from '@/lib/format'
 import {
   MCP_URL,
@@ -25,6 +26,7 @@ import {
  * throws away. Everything else on the page is metadata about tokens whose
  * secrets are already unrecoverable.
  */
+const session = useSessionStore()
 const tokens = useMcpTokens()
 const create = useCreateMcpToken()
 const revoke = useRevokeMcpToken()
@@ -170,7 +172,13 @@ const createError = computed(() => (create.error.value as Error | null)?.message
     </AppCard>
 
     <AppCard title="Your tokens" :hint="`${live.length} active`">
-      <div class="border-line mb-4 flex flex-wrap items-end gap-3 border-b pb-4">
+      <!-- Not offered while viewing as a rep. A token is a credential, and
+           the tokens listed below are the REAL user's — minting from here
+           would mint one for the admin while the page reads as the rep's. -->
+      <div
+        v-if="session.canWrite"
+        class="border-line mb-4 flex flex-wrap items-end gap-3 border-b pb-4"
+      >
         <label class="min-w-48 flex-1">
           <span class="u-label text-muted mb-1 block">Name this token</span>
           <input
