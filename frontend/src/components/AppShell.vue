@@ -63,6 +63,12 @@ type NavItem = {
    the two render sites. Flags load as false, so the bar renders the lean
    set first and never flashes a hidden feature. */
 const nav = computed<NavItem[]>(() => {
+  // The order-entry role has an empty book by design: Overview, Intel,
+  // Accounts and Find would all render blank for them, so their bar is just
+  // the entry queue (plus Admin below if they somehow hold both roles).
+  if (session.isOrderEntry) {
+    return [{ to: '/orders', label: 'Orders', icon: 'orders' }]
+  }
   const items: NavItem[] = [
     { to: { name: 'overview' }, label: 'Overview', icon: 'overview' },
     // Path, not name, for section parents: keeps the item active on every
@@ -73,6 +79,10 @@ const nav = computed<NavItem[]>(() => {
     // permanent tab rather than living inside one account's page.
     { to: { name: 'lookup' }, label: 'Find', icon: 'lookup' },
   ]
+  if (flags.orders.value) {
+    // Path, like Intel: stays lit on the writer, the detail, the queue.
+    items.push({ to: '/orders', label: 'Orders', icon: 'orders' })
+  }
   if (flags.recommendations.value) {
     items.splice(0, 0, {
       to: { name: 'today' },
@@ -307,6 +317,12 @@ async function signOut() {
             <template v-else-if="item.icon === 'lookup'">
               <circle cx="11" cy="11" r="7" />
               <path d="M20 20l-3.5-3.5" />
+            </template>
+            <!-- Clipboard with lines: the order writer. -->
+            <template v-else-if="item.icon === 'orders'">
+              <rect x="5" y="4" width="14" height="17" />
+              <path d="M9 2h6v4H9z" />
+              <path d="M9 11h6M9 15h4" />
             </template>
             <template v-else-if="item.icon === 'accounts'">
               <path d="M3 21h18" />

@@ -122,6 +122,46 @@ const router = createRouter({
       ],
     },
     {
+      path: '/orders',
+      component: () => import('@/pages/orders/OrdersLayout.vue'),
+      // feature on the parent covers every child, same as /admin's adminOnly.
+      meta: { feature: 'feature.orders' },
+      children: [
+        {
+          path: '',
+          name: 'orders',
+          component: () => import('@/pages/orders/OrderListView.vue'),
+          meta: { title: 'My Orders' },
+        },
+        {
+          path: 'new',
+          name: 'orders-new',
+          component: () => import('@/pages/orders/OrderWriterView.vue'),
+          meta: { title: 'New Order' },
+        },
+        {
+          path: 'queue',
+          name: 'orders-queue',
+          component: () => import('@/pages/orders/OrderQueueView.vue'),
+          meta: { title: 'Entry Queue' },
+        },
+        {
+          path: ':id(\\d+)',
+          name: 'order-detail',
+          component: () => import('@/pages/orders/OrderDetailView.vue'),
+          props: true,
+          meta: { title: 'Order' },
+        },
+        {
+          path: ':id(\\d+)/edit',
+          name: 'order-edit',
+          component: () => import('@/pages/orders/OrderWriterView.vue'),
+          props: true,
+          meta: { title: 'Edit Order' },
+        },
+      ],
+    },
+    {
       // Reached from the account menu, not the nav bar: a rep sets this up
       // once and never comes back, so it does not earn a tab.
       path: '/connect',
@@ -215,6 +255,22 @@ router.beforeEach(async (to) => {
 
   if (to.meta.adminOnly && !session.isAdmin) {
     return { name: 'overview' }
+  }
+
+  // An order_entry user's book is empty by design, so the Overview is a
+  // blank page for them — the entry queue IS their app. Redirect only when
+  // the flag is on: with it off the queue route would bounce straight back
+  // here and loop.
+  if (to.name === 'overview' && session.isOrderEntry) {
+    try {
+      const settings = await ensureSettings()
+      if (isFeatureEnabled(settings, 'feature.orders')) {
+        return { name: 'orders-queue' }
+      }
+    } catch {
+      // Settings unreachable — fail closed onto the Overview like the
+      // feature guard below does.
+    }
   }
 
   if (to.meta.feature) {
