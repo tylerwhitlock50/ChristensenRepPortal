@@ -33,6 +33,14 @@ const router = createRouter({
       meta: { public: true, title: 'Sign in' },
     },
     {
+      // Public: the rep arriving here is by definition signed out, and the
+      // recovery link in the email is the only credential they have.
+      path: '/reset-password',
+      name: 'reset-password',
+      component: () => import('@/pages/ResetPasswordView.vue'),
+      meta: { public: true, title: 'Set a new password' },
+    },
+    {
       // The morning briefing IS the app's front door (data-first restructure):
       // territory health, the AI sales brief, movers, worth-investigating.
       path: '/',

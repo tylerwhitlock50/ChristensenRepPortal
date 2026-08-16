@@ -20,10 +20,14 @@ async function submit() {
   try {
     await session.signIn(email.value, password.value)
     const redirect = route.query.redirect
+    // 'overview', not 'today': /today is gated on feature.recommendations,
+    // which ships disabled (024_app_settings.sql), so the router guard bounced
+    // every single sign-in through a second navigation. Overview is the front
+    // door under every flag combination.
     await router.replace(
       typeof redirect === 'string' && redirect.startsWith('/')
         ? redirect
-        : { name: 'today' },
+        : { name: 'overview' },
     )
   } catch (e) {
     const message = (e as Error).message ?? ''
@@ -34,6 +38,40 @@ async function submit() {
       : message || 'Could not sign in. Try again.'
   } finally {
     busy.value = false
+  }
+}
+
+/* ---- password reset ------------------------------------------------------
+   Success is reported the same way whether or not the address is known — see
+   requestPasswordReset() in the session store for why.
+------------------------------------------------------------------------- */
+const resetting = ref(false)
+const resetEmail = ref('')
+const resetError = ref('')
+const resetSent = ref(false)
+const resetBusy = ref(false)
+
+function startReset() {
+  // Carry over whatever they already typed; the address is almost always the
+  // one already in the email box.
+  resetEmail.value = email.value
+  resetError.value = ''
+  resetSent.value = false
+  resetting.value = true
+}
+
+async function submitReset() {
+  resetError.value = ''
+  resetBusy.value = true
+  try {
+    await session.requestPasswordReset(resetEmail.value)
+    resetting.value = false
+    resetSent.value = true
+  } catch (e) {
+    resetError.value =
+      (e as Error).message || 'Could not send that right now. Try again.'
+  } finally {
+    resetBusy.value = false
   }
 }
 </script>
@@ -115,9 +153,71 @@ async function submit() {
           </AppButton>
         </form>
 
+        <!-- Reset, inline — same "confirm in place, never a modal" shape the
+             account page uses (TECH_STACK §2.4). -->
+        <div class="mt-4">
+          <button
+            v-if="!resetting"
+            type="button"
+            class="font-label text-ink-2 tap-target text-[13px] font-semibold tracking-[0.12em] uppercase underline underline-offset-4"
+            @click="startReset"
+          >
+            Forgot your password?
+          </button>
+
+          <form v-else class="space-y-3" novalidate @submit.prevent="submitReset">
+            <div>
+              <label for="reset-email" class="u-label text-ink-2 mb-1.5 block">
+                Email
+              </label>
+              <input
+                id="reset-email"
+                v-model="resetEmail"
+                type="email"
+                autocomplete="username"
+                inputmode="email"
+                autocapitalize="none"
+                spellcheck="false"
+                required
+                class="field"
+              />
+              <p class="text-muted mt-1.5 text-xs">
+                We'll send a link. Open it on this device.
+              </p>
+            </div>
+
+            <p
+              v-if="resetError"
+              role="alert"
+              class="border-line bg-surface border-l-accent border border-l-[3px] px-3 py-2.5 text-sm"
+            >
+              {{ resetError }}
+            </p>
+
+            <div class="flex gap-2">
+              <AppButton
+                type="submit"
+                variant="secondary"
+                :loading="resetBusy"
+                :disabled="!resetEmail"
+              >
+                Send link
+              </AppButton>
+              <AppButton variant="ghost" @click="resetting = false">
+                Cancel
+              </AppButton>
+            </div>
+          </form>
+
+          <p v-if="resetSent" role="status" class="text-ink mt-3 text-sm font-medium">
+            If that address has an account, a reset link is on its way. It
+            expires shortly, so use it now.
+          </p>
+        </div>
+
         <p class="text-muted mt-4 text-sm leading-relaxed">
-          Sales ops makes accounts. There is no self-signup — if you can't get
-          in, call your admin.
+          Sales ops makes accounts. There is no self-signup — if you still can't
+          get in, call your admin.
         </p>
 
         <div class="border-line mt-auto flex items-center gap-2.5 border-t pt-4">

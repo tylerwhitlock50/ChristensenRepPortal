@@ -111,6 +111,34 @@ export const useSessionStore = defineStore('session', () => {
     return p
   }
 
+  /**
+   * Self-service password reset — the missing half of a portal with no
+   * self-signup. Until now a rep locked out in a dealer's parking lot had
+   * exactly one option: phone an admin who may be in another timezone.
+   *
+   * Deliberately reports success even when the email is unknown. Telling an
+   * anonymous caller "no such account" turns this box into a way to test
+   * which addresses are provisioned, and the honest phrasing ("if that
+   * address has an account") costs a real rep nothing.
+   */
+  async function requestPasswordReset(email: string) {
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/reset-password`,
+    })
+    // Rate limiting is the one thing worth surfacing — it is actionable
+    // ("wait a minute"), where "user not found" is not.
+    if (error && /rate|too many/i.test(error.message)) throw error
+  }
+
+  /**
+   * Finish a reset: set the new password on the session the recovery link
+   * established, then sign out so the rep re-enters it once deliberately.
+   */
+  async function updatePassword(password: string) {
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) throw error
+  }
+
   async function signOut() {
     await supabase.auth.signOut()
     session.value = null
@@ -137,5 +165,7 @@ export const useSessionStore = defineStore('session', () => {
     loadProfile,
     signIn,
     signOut,
+    requestPasswordReset,
+    updatePassword,
   }
 })
