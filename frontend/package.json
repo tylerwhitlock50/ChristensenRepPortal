@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
+    "test:unit": "vite-node tests/unit/ffl.test.ts",
     "test:mobile": "playwright test",
     "test:mobile:report": "playwright show-report"
   },
@@ -37,6 +38,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.2.0",
+    "vite-node": "^6.0.0",
     "vue-tsc": "^3.3.8"
   }
 }

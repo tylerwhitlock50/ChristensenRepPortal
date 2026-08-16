@@ -22,6 +22,7 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
 import AccountSummaryCard from '@/components/AccountSummaryCard.vue'
+import AccountShipReadiness from '@/components/AccountShipReadiness.vue'
 /**
  * chart.js is roughly two thirds of this route's bundle, and this is the page
  * a rep opens standing in a store on LTE. Async-loaded so the numbers, orders
@@ -61,6 +62,7 @@ import {
   useDeactivateAccount,
   useReactivateAccount,
 } from '@/composables/useAccountStatus'
+import { isCreditBlocked } from '@/lib/ffl'
 import { count, daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
@@ -143,6 +145,11 @@ const openOrders = computed(() => {
     detail: `Still owed to this dealer${units}`,
   }
 })
+
+/** Colours the header's Credit tile; the full story is in AccountShipReadiness. */
+const creditBlocked = computed(() =>
+  isCreditBlocked(account.data.value?.credit_status),
+)
 
 const openRecs = computed(
   () => (recs.data.value ?? []).filter((r) => r.status === 'open' || r.status === 'acted'),
@@ -581,9 +588,21 @@ watch(key, () => {
           <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
             Credit
           </dt>
-          <dd class="u-display mt-0.5 text-xl">
+          <!-- Was one bare word. credit_limit_amount sat unused next to it in
+               dim_customer the whole time, and the limit is what makes the
+               status mean something. -->
+          <dd
+            class="u-display mt-0.5 text-xl"
+            :class="creditBlocked ? 'text-danger' : ''"
+          >
             {{ humanize(account.data.value?.credit_status) }}
           </dd>
+          <p
+            v-if="account.data.value?.credit_limit_amount != null"
+            class="text-muted mt-0.5 text-[11px]"
+          >
+            Limit {{ money(account.data.value.credit_limit_amount) }}
+          </p>
         </div>
       </dl>
 
@@ -641,6 +660,21 @@ watch(key, () => {
         {{ deactivationError }}
       </p>
     </AppCard>
+
+    <!--
+      "Can we ship?" — FFL expiry and credit holds, the two things that stop
+      an order dead. Renders nothing when both are fine, so its presence is
+      itself the signal. Above the performance numbers on purpose: no amount
+      of revenue history matters if the shipment cannot leave.
+    -->
+    <AccountShipReadiness
+      v-if="account.data.value"
+      :ffl-license-number="account.data.value.ffl_license_number"
+      :ffl-expiration-raw="account.data.value.ffl_expiration_raw"
+      :credit-status="account.data.value.credit_status"
+      :credit-limit-amount="account.data.value.credit_limit_amount"
+      :ar-terms-rule-id="account.data.value.ar_terms_rule_id"
+    />
 
     <!-- Mini-dashboard: every number below is aggregated in Postgres. -->
     <AccountSummaryCard :customer-key="customerKey" />

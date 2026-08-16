@@ -24,6 +24,20 @@ export interface DimCustomerRow {
   last_order_date: string | null
   yearly_sales_goal: number | null
   credit_status: string | null
+  /**
+   * Compliance and credit, landed since 002 and surfaced for the first time
+   * on the account page's "Can we ship?" strip. useAccount() already does
+   * select('*'), so these arrived in the payload long before anything read
+   * them.
+   *
+   * ffl_expiration_raw is FREE-FORM (bi.vw_DimCustomer sources it from
+   * CUSTOMER.USER_5, a user-defined field) — parse it through lib/ffl.ts,
+   * which refuses anything it cannot read rather than guessing.
+   */
+  ffl_license_number: string | null
+  ffl_expiration_raw: string | null
+  credit_limit_amount: number | null
+  ar_terms_rule_id: string | null
 }
 
 export interface DimSalesRepRow {
