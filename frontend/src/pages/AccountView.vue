@@ -61,7 +61,7 @@ import {
   useDeactivateAccount,
   useReactivateAccount,
 } from '@/composables/useAccountStatus'
-import { daysAgo, humanize, money, shortDate } from '@/lib/format'
+import { count, daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
 const key = computed(() => props.customerKey)
@@ -124,6 +124,24 @@ const goalSource = computed(() => {
     return erp != null ? `your goal · ERP ${money(erp)}` : 'your goal'
   }
   return erp != null ? 'from ERP' : 'not set'
+})
+
+/**
+ * The open-order line above the fold. Null when there is nothing outstanding
+ * — an account with a clean book should say nothing rather than render a
+ * cheerful "0 open orders" the rep has to read past every visit.
+ */
+const openOrders = computed(() => {
+  const s = summary.data.value
+  if (!s || s.open_order_count <= 0) return null
+  const orders = `${s.open_order_count} open order${s.open_order_count === 1 ? '' : 's'}`
+  const units = s.backlog_qty
+    ? ` · ${count(Math.round(s.backlog_qty))} units on backorder`
+    : ''
+  return {
+    label: `${orders} · ${money(s.open_order_value)}`,
+    detail: `Still owed to this dealer${units}`,
+  }
 })
 
 const openRecs = computed(
@@ -568,6 +586,22 @@ watch(key, () => {
           </dd>
         </div>
       </dl>
+
+      <!--
+        "What are they still waiting on?" — above the fold.
+        This was reachable only by scrolling to a collapsed card, opening it,
+        and tapping into a modal, which is three moves too many for the
+        question a dealer asks first. The numbers come from the summary query
+        the Performance card already runs (vue-query dedupes it), so this
+        costs no extra request.
+      -->
+      <div
+        v-if="openOrders"
+        class="border-line bg-surface -mx-4 border-b px-4 py-3"
+      >
+        <p class="text-ink text-[15px] font-semibold">{{ openOrders.label }}</p>
+        <p class="text-muted text-[13px]">{{ openOrders.detail }}</p>
+      </div>
     </AsyncState>
 
     <!-- Deactivated: say so up top, with the way back. The full story and

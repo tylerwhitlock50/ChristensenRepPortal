@@ -69,6 +69,9 @@ const nav = computed<NavItem[]>(() => {
     // child tab.
     { to: '/intel', label: 'Intel', icon: 'intel' },
     { to: { name: 'accounts' }, label: 'Accounts', icon: 'accounts' },
+    // "Where's my order?" is the most common call a rep takes; it earns a
+    // permanent tab rather than living inside one account's page.
+    { to: { name: 'lookup' }, label: 'Find', icon: 'lookup' },
   ]
   if (flags.recommendations.value) {
     items.splice(0, 0, {
@@ -291,6 +294,11 @@ async function signOut() {
             <template v-else-if="item.icon === 'tasks'">
               <path d="M4 6h9M4 12h9M4 18h6" />
               <path d="M16 16l2.2 2.2L22 14" />
+            </template>
+            <!-- Magnifier: find an order by number. -->
+            <template v-else-if="item.icon === 'lookup'">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
             </template>
             <template v-else-if="item.icon === 'accounts'">
               <path d="M3 21h18" />

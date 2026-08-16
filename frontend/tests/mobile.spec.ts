@@ -60,6 +60,7 @@ test.describe('signed in', () => {
   const routes = [
     { path: '/', name: 'overview' },
     { path: '/accounts', name: 'accounts' },
+    { path: '/lookup', name: 'lookup' },
     { path: '/intel/sku-sales', name: 'intel-sku-sales' },
     { path: '/intel/backlog', name: 'intel-backlog' },
     { path: '/intel/ats', name: 'intel-ats' },

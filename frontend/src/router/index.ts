@@ -62,6 +62,14 @@ const router = createRouter({
       meta: { title: 'Tasks', feature: 'feature.tasks' },
     },
     {
+      // "Where's my order?" — searchable by the dealer's PO, our order
+      // number, or a tracking number, across the whole book.
+      path: '/lookup',
+      name: 'lookup',
+      component: () => import('@/pages/LookupView.vue'),
+      meta: { title: 'Find an order' },
+    },
+    {
       path: '/accounts',
       name: 'accounts',
       component: () => import('@/pages/AccountsView.vue'),
