@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import { useSessionStore } from '@/stores/session'
 import {
   friendlyRecError,
   isMission,
@@ -36,6 +37,7 @@ const props = defineProps<{
 }>()
 
 /** Silent fallback. An account with no summary must look normal, not broken. */
+const session = useSessionStore()
 const body = computed(() => props.headline || props.rec.reason)
 
 type Panel = 'none' | 'act' | 'close'
@@ -150,7 +152,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
       </RouterLink>
 
       <!-- Visit-required missions: the survey IS the way through. -->
-      <div v-if="panel === 'none' && needsSurvey" class="mt-4 flex gap-2">
+      <div v-if="panel === 'none' && needsSurvey && session.canWrite" class="mt-4 flex gap-2">
         <RouterLink :to="surveyTo" class="btn-primary flex-1 text-[15px]">
           Do the visit survey
         </RouterLink>
@@ -163,7 +165,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
         </button>
       </div>
 
-      <div v-else-if="panel === 'none'" class="mt-4 flex gap-2">
+      <div v-else-if="panel === 'none' && session.canWrite" class="mt-4 flex gap-2">
         <AppButton variant="primary" class="flex-1" @click="panel = 'act'">
           Log action
         </AppButton>

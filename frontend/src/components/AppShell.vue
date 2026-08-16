@@ -8,6 +8,7 @@ import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useMyDueTasks } from '@/composables/useTasks'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 import NavBadge from '@/components/NavBadge.vue'
+import ViewAsBanner from '@/components/ViewAsBanner.vue'
 import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
@@ -241,6 +242,11 @@ async function signOut() {
         </div>
       </div>
     </header>
+
+    <!-- Below the sticky header rather than inside it: the header is a fixed
+         56px and this bar wraps to two lines on a phone. Renders nothing at
+         all unless a view-as is live. -->
+    <ViewAsBanner />
 
     <!-- pb clears the fixed bottom nav on phones -->
     <main

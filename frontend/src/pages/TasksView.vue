@@ -4,6 +4,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import TaskQuickAdd from '@/components/TaskQuickAdd.vue'
+import { useSessionStore } from '@/stores/session'
 import { useAccountNames } from '@/composables/useAccounts'
 import {
   useCancelTask,
@@ -14,6 +15,7 @@ import {
 } from '@/composables/useTasks'
 import { daysUntilDue, dueLabel, shortDate } from '@/lib/format'
 
+const session = useSessionStore()
 const { data, isPending, error, refetch } = useMyTasks()
 const tasks = computed(() => data.value ?? [])
 
@@ -177,7 +179,10 @@ function closedLabel(task: Task): string {
     </div>
 
     <AppCard v-if="segment === 'open'">
-      <TaskQuickAdd placeholder="What do you need to remember?" />
+      <TaskQuickAdd
+        v-if="session.canWrite"
+        placeholder="What do you need to remember?"
+      />
     </AppCard>
 
     <p v-if="segment === 'open' && overdueCount > 0" class="text-sm font-medium text-danger">
