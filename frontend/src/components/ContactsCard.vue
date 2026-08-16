@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useSessionStore } from '@/stores/session'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -14,6 +15,7 @@ import {
 
 const props = defineProps<{ customerKey: string }>()
 
+const session = useSessionStore()
 const key = computed(() => props.customerKey)
 const contacts = useContacts(key)
 const rows = computed(() => contacts.data.value ?? [])
@@ -108,7 +110,7 @@ function telHref(phone: string): string {
           {{ rows.length === 1 ? '1 person' : `${rows.length} people` }}
         </p>
       </div>
-      <AppButton v-if="!adding" variant="secondary" @click="startAdd">
+      <AppButton v-if="!adding && session.canWrite" variant="secondary" @click="startAdd">
         Add contact
       </AppButton>
     </template>
@@ -131,7 +133,7 @@ function telHref(phone: string): string {
       @retry="contacts.refetch()"
     >
       <template #empty-action>
-        <AppButton @click="startAdd">Add the first contact</AppButton>
+        <AppButton v-if="session.canWrite" @click="startAdd">Add the first contact</AppButton>
       </template>
 
       <ul class="divide-y divide-line">
@@ -187,7 +189,7 @@ function telHref(phone: string): string {
                 Email
               </a>
               <button
-                v-if="c.source === 'rep'"
+                v-if="c.source === 'rep' && session.canWrite"
                 type="button"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                 @click="startEdit(c)"
@@ -195,7 +197,7 @@ function telHref(phone: string): string {
                 Edit
               </button>
               <button
-                v-if="c.source === 'rep' && canDelete && !isConfirmingDelete(c)"
+                v-if="c.source === 'rep' && canDelete && session.canWrite && !isConfirmingDelete(c)"
                 type="button"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-danger underline underline-offset-2"
                 @click="askDelete(c)"

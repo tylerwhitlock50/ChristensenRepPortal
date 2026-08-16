@@ -23,6 +23,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ViewAsCard from '@/components/admin/ViewAsCard.vue'
 import { ROLES, type Role } from '@/types/domain'
 import { daysAgo } from '@/lib/format'
 
@@ -226,6 +227,10 @@ async function setActive(active: boolean) {
         New user
       </AppButton>
     </header>
+
+    <!-- Directly under the user list on purpose: "who can sign in" and "what
+         do they see when they do" are the same question, asked twice. -->
+    <ViewAsCard />
 
     <!-- Create panel — inline, above the grid -->
     <AppCard v-if="creating" title="New user">

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import { useSessionStore } from '@/stores/session'
 import {
   friendlyRecError,
   isMission,
@@ -30,6 +31,7 @@ const props = defineProps<{
   headline?: string
 }>()
 
+const session = useSessionStore()
 const body = computed(() => props.headline || props.rec.reason)
 
 type Panel = 'none' | 'act' | 'close'
@@ -261,7 +263,10 @@ async function submitClose(status: 'closed' | 'dismissed') {
 
       <!-- A visit-required mission routes to the survey; the DB would reject
            a surveyless close anyway, so don't offer it. -->
-      <div v-else-if="needsSurvey" class="border-line flex gap-2 border-t p-3">
+      <div
+        v-else-if="needsSurvey && session.canWrite"
+        class="border-line flex gap-2 border-t p-3"
+      >
         <RouterLink :to="surveyTo" class="btn-primary text-[15px]">
           Do the visit survey
         </RouterLink>
@@ -270,7 +275,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
         </AppButton>
       </div>
 
-      <div v-else class="border-line flex gap-2 border-t p-3">
+      <div v-else-if="session.canWrite" class="border-line flex gap-2 border-t p-3">
         <AppButton variant="secondary" @click="panel = 'act'">
           Log action
         </AppButton>

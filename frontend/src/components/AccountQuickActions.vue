@@ -46,6 +46,7 @@ const visible = computed(() =>
   <!-- Scrolls horizontally on a narrow phone rather than wrapping to two rows
        and pushing the account numbers below the fold. -->
   <div
+    v-if="visible.length"
     class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     role="group"
     aria-label="Account actions"

@@ -343,6 +343,18 @@ Implementation notes:
   `sales_rep_key`, a rep with `sales_rep_key = 'HOUSE'`, and a profile with a
   null `rep_group_vendor_id` must each return zero rows. These are the two ways
   this design fails open, and both fail *silently and totally*.
+- **Every rule above resolves against `effective_user_id()`, not `auth.uid()`**
+  (migration `20260816140000_admin_view_as_rep.sql`). The two are the same
+  value except while an admin is using "view as rep", which points
+  `is_admin()` and `my_customer_keys()` at somebody else so the whole portal
+  answers as that person — the `admin → everything` line above is then
+  answered for the *target*, not the caller. It is read-only (a trigger on
+  every RLS-enabled table in `public`), it expires after 12 hours, and the
+  exit is gated on `is_real_admin()` rather than `is_admin()`, which is false
+  for the duration. Because scope lives in exactly these two functions, this
+  cost no query, view or policy a single change; anything that reintroduces
+  client-side rep filtering would have to reimplement the rules above a second
+  time and would drift from them.
 - **Support negative overrides.** Add `access` (`'grant' | 'revoke'`) to
   `account_assignments` so an account can be pulled from its ERP owner without
   editing the ERP. Revoke beats derive.

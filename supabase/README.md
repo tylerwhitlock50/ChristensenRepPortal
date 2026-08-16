@@ -31,6 +31,7 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `023_account_deactivations.sql` | `account_deactivations` — rep-side "stop working this account" override with reason + history; dismiss/de-score trigger; exclusions in `v_account_list`, `refresh_account_signals()`, `create_mission()`, coverage views |
 | `20260803223924_account_goals.sql` | `account_goals` (rep-entered annual goal, one per account/year), `v_account_goal_progress` (seasonal pace), `v_my_goal_rollup`, `v_rep_goal_attainment` — reconstructed from prod, where it was applied as "023_account_goals" |
 | `20260816120000_mcp_access.sql` | `mcp_tokens` (SHA-256 at rest, column-granted so `token_hash` is unreadable over PostgREST) + `mcp_token_create()` / `mcp_token_revoke()` / `mcp_token_resolve()` — credentials for the `mcp` Edge Function. A token is an identity, not a grant: it confers no access of its own |
+| `20260816140000_admin_view_as_rep.sql` | Admin "view as rep": `impersonation` state + `impersonation_events` audit, `is_real_admin()` / `acting_as_user_id()` / `effective_user_id()`, `is_admin()` and `my_customer_keys()` re-pointed at the effective user, `start_impersonation()` / `stop_impersonation()` / `acting_context()` / `impersonatable_profiles()`, and a read-only trigger on every RLS-enabled `public` table |
 
 ## Applying
 
