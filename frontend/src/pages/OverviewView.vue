@@ -9,6 +9,7 @@ import {
   useTerritoryRecentOrders,
   worthInvestigating,
 } from '@/composables/useOverview'
+import { useTerritorySignals } from '@/composables/useAccountSignals'
 import { useAiBrief, useGenerateAiBrief } from '@/composables/useAiBrief'
 import { deltaLabel } from '@/composables/useAccountMetrics'
 import SalesBriefCard from '@/components/SalesBriefCard.vue'
@@ -29,11 +30,18 @@ const session = useSessionStore()
 
 const accountsQuery = useTerritoryAccounts()
 const recentQuery = useTerritoryRecentOrders()
+/* The nightly behaviour scores (public.account_signals). Loads alongside the
+   territory rows rather than gating them: if it is slow, missing, or 019 was
+   never applied, the observations below fall back to the flat dormancy rule
+   and the page is exactly what it was before. */
+const signalsQuery = useTerritorySignals()
 
 const rows = computed(() => accountsQuery.data.value ?? [])
 const totals = computed(() => territoryTotals(rows.value))
 const movers = computed(() => largestMovers(rows.value))
-const observations = computed(() => worthInvestigating(rows.value))
+const observations = computed(() =>
+  worthInvestigating(rows.value, 6, new Date(), signalsQuery.data.value ?? {}),
+)
 const recent = computed(() => recentQuery.data.value ?? [])
 
 /* ---- Sales Brief --------------------------------------------------------
@@ -184,8 +192,8 @@ const goalSub = computed(() => {
         <AppCard title="Worth investigating" :padded="false">
           <div v-if="observations.length === 0" class="p-4">
             <p class="text-muted text-[15px]">
-              Nothing stands out right now — no dormant accounts, sharp
-              declines, or large backorder positions.
+              Nothing stands out right now — nobody overdue against their usual
+              ordering rhythm, no sharp declines, no large backorder positions.
             </p>
           </div>
           <ul v-else class="divide-line divide-y">

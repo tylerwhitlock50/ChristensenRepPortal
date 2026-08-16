@@ -4,6 +4,11 @@ import { differenceInCalendarDays, parseISO } from 'date-fns'
 import { supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
+import {
+  cadenceSentence,
+  isOverdueForCadence,
+  type AccountSignalRow,
+} from '@/composables/useAccountSignals'
 
 /**
  * The Overview (morning briefing) read path.
@@ -225,7 +230,7 @@ export function largestMovers(
 }
 
 export interface Observation {
-  kind: 'dormant' | 'decline' | 'backlog'
+  kind: 'cadence' | 'dormant' | 'decline' | 'backlog'
   customer_key: string
   customer_name: string
   /** Plain-English, observation-voiced: what the data shows, never a task. */
@@ -237,20 +242,55 @@ export interface Observation {
 /**
  * "Worth investigating" — data-derived observations, deliberately framed as
  * what the data shows ("hasn't invoiced in 103 days"), never as assignments.
- * The rep decides whether action is warranted. Thresholds are modest and
- * hard-coded for v1; if they need tuning, app_settings.params is the home.
+ * The rep decides whether action is warranted.
+ *
+ * `signals` is public.account_signals keyed by customer_key (see
+ * useAccountSignals.ts) and is OPTIONAL — pass nothing and this behaves
+ * exactly as it did before it existed.
+ *
+ * When a signal row is present and its cadence is confident, the per-account
+ * rhythm REPLACES the flat 90-day dormancy rule for that account. The flat
+ * rule treats a dealer who orders monthly and a dealer who orders twice a
+ * year identically, which is precisely the failure 019_account_scoring.sql
+ * was written to fix; it stays as the fallback for accounts with no confident
+ * rhythm, which is most of the long tail.
  */
 export function worthInvestigating(
   rows: TerritoryAccountRow[],
   n = 6,
   today: Date = new Date(),
+  signals: Record<string, AccountSignalRow> = {},
 ): Observation[] {
   const out: Observation[] = []
   for (const r of rows) {
     const name = r.customer_name || r.customer_key
+    const signal = signals[r.customer_key] ?? null
 
-    // Dormant: real recent history, but nothing invoiced in 90+ days.
-    if (r.last_invoice_date && r.revenue_trailing_12m >= 5_000) {
+    // Overdue against their OWN rhythm. Ranked by trailing-12m like dormancy
+    // so a big dealer one cycle late outranks a small one three cycles late.
+    if (r.revenue_trailing_12m >= 5_000 && isOverdueForCadence(signal)) {
+      const sentence = cadenceSentence(signal)
+      if (sentence) {
+        out.push({
+          kind: 'cadence',
+          customer_key: r.customer_key,
+          customer_name: name,
+          note: sentence,
+          weight: r.revenue_trailing_12m,
+        })
+        continue // one observation per account — the loudest one
+      }
+    }
+
+    // Dormant: real recent history, but nothing invoiced in 90+ days. Skipped
+    // when this account has a confident rhythm — the cadence branch above is
+    // strictly better informed, and firing both would double-report the same
+    // silence under two different numbers.
+    if (
+      r.last_invoice_date &&
+      r.revenue_trailing_12m >= 5_000 &&
+      !signal?.cadence_confident
+    ) {
       const days = differenceInCalendarDays(today, parseISO(r.last_invoice_date))
       if (days >= 90) {
         out.push({
@@ -260,7 +300,7 @@ export function worthInvestigating(
           note: `Hasn't invoiced in ${days} days`,
           weight: r.revenue_trailing_12m,
         })
-        continue // one observation per account — the loudest one
+        continue
       }
     }
 
