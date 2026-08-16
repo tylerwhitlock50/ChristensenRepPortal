@@ -118,6 +118,12 @@ const router = createRouter({
           meta: { title: 'Goals' },
         },
         {
+          path: 'reports',
+          name: 'admin-reports',
+          component: () => import('@/pages/admin/AdminReportsView.vue'),
+          meta: { title: 'Reports' },
+        },
+        {
           path: 'users',
           name: 'admin-users',
           component: () => import('@/pages/admin/AdminUsersView.vue'),
