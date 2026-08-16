@@ -37,7 +37,7 @@ import {
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 
 const MIN_PASSWORD_LENGTH = 12
-const ROLES = ['admin', 'rep'] as const
+const ROLES = ['admin', 'rep', 'order_entry'] as const
 type Role = (typeof ROLES)[number]
 
 type RequestBody = {
@@ -121,7 +121,11 @@ async function handle(req: Request): Promise<Response> {
 
   const role = (body.role ?? 'rep') as Role
   if (!ROLES.includes(role)) {
-    throw new HttpError(400, 'invalid_role', "Role must be 'admin' or 'rep'.")
+    throw new HttpError(
+      400,
+      'invalid_role',
+      "Role must be 'admin', 'rep', or 'order_entry'.",
+    )
   }
 
   const salesRepKey = nullIfBlank(body.sales_rep_key)

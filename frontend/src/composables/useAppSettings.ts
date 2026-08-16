@@ -36,6 +36,7 @@ export const FEATURE_KEYS = [
   'feature.visits',
   'feature.tasks',
   'feature.action_logging',
+  'feature.orders',
 ] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
 
@@ -94,6 +95,7 @@ export function useFeatureFlags() {
     visits: flag('feature.visits'),
     tasks: flag('feature.tasks'),
     actionLogging: flag('feature.action_logging'),
+    orders: flag('feature.orders'),
     isLoading: query.isLoading,
   }
 }

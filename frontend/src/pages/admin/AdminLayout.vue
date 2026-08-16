@@ -21,6 +21,9 @@ const tabs = computed(() => {
     items.push({ to: { name: 'admin-missions' }, label: 'Missions' })
   }
   items.push(
+    // Always visible, not gated on feature.orders: the downloadable-sheet
+    // half serves the always-on Intel page either way.
+    { to: { name: 'admin-price-lists' }, label: 'Price Lists' },
     { to: { name: 'admin-activity' }, label: 'Activity' },
     { to: { name: 'admin-settings' }, label: 'Settings' },
   )

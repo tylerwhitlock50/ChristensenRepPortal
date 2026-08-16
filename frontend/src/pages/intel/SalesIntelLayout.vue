@@ -14,6 +14,7 @@ const tabs = [
   { to: { name: 'intel-backlog' }, label: 'Backlog' },
   { to: { name: 'intel-ats' }, label: 'ATS' },
   { to: { name: 'intel-global' }, label: 'Global' },
+  { to: { name: 'intel-price-lists' }, label: 'Price Lists' },
 ] as const
 </script>
 

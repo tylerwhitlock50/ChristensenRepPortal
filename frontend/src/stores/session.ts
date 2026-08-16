@@ -61,6 +61,7 @@ export const useSessionStore = defineStore('session', () => {
       : realRole.value,
   )
   const isAdmin = computed(() => role.value === 'admin')
+  const isOrderEntry = computed(() => role.value === 'order_entry')
 
   /** The account menu is about YOUR account, so it keeps the real name. */
   const displayName = computed(
@@ -278,6 +279,7 @@ export const useSessionStore = defineStore('session', () => {
     isSignedIn,
     role,
     isAdmin,
+    isOrderEntry,
     realRole,
     isRealAdmin,
     isViewingAs,
