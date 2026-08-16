@@ -111,6 +111,14 @@ const router = createRouter({
           component: () => import('@/pages/intel/GlobalIntel.vue'),
           meta: { title: 'Global' },
         },
+        {
+          // Always on — a read-only reference surface like the rest of
+          // Intel, deliberately NOT behind feature.orders.
+          path: 'price-lists',
+          name: 'intel-price-lists',
+          component: () => import('@/pages/intel/PriceListsView.vue'),
+          meta: { title: 'Price Lists' },
+        },
       ],
     },
     {
@@ -158,6 +166,12 @@ const router = createRouter({
           name: 'admin-missions',
           component: () => import('@/pages/admin/AdminMissionsView.vue'),
           meta: { title: 'Missions', feature: 'feature.recommendations' },
+        },
+        {
+          path: 'price-lists',
+          name: 'admin-price-lists',
+          component: () => import('@/pages/admin/AdminPriceListsView.vue'),
+          meta: { title: 'Price Lists' },
         },
         {
           path: 'activity',

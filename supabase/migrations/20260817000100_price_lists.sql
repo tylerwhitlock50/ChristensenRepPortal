@@ -179,6 +179,26 @@ comment on function public.effective_price_lists(text, date) is
   'the eligibility rule for the writer UI and submit_order().';
 
 --------------------------------------------------------------------------
+-- v_customer_types — the vocabulary the admin picks from when publishing a
+-- list, so customer_type strings always match erp.dim_customer exactly
+-- (a typo here would silently orphan a price list). security_invoker per
+-- the 011 contract: an admin sees every type, a rep would see only their
+-- book's — and only admins use this.
+--------------------------------------------------------------------------
+create or replace view public.v_customer_types
+with (security_invoker = true) as
+select c.customer_type,
+       count(*) as customer_count
+from erp.dim_customer c
+where c.customer_type is not null
+  and c.customer_type <> ''
+group by c.customer_type
+order by c.customer_type;
+
+revoke all on public.v_customer_types from anon, public;
+grant select on public.v_customer_types to authenticated;
+
+--------------------------------------------------------------------------
 -- Storage: private bucket for the approved sheets. Signed URLs only
 -- (private bucket → getPublicUrl 400s, same as account-photos).
 --------------------------------------------------------------------------
