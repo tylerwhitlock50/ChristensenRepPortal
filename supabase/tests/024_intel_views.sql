@@ -16,11 +16,47 @@ begin;
 \set ON_ERROR_STOP on
 
 --------------------------------------------------------------------------
--- Fixtures — same pinned book as 010.
+-- Fixtures — throwaway ERP rows seeded (and rolled back) by the test, same
+-- as 010/016: a two-account rep with current-year invoice lines, plus a
+-- foreign account with revenue of its own so the isolation probes and the
+-- "global exceeds the book" check both have something to bite on. Expected
+-- numbers are recomputed from the data below, so the file runs on the bare
+-- _local_harness.sql cluster and on dev alike.
 --------------------------------------------------------------------------
 create temporary table t_fix (name text primary key, val text) on commit drop;
 insert into t_fix (name, val) values
-  ('rep_key', 'TANY MCDO');
+  ('rep_key', 'INT REPA');
+
+insert into erp.dim_customer
+  (customer_key, customer_id, customer_name, assigned_sales_rep_id,
+   customer_type, active_flag)
+values
+  ('INT-CUST-A1', 'INT-CUST-A1', 'Intel Dealer A1', 'INT REPA', 'INT-DEALER', 'Y'),
+  ('INT-CUST-A2', 'INT-CUST-A2', 'Intel Dealer A2', 'INT REPA', 'INT-DEALER', 'Y'),
+  ('INT-CUST-F1', 'INT-CUST-F1', 'Intel Dealer F1', 'INT REPF', 'INT-DEALER', 'Y');
+
+insert into erp.dim_part (part_key, part_id, part_description)
+values ('INTPK-1', 'INT-PART-1', 'Intel part one'),
+       ('INTPK-2', 'INT-PART-2', 'Intel part two');
+
+-- Current-year revenue: 1650 / 19 units on the rep's book, 1000 / 20 units
+-- on the foreign account.
+insert into erp.fact_invoice_line
+  (invoice_entity_id, invoice_id, invoice_line_no, customer_key, part_key,
+   invoice_qty, revenue, is_memo, invoice_date_key)
+values
+  ('INT-E', 'INT-INV-1', 1, 'INT-CUST-A1', 'INTPK-1', 10, 1000.00, false,
+   to_char(current_date, 'YYYYMMDD')::int),
+  ('INT-E', 'INT-INV-1', 2, 'INT-CUST-A1', 'INTPK-2',  5,  250.00, false,
+   to_char(current_date, 'YYYYMMDD')::int),
+  ('INT-E', 'INT-INV-2', 1, 'INT-CUST-A2', 'INTPK-1',  4,  400.00, false,
+   to_char(current_date, 'YYYYMMDD')::int),
+  ('INT-E', 'INT-INV-3', 1, 'INT-CUST-F1', 'INTPK-2', 20, 1000.00, false,
+   to_char(current_date, 'YYYYMMDD')::int);
+
+-- The territory views read the 030 rollup tables, not the facts — rebuild
+-- them so tonight's "ETL already ran" precondition holds for the seed rows.
+select * from public.refresh_territory_rollups();
 
 create temporary table t_user (label text primary key, id uuid) on commit drop;
 insert into t_user (label, id) values

@@ -8,8 +8,10 @@
 
   A clean run prints "ALL MISSION TESTS PASSED"; any error is a failure.
 
-  Fixtures are pinned to real ERP values (same ones as 010); if the ETL
-  reshapes the book, re-pin deliberately.
+  Fixtures are throwaway ERP rows seeded (and rolled back) by the test
+  itself, same as 010: an 8-account rep inside a 2-rep / 14-account agency.
+  Expected counts are computed from the data at run time, so the file runs
+  on the bare _local_harness.sql cluster and on dev alike.
 ============================================================================*/
 
 begin;
@@ -21,9 +23,25 @@ begin;
 --------------------------------------------------------------------------
 create temporary table t_fix (name text primary key, val text) on commit drop;
 insert into t_fix (name, val) values
-  ('rep_key',     'TANY MCDO'),
-  ('vendor_id',   'MOUN STAT SPOR'),
-  ('placeholder', 'WEB');
+  ('rep_key',     'MIS REPA'),
+  ('vendor_id',   'MIS VENDOR'),
+  ('placeholder', 'WEB');   -- a REAL placeholder key: T4/T8 assert rejection
+
+insert into erp.dim_sales_rep (sales_rep_key, vendor_id) values
+  ('MIS REPA', 'MIS VENDOR'),
+  ('MIS REPB', 'MIS VENDOR');
+
+-- 8 + 6 active accounts across the agency's reps (guard needs ≥5 each way).
+insert into erp.dim_customer
+  (customer_key, customer_id, customer_name, assigned_sales_rep_id,
+   customer_type, active_flag)
+select format('MIS-CUST-%s%s', b.rep_tag, g),
+       format('MIS-CUST-%s%s', b.rep_tag, g),
+       format('MIS %s Dealer %s', b.rep_tag, g),
+       b.rep_key, 'MIS-DEALER', 'Y'
+from (values ('A', 'MIS REPA', 8),
+             ('B', 'MIS REPB', 6)) as b(rep_tag, rep_key, n)
+cross join lateral generate_series(1, b.n) g;
 
 -- Expected scope sizes use the SAME predicate as create_mission with
 -- p_active_only = true (its default).

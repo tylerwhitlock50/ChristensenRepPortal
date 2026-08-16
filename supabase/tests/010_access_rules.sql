@@ -13,8 +13,17 @@
   Every check raises an exception on failure, so a clean run that prints
   "ALL ACCESS TESTS PASSED" is the pass condition and any error is a failure.
 
-  Fixtures are pinned to real ERP values; if the ETL reshapes the book these
-  counts move and the test should be re-pinned deliberately, not loosened.
+  Fixtures are throwaway ERP rows seeded (and rolled back) by the test
+  itself, same as 035/036/20260817_orders: a 12-account rep inside a
+  3-rep / 30-account agency, plus two accounts on the real 'WEB'
+  placeholder key. Earlier revisions pinned real ERP values instead
+  ('TANY MCDO', 'MOUN STAT SPOR'), which read nicely but meant the single
+  most important test in the project could only run against a loaded dev
+  database — on the bare _local_harness.sql cluster the fixture lookups
+  returned nothing and the run died on a null insert before the first
+  assertion. Every expected count is still computed from the data at run
+  time, so the file works unchanged on dev, where the seeded rows simply
+  sit alongside the real book until rollback.
 ============================================================================*/
 
 begin;
@@ -27,9 +36,32 @@ begin;
 create temporary table t_fix (name text primary key, val text) on commit drop;
 
 insert into t_fix (name, val) values
-  ('rep_key',    'TANY MCDO'),        -- an ordinary rep: 165 customers
-  ('vendor_id',  'MOUN STAT SPOR'),   -- an agency: 8 reps, 335 customers
-  ('placeholder','WEB');              -- a real placeholder: 52 customers
+  ('rep_key',    'RLS REPA'),     -- an ordinary rep: 12 seeded customers
+  ('vendor_id',  'RLS VENDOR'),   -- an agency: 3 reps, 30 seeded customers
+  ('placeholder','WEB');          -- a REAL placeholder key (016/placeholder_rep_keys)
+
+-- The agency: rep A belongs to it, so the group book strictly contains
+-- (and exceeds) rep A's own book — what T7 asserts.
+insert into erp.dim_sales_rep (sales_rep_key, vendor_id) values
+  ('RLS REPA', 'RLS VENDOR'),
+  ('RLS REPB', 'RLS VENDOR'),
+  ('RLS REPC', 'RLS VENDOR');
+
+-- 12 + 10 + 8 accounts across the agency's reps, plus two accounts riding
+-- the live 'WEB' placeholder key (T2 must prove a placeholder derives
+-- nothing even when the placeholder genuinely owns customers).
+insert into erp.dim_customer
+  (customer_key, customer_id, customer_name, assigned_sales_rep_id,
+   customer_type, active_flag)
+select format('RLS-CUST-%s%s', b.rep_tag, lpad(g::text, 2, '0')),
+       format('RLS-CUST-%s%s', b.rep_tag, lpad(g::text, 2, '0')),
+       format('RLS %s Dealer %s', b.rep_tag, g),
+       b.rep_key, 'RLS-DEALER', 'Y'
+from (values ('A', 'RLS REPA', 12),
+             ('B', 'RLS REPB', 10),
+             ('C', 'RLS REPC',  8),
+             ('W', 'WEB',       2)) as b(rep_tag, rep_key, n)
+cross join lateral generate_series(1, b.n) g;
 
 create temporary table t_expect (name text primary key, n int) on commit drop;
 insert into t_expect

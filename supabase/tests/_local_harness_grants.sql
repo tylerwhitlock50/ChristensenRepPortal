@@ -59,3 +59,21 @@ revoke execute on function public.my_customer_keys()           from public, anon
 -- cannot trigger a full rescore or mint recommendations.
 revoke execute on function public.refresh_account_signals()    from authenticated, anon, public;
 revoke execute on function public.generate_recommendations()   from authenticated, anon, public;
+revoke execute on function public.apply_account_scores(public.score_settings)
+  from authenticated, anon, public;
+revoke execute on function public.score_account(public.account_signals, public.score_settings)
+  from authenticated, anon, public;
+revoke execute on function public.refresh_territory_rollups()  from authenticated, anon, public;
+
+-- mcp_tokens (20260816120000): column-level SELECT is the whole security
+-- design — token_hash must be unreachable over PostgREST. The blanket table
+-- grant above re-opened it, so restate the migration's exact grant.
+revoke all on public.mcp_tokens from authenticated, anon, public;
+grant select (
+  id, user_id, name, token_prefix, created_at, created_by,
+  expires_at, last_used_at, revoked_at, revoked_by
+) on public.mcp_tokens to authenticated;
+
+-- …and token resolution is the MCP gateway's job alone (service_role):
+revoke execute on function public.mcp_token_resolve(text)
+  from authenticated, anon, public;
