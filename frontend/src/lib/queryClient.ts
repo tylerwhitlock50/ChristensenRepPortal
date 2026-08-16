@@ -112,6 +112,9 @@ export const qk = {
     scoreSettings: () => ['admin', 'score-settings'] as const,
     rules: () => ['admin', 'rules'] as const,
     repGoals: () => ['admin', 'rep-goals'] as const,
+    /** Reports tab (20260816120000): channel and rep-group rollups. */
+    channels: () => ['admin', 'channels'] as const,
+    repGroupPerformance: () => ['admin', 'rep-group-performance'] as const,
   },
 } as const
 

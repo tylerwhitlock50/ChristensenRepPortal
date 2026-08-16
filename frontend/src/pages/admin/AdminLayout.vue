@@ -14,6 +14,7 @@ const tabs = computed(() => {
   const items: { to: { name: string }; label: string }[] = [
     { to: { name: 'admin-execution' }, label: 'Execution' },
     { to: { name: 'admin-goals' }, label: 'Goals' },
+    { to: { name: 'admin-reports' }, label: 'Reports' },
     { to: { name: 'admin-users' }, label: 'Users' },
   ]
   if (flags.recommendations.value) {
