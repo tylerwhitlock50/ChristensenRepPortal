@@ -100,13 +100,16 @@ async function submitCreate() {
     return
   }
   try {
+    // order_entry owns no book (constraint order_entry_empty_book) — never
+    // send scope fields for one, whatever the (hidden) inputs still hold.
+    const isEntry = cRole.value === 'order_entry'
     const result = await create.mutateAsync({
       email: cEmail.value.trim(),
       password: cPassword.value,
       fullName: cFullName.value,
       role: cRole.value,
-      salesRepKey: cRepKey.value || null,
-      repGroupVendorId: cVendorId.value || null,
+      salesRepKey: isEntry ? null : cRepKey.value || null,
+      repGroupVendorId: isEntry ? null : cVendorId.value || null,
     })
     createWarnings.value = result.warnings ?? []
     createdNotice.value = `${result.email} can sign in now.`
@@ -159,13 +162,21 @@ async function saveProfile() {
   manageError.value = ''
   manageNotice.value = ''
   try {
+    // Switching someone to order_entry clears their book — leaving the old
+    // rep code on the row would trip order_entry_empty_book (and, before
+    // that constraint, would have silently kept their account access alive).
+    const isEntry = eRole.value === 'order_entry'
     await updateProfile.mutateAsync({
       userId: selected.value.user_id,
       fullName: eFullName.value,
       role: eRole.value,
-      salesRepKey: eRepKey.value || null,
-      repGroupVendorId: eVendorId.value || null,
+      salesRepKey: isEntry ? null : eRepKey.value || null,
+      repGroupVendorId: isEntry ? null : eVendorId.value || null,
     })
+    if (isEntry) {
+      eRepKey.value = ''
+      eVendorId.value = ''
+    }
     manageNotice.value = 'Profile saved.'
   } catch (e) {
     manageError.value = (e as Error).message
@@ -259,18 +270,24 @@ async function setActive(active: boolean) {
             <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
           </select>
         </label>
-        <label class="block">
-          <span class="u-label mb-1.5 block">
-            Rep code <span class="normal-case">(their book — optional)</span>
-          </span>
-          <input v-model="cRepKey" type="text" class="field" placeholder="e.g. TANY MCDO" />
-        </label>
-        <label class="block">
-          <span class="u-label mb-1.5 block">
-            Rep group vendor <span class="normal-case">(principals only)</span>
-          </span>
-          <input v-model="cVendorId" type="text" class="field" />
-        </label>
+        <template v-if="cRole !== 'order_entry'">
+          <label class="block">
+            <span class="u-label mb-1.5 block">
+              Rep code <span class="normal-case">(their book — optional)</span>
+            </span>
+            <input v-model="cRepKey" type="text" class="field" placeholder="e.g. TANY MCDO" />
+          </label>
+          <label class="block">
+            <span class="u-label mb-1.5 block">
+              Rep group vendor <span class="normal-case">(principals only)</span>
+            </span>
+            <input v-model="cVendorId" type="text" class="field" />
+          </label>
+        </template>
+        <p v-else class="text-muted text-[13px] sm:col-span-2">
+          Order entry users have no account book — they see the entry queue,
+          not accounts, so there is no rep code to set.
+        </p>
 
         <p
           v-if="createError"
@@ -416,14 +433,20 @@ async function setActive(active: boolean) {
               <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
             </select>
           </label>
-          <label class="block">
-            <span class="u-label mb-1.5 block">Rep code</span>
-            <input v-model="eRepKey" type="text" class="field" />
-          </label>
-          <label class="block">
-            <span class="u-label mb-1.5 block">Rep group vendor</span>
-            <input v-model="eVendorId" type="text" class="field" />
-          </label>
+          <template v-if="eRole !== 'order_entry'">
+            <label class="block">
+              <span class="u-label mb-1.5 block">Rep code</span>
+              <input v-model="eRepKey" type="text" class="field" />
+            </label>
+            <label class="block">
+              <span class="u-label mb-1.5 block">Rep group vendor</span>
+              <input v-model="eVendorId" type="text" class="field" />
+            </label>
+          </template>
+          <p v-else class="text-muted text-[13px] sm:col-span-2">
+            Order entry users have no account book — saving clears any rep
+            code or rep group this profile carried.
+          </p>
           <div class="sm:col-span-2">
             <AppButton
               type="submit"

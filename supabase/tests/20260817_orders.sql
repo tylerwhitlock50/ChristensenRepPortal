@@ -411,6 +411,84 @@ select pg_temp.assert(
     = 'cancelled',
   'the owner cancels their own draft');
 
+--------------------------------------------------------------------------
+-- 8. Deactivation cuts off transitions immediately (20260817000300):
+--    a still-valid JWT must not let a deactivated rep move their orders.
+--------------------------------------------------------------------------
+-- While active: o4 gets submitted (recall/cancel target), o5 stays a draft.
+with ins as (
+  insert into public.orders (user_id, customer_key)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  returning id
+)
+insert into t_order select 'o4', id from ins;
+insert into public.order_lines
+  (order_id, price_list_id, part_id, qty, unit_price, effective_unit_price)
+values ((select id from t_order where label = 'o4'),
+        (select id from t_pl where label = 'OW general'), 'OW-PART-1', 1, 100.00, 100.00);
+select public.submit_order((select id from t_order where label = 'o4'));
+
+with ins as (
+  insert into public.orders (user_id, customer_key)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  returning id
+)
+insert into t_order select 'o5', id from ins;
+insert into public.order_lines
+  (order_id, price_list_id, part_id, qty, unit_price, effective_unit_price)
+values ((select id from t_order where label = 'o5'),
+        (select id from t_pl where label = 'OW general'), 'OW-PART-1', 1, 100.00, 100.00);
+
+reset role;
+update public.profiles set active = false
+  where user_id = (select id from t_user where label = 'rep_a');
+
+select pg_temp.become('rep_a');
+select pg_temp.assert_fails(
+  format('select public.submit_order(%s)', (select id from t_order where label='o5')),
+  'a deactivated owner cannot submit their draft');
+select pg_temp.assert_fails(
+  format('select public.recall_order(%s)', (select id from t_order where label='o4')),
+  'a deactivated owner cannot recall their submitted order');
+select pg_temp.assert_fails(
+  format('select public.cancel_order(%s)', (select id from t_order where label='o4')),
+  'a deactivated owner cannot cancel their submitted order');
+
+-- Reactivation restores the exact same call — the block was the profile.
+reset role;
+update public.profiles set active = true
+  where user_id = (select id from t_user where label = 'rep_a');
+select pg_temp.become('rep_a');
+select public.cancel_order((select id from t_order where label = 'o4'));
+select pg_temp.assert(
+  (select status from public.orders where id = (select id from t_order where label='o4'))
+    = 'cancelled',
+  'the same cancel succeeds once the profile is active again');
+
+--------------------------------------------------------------------------
+-- 9. order_entry owns no book — the constraint, not just the docs
+--    (20260817000300: my_customer_keys() never looks at role, so a
+--    populated scope field on an order_entry profile IS account access).
+--------------------------------------------------------------------------
+reset role;
+select pg_temp.assert_fails(
+  format($q$ update public.profiles set sales_rep_key = 'OW REPA'
+             where user_id = '%s' $q$,
+         (select id from t_user where label = 'entry')),
+  'an order_entry profile cannot be given a rep book');
+select pg_temp.assert_fails(
+  format($q$ update public.profiles set role = 'order_entry'
+             where user_id = '%s' $q$,
+         (select id from t_user where label = 'rep_b')),
+  'a rep with a book cannot become order_entry without clearing the book');
+
+update public.profiles set role = 'order_entry', sales_rep_key = null
+  where user_id = (select id from t_user where label = 'rep_b');
+select pg_temp.assert(
+  (select role from public.profiles
+    where user_id = (select id from t_user where label = 'rep_b')) = 'order_entry',
+  'the same role change succeeds once the book is cleared with it');
+
 reset role;
 
 do $$ begin raise notice 'ALL ORDER TESTS PASSED'; end $$;
