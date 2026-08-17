@@ -20,11 +20,14 @@
 
   Sizing
   ------
-  Views that are safe to scan unfiltered (the territory rollups) are read in
-  pages behind a hard row cap and aggregated HERE, so a 41k-account admin gets
-  a summary rather than a context overflow. Every list tool caps `limit` and
-  says so in its description; a truncated read always reports `truncated: true`
-  rather than quietly returning a prefix.
+  Ranking, filtering and whole-book totals happen in Postgres (ORDER BY …
+  LIMIT and report_territory_summary() — see 20260817120000); the nightly
+  rollups make that milliseconds. The only reads that still page a relation
+  are the SKU pivots, under a unique ORDER BY and a hard cap. Those report
+  two distinct facts a model should not have to disentangle: `has_more`
+  (more SKUs than `limit` — raise it) and `capped_at` (the source-row
+  ceiling was hit, so even the totals may undercount — narrow the filters).
+  Every list tool caps `limit` and says so in its description.
 ============================================================================*/
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
@@ -147,15 +150,16 @@ function rowOf(result: PgResult, what: string): Row | null {
 }
 
 /**
- * Reads a whole relation in pages, under a hard cap. Used only for the
- * territory rollups, which are nightly aggregate tables and are meant to be
- * scanned unfiltered (see the v_territory_account_yoy comment in 030).
+ * Reads a whole relation in pages, under a hard cap. Callers must give the
+ * page query a UNIQUE ORDER BY — unordered LIMIT/OFFSET pages can skip and
+ * duplicate rows between requests. Used only by the SKU pivots, which
+ * genuinely need the rows client-side.
  */
 async function fetchCapped(
   page: (from: number, to: number) => PromiseLike<PgResult>,
   cap: number,
   what: string,
-): Promise<{ rows: Row[]; truncated: boolean }> {
+): Promise<{ rows: Row[]; capped: boolean }> {
   const SIZE = 1000
   const rows: Row[] = []
   for (let from = 0; from < cap; from += SIZE) {
@@ -163,10 +167,10 @@ async function fetchCapped(
     const batch = rowsOf(await page(from, to), what)
     rows.push(...batch)
     // A short page is the end of the relation; a full one that lands on the
-    // cap is a genuine truncation and the loop condition reports it.
-    if (batch.length < to - from + 1) return { rows, truncated: false }
+    // cap means the ceiling was hit and rows beyond it were never read.
+    if (batch.length < to - from + 1) return { rows, capped: false }
   }
-  return { rows, truncated: true }
+  return { rows, capped: true }
 }
 
 const currentYear = () => new Date().getUTCFullYear()
@@ -324,7 +328,9 @@ const getAccount: ToolDef = {
     'vs trailing-12-month revenue, open orders and backlog, this year\'s ' +
     'goal and pace, the engagement score with its reasons, and any open ' +
     'recommendations. "Revenue" is invoiced (shipped) dollars; open order ' +
-    'value is booked but not yet shipped.',
+    'value is booked but not yet shipped. The goal\'s `goal_source` says ' +
+    'where the target comes from: "crm" = entered in the portal (overrides), ' +
+    '"erp" = the ERP customer master\'s yearly sales goal (the default).',
   inputSchema: {
     type: 'object',
     properties: { customer_key: CUSTOMER_KEY },
@@ -414,6 +420,8 @@ const getAccount: ToolDef = {
       open_recommendations: rowsOf(recs, 'recommendations').map(compact),
       hints: {
         sku_detail: 'get_account_sku_sales for what they actually buy',
+        trend: 'get_account_revenue_trend for the month-by-month line',
+        opportunities: 'get_account_sku_gaps for in-stock SKUs they do not carry',
         history: 'list_orders / list_shipments for order and shipment history',
       },
     }
@@ -446,7 +454,8 @@ const getAccountSkuSales: ToolDef = {
     const key = requireKey(args)
     const limit = clampInt(args.limit, 40, 1, 200)
 
-    const { rows, truncated } = await fetchCapped(
+    const CAP = 3000
+    const { rows, capped } = await fetchCapped(
       (from, to) =>
         db
           .from('v_sku_sales_by_account')
@@ -460,16 +469,16 @@ const getAccountSkuSales: ToolDef = {
           .order('part_key')
           .order('sales_year')
           .range(from, to),
-      3000,
+      CAP,
       'SKU sales for this account',
     )
 
-    return pivotSkuRows(rows, truncated, String(args.sort ?? 'revenue'), limit)
+    return pivotSkuRows(rows, capped ? CAP : null, String(args.sort ?? 'revenue'), limit)
   },
 }
 
 /** Shared by the account-level and territory-level SKU tools. */
-function pivotSkuRows(rows: Row[], truncated: boolean, sort: string, limit: number) {
+function pivotSkuRows(rows: Row[], cappedAt: number | null, sort: string, limit: number) {
   interface Sku {
     part_id: string | null
     part_description: string | null
@@ -534,7 +543,20 @@ function pivotSkuRows(rows: Row[], truncated: boolean, sort: string, limit: numb
     years: [...years].sort((a, b) => b - a),
     sku_count: list.length,
     returned: shown.length,
-    truncated,
+    // Two different shortfalls, reported separately: has_more means the pivot
+    // holds more SKUs than `limit` (raise it); capped_at means the source-row
+    // read hit its ceiling, so sku_count and every total may UNDERCOUNT —
+    // narrow with a query/family filter instead of raising `limit`.
+    has_more: list.length > shown.length,
+    ...(cappedAt === null
+      ? {}
+      : {
+          capped_at: cappedAt,
+          note:
+            `The read stopped at ${cappedAt} source rows, so totals and rankings ` +
+            'may be incomplete. Narrow the search (query, product_family, chambering) ' +
+            'rather than raising `limit`.',
+        }),
     skus: shown.map((sku) => ({
       ...compact({
         part_id: sku.part_id,
@@ -794,7 +816,8 @@ const getSkuSales: ToolDef = {
     const family = str(args.product_family)
     const chambering = str(args.chambering)
 
-    const { rows, truncated } = await fetchCapped(
+    const CAP = 5000
+    const { rows, capped } = await fetchCapped(
       (from, to) => {
         let q = db
           .from('v_territory_sku_sales')
@@ -811,11 +834,11 @@ const getSkuSales: ToolDef = {
         // Unique-key ordering: see get_account_sku_sales.
         return q.order('part_key').order('sales_year').range(from, to)
       },
-      5000,
+      CAP,
       'territory SKU sales',
     )
 
-    return pivotSkuRows(rows, truncated, String(args.sort ?? 'revenue'), limit)
+    return pivotSkuRows(rows, capped ? CAP : null, String(args.sort ?? 'revenue'), limit)
   },
 }
 
@@ -880,8 +903,19 @@ const listBacklog: ToolDef = {
         backlog_amount: money(rows.reduce((t, r) => t + (num(r.backlog_amount) ?? 0), 0)),
         backlog_qty: rows.reduce((t, r) => t + (num(r.backlog_qty) ?? 0), 0),
       },
-      lines: rows.map(compact),
-      note: 'Totals cover the returned rows only. Raise `limit` for a full picture.',
+      lines: rows.map((r) => {
+        const line = compact(r) as Row
+        // Open discount/rebate/credit lines (mostly non-stock, negative unit
+        // price) roll up to a negative amount. They are real order content
+        // that nets against the dollar total, but they are not product owed —
+        // flagged so a model never reads one as a SKU to be shipped.
+        if ((num(r.backlog_amount) ?? 0) < 0) line.is_credit_or_discount = true
+        return line
+      }),
+      note:
+        'Totals cover the returned rows only — raise `limit` for a full picture. ' +
+        'Rows flagged is_credit_or_discount are open credit/discount lines ' +
+        '(negative amount): they reduce the dollar backlog but are not product owed.',
     }
   },
 }
@@ -949,9 +983,11 @@ const listOrders: ToolDef = {
   name: 'list_orders',
   title: 'Orders',
   description:
-    'The 20 most recent orders for one account at header level (value, line ' +
-    'count, open lines, next promise date). Pass order_id to get that ' +
-    'order\'s lines instead. "Bookings" is the order value when placed.',
+    'Order history for one account at header level (value, line count, open ' +
+    'lines, next promise date), newest first. FULL history — page older ' +
+    'orders with `offset`. Pass order_id to get that order\'s lines instead. ' +
+    '"Bookings" is the order value when placed; negative bookings are ' +
+    'credit/return orders.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -961,6 +997,7 @@ const listOrders: ToolDef = {
         description: 'Drill into one order\'s lines instead of listing headers.',
       },
       limit: limitProp(20, 100),
+      offset: { type: 'integer', minimum: 0, default: 0, description: 'For paging older orders.' },
     },
     required: ['customer_key'],
     additionalProperties: false,
@@ -968,6 +1005,7 @@ const listOrders: ToolDef = {
   async handler(args, { db }) {
     const key = requireKey(args)
     const limit = clampInt(args.limit, 20, 1, 100)
+    const offset = clampInt(args.offset, 0, 0, 100_000)
     const orderId = str(args.order_id)
 
     if (orderId) {
@@ -987,16 +1025,22 @@ const listOrders: ToolDef = {
       .from('v_account_recent_order_headers')
       .select(
         'order_id, order_date, order_state, order_status_desc, line_count, order_qty, ' +
-          'bookings, open_line_count, backlog_qty, backlog_amount, next_promise_date',
+          'bookings, open_line_count, backlog_qty, backlog_amount, next_promise_date, ' +
+          'customer_po_number',
+        { count: 'exact' },
       )
       .eq('customer_key', key)
+      // order_id as the unique tiebreak so same-day orders page stably.
       .order('order_date', { ascending: false, nullsFirst: false })
-      .limit(limit)
+      .order('order_id', { ascending: false })
+      .range(offset, offset + limit - 1)
 
+    const rows = rowsOf(headers, 'the order history')
     return {
       customer_key: key,
-      orders: rowsOf(headers, 'the order history').map(compact),
-      note: 'The view keeps the 20 most recent orders per account.',
+      order_count: headers.count ?? rows.length,
+      offset,
+      orders: rows.map(compact),
     }
   },
 }
@@ -1005,15 +1049,17 @@ const listShipments: ToolDef = {
   name: 'list_shipments',
   title: 'Shipments',
   description:
-    'The 20 most recent shipments (packlists) for one account, with tracking ' +
-    'numbers and delivery dates. Pass packlist_id for that shipment\'s lines. ' +
-    'Answers "did their order ship" and "where is it".',
+    'Shipments (packlists) for one account, newest first, with tracking ' +
+    'numbers and delivery dates. FULL history — page older shipments with ' +
+    '`offset`. Pass packlist_id for that shipment\'s lines. Answers "did ' +
+    'their order ship" and "where is it".',
   inputSchema: {
     type: 'object',
     properties: {
       customer_key: CUSTOMER_KEY,
       packlist_id: { type: 'string', description: 'Drill into one packlist\'s lines.' },
       limit: limitProp(20, 100),
+      offset: { type: 'integer', minimum: 0, default: 0, description: 'For paging older shipments.' },
     },
     required: ['customer_key'],
     additionalProperties: false,
@@ -1021,6 +1067,7 @@ const listShipments: ToolDef = {
   async handler(args, { db }) {
     const key = requireKey(args)
     const limit = clampInt(args.limit, 20, 1, 100)
+    const offset = clampInt(args.offset, 0, 0, 100_000)
     const packlist = str(args.packlist_id)
 
     if (packlist) {
@@ -1042,15 +1089,192 @@ const listShipments: ToolDef = {
         'packlist_id, ship_date, actual_delivery_date, shipment_state, ' +
           'shipper_status_desc, tracking_number, ship_via, order_ids, line_count, ' +
           'shipped_qty, shipped_revenue',
+        { count: 'exact' },
       )
       .eq('customer_key', key)
+      // packlist_id as the unique tiebreak so same-day shipments page stably.
       .order('ship_date', { ascending: false, nullsFirst: false })
-      .limit(limit)
+      .order('packlist_id', { ascending: false })
+      .range(offset, offset + limit - 1)
+
+    const rows = rowsOf(headers, 'the shipment history')
+    return {
+      customer_key: key,
+      shipment_count: headers.count ?? rows.length,
+      offset,
+      shipments: rows.map(compact),
+    }
+  },
+}
+
+const lookupOrder: ToolDef = {
+  name: 'lookup_order',
+  title: 'Find an order by number',
+  description:
+    'Cross-account order lookup by OUR order number, the dealer\'s PO ' +
+    'number, or a tracking number — for "where is PO 44182?" when you do ' +
+    'not know which account it belongs to. Substring match, newest first; ' +
+    '`matched_on` says which field hit. Drill into lines with ' +
+    'list_orders(customer_key, order_id).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      term: {
+        type: 'string',
+        description: 'Order number, dealer PO number, or tracking number (full or partial).',
+      },
+      limit: limitProp(25, 100),
+    },
+    required: ['term'],
+    additionalProperties: false,
+  },
+  async handler(args, { db }) {
+    const term = str(args.term)
+    if (!term) {
+      throw new ToolError(
+        '`term` is required — an order number, dealer PO number, or tracking number.',
+      )
+    }
+    const limit = clampInt(args.limit, 25, 1, 100)
+
+    // SECURITY INVOKER RPC (035): RLS on the erp facts scopes the search to
+    // the caller's book, same as every view here.
+    const result = await db.rpc('lookup_orders', { p_term: term, p_limit: limit })
+    const rows = rowsOf(result, 'the order lookup')
+
+    return {
+      term,
+      matched: rows.length,
+      orders: rows.map(compact),
+      ...(rows.length === 0
+        ? {
+            note:
+              'No order in your book matches. The number may be mistyped, or the ' +
+              'order may belong to an account outside your territory.',
+          }
+        : {}),
+    }
+  },
+}
+
+const getAccountRevenueTrend: ToolDef = {
+  name: 'get_account_revenue_trend',
+  title: 'Monthly revenue trend',
+  description:
+    'Invoiced revenue by month for one account, trailing 24 months — the ' +
+    'trend line behind get_account\'s YTD totals: seasonality, momentum, ' +
+    'and when a slowdown actually started. Months with no invoices are ' +
+    'omitted (they are zeros).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      customer_key: CUSTOMER_KEY,
+      months: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 24,
+        default: 24,
+        description: 'How many trailing months to return (max 24 — the view\'s window).',
+      },
+    },
+    required: ['customer_key'],
+    additionalProperties: false,
+  },
+  async handler(args, { db }) {
+    const key = requireKey(args)
+    const months = clampInt(args.months, 24, 1, 24)
+
+    const result = await db
+      .from('v_account_revenue_monthly')
+      .select('month, revenue, invoice_count')
+      .eq('customer_key', key)
+      .order('month', { ascending: false })
+      .limit(months)
+
+    const rows = rowsOf(result, 'the monthly revenue trend')
+    return {
+      customer_key: key,
+      months_returned: rows.length,
+      trend: rows.map((r) =>
+        compact({
+          month: String(r.month ?? '').slice(0, 7),
+          revenue: money(r.revenue),
+          invoice_count: num(r.invoice_count),
+        }),
+      ),
+      note:
+        'Invoiced (shipped) dollars, memos excluded. A month absent from the ' +
+        'list had zero invoices.',
+    }
+  },
+}
+
+const getAccountSkuGaps: ToolDef = {
+  name: 'get_account_sku_gaps',
+  title: 'Selling opportunities',
+  description:
+    'SKUs in stock TODAY that this account does not buy, ranked by how many ' +
+    'dealers company-wide do — the "everyone else stocks this and we can ' +
+    'ship it now" pitch list. `bought_before` true with an old date is the ' +
+    '"they used to carry this" conversation. Units and dealer counts only; ' +
+    'finished firearms only.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      customer_key: CUSTOMER_KEY,
+      months: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 36,
+        default: 12,
+        description: 'Window for the company-wide dealer counts, in months back.',
+      },
+      min_dealers: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 100,
+        default: 4,
+        description: 'Only SKUs at least this many dealers buy — filters out one-off specials.',
+      },
+      limit: limitProp(25, 100),
+    },
+    required: ['customer_key'],
+    additionalProperties: false,
+  },
+  async handler(args, { db }) {
+    const key = requireKey(args)
+    const months = clampInt(args.months, 12, 1, 36)
+    const minDealers = clampInt(args.min_dealers, 4, 1, 100)
+    const limit = clampInt(args.limit, 25, 1, 100)
+
+    // DEFINER RPC (036): dealer breadth is a company-wide count no rep's RLS
+    // would return. It verifies the caller's access to this account FIRST and
+    // returns nothing otherwise — so an empty result and a wrong key look the
+    // same, which the note below explains.
+    const result = await db.rpc('report_account_sku_gaps', {
+      p_customer_key: key,
+      p_months: months,
+      p_min_dealers: minDealers,
+      p_limit: limit,
+    })
+    const rows = rowsOf(result, 'the SKU gap report')
 
     return {
       customer_key: key,
-      shipments: rowsOf(headers, 'the shipment history').map(compact),
-      note: 'The view keeps the 20 most recent packlists per account.',
+      window_months: months,
+      min_dealers: minDealers,
+      opportunities: rows.map(compact),
+      ...(rows.length === 0
+        ? {
+            note:
+              'Empty means either no in-stock SKU clears the min_dealers bar, or ' +
+              'this customer_key is not in your book — verify it with search_accounts.',
+          }
+        : {
+            note:
+              'ats_qty is shippable today. dealer_count / units_sold are company-wide ' +
+              'over the window — units only, never dollars.',
+          }),
     }
   },
 }
@@ -1063,7 +1287,10 @@ const getGoalProgress: ToolDef = {
     'plus the accounts furthest behind. With one: that account only. Pace is ' +
     'SEASONAL where prior-year history exists (`pace_basis`), so a dealer ' +
     'that books its year in the spring is not flagged behind every June. ' +
-    'Negative `gap_to_pace` means behind.',
+    'Negative `gap_to_pace` means behind. Every goal carries `goal_source`: ' +
+    '"crm" = a target entered in the portal (overrides), "erp" = the ERP ' +
+    'customer master\'s yearly sales goal — the fallback when no portal ' +
+    'target exists, current year only.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1392,6 +1619,8 @@ const ALL_TOOLS: ToolDef[] = [
   searchAccounts,
   getAccount,
   getAccountSkuSales,
+  getAccountRevenueTrend,
+  getAccountSkuGaps,
   getTerritorySummary,
   listTerritoryAccounts,
   getSkuSales,
@@ -1399,6 +1628,7 @@ const ALL_TOOLS: ToolDef[] = [
   checkAvailability,
   listOrders,
   listShipments,
+  lookupOrder,
   getGoalProgress,
   listRecommendations,
   listAccountActivity,

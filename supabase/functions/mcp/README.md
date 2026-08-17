@@ -7,7 +7,7 @@ can point Claude at their own sales data and ask questions in English.
 https://<project-ref>.supabase.co/functions/v1/mcp
 ```
 
-Read-only. Sixteen tools. No new access model: a token identifies a user, and
+Read-only. Nineteen tools. No new access model: a token identifies a user, and
 that user's existing RLS decides everything they can see.
 
 ---
@@ -122,6 +122,8 @@ means for every other answer.
 | `search_accounts` | `v_account_list` | Name → `customer_key` |
 | `get_account` | `v_account_summary`, `account_signals`, `v_account_goal_progress`, `recommendations` | Everything about one account, in one call |
 | `get_account_sku_sales` | `v_sku_sales_by_account` | What they buy, pivoted by year — dropped SKUs, mix shift |
+| `get_account_revenue_trend` | `v_account_revenue_monthly` | The month-by-month line — seasonality, momentum, when a slowdown started |
+| `get_account_sku_gaps` | `report_account_sku_gaps()` | In-stock SKUs this dealer doesn't carry, ranked by dealer breadth |
 | `get_territory_summary` | `v_territory_account_yoy`, `v_my_goal_rollup` | How am I doing; growers, decliners, gone quiet |
 | `list_territory_accounts` | `v_territory_account_yoy` | Rank the book by any revenue/backlog measure |
 | `get_sku_sales` | `v_territory_sku_sales` | What sells across the whole territory |
@@ -129,6 +131,7 @@ means for every other answer.
 | `check_availability` | `v_ats_list` | Company-wide stock / available-to-sell |
 | `list_orders` | `v_account_recent_order_headers`, `v_account_order_lines` | Order history and one order's lines |
 | `list_shipments` | `v_account_recent_shipment_headers`, `v_account_shipment_lines` | Did it ship, where is it, tracking number |
+| `lookup_order` | `lookup_orders()` | Which order is PO 44182 / tracking 1Z…, across the whole book |
 | `get_goal_progress` | `v_account_goal_progress`, `v_my_goal_rollup` | Goal attainment and seasonal pace |
 | `list_recommendations` | `recommendations` | The generated work list, with why-now |
 | `list_account_activity` | `notes`, `actions`, `visits` | What the team has actually done there |
@@ -148,11 +151,12 @@ Two deliberate omissions:
 
 ### Context sizing
 
-`tools/list` is ~3.5k tokens. Every list tool caps `limit`; the territory
-rollups are paged behind a 5,000-row cap and **aggregated in the function**, so
-an admin with 41k accounts gets a summary rather than a context overflow. A read
-that hits the cap reports `truncated: true` — it never silently returns a
-prefix. Nulls are stripped from every row and money is rounded to cents.
+`tools/list` is ~4k tokens. Every list tool caps `limit`. Ranking and totals
+happen in Postgres; the only client-side aggregation left is the SKU pivots,
+which page under a unique ORDER BY and a hard row cap and report `has_more`
+(more SKUs than `limit`) separately from `capped_at` (the source-row ceiling
+was hit — totals may undercount). Nothing silently returns a prefix. Nulls are
+stripped from every row and money is rounded to cents.
 
 ---
 
@@ -185,7 +189,7 @@ or an unknown tool name.
 ```
 mcp/
 ├── index.ts        transport, JSON-RPC dispatch, auth handover
-├── tools.ts        the sixteen tools + the registry
+├── tools.ts        the nineteen tools + the registry
 └── README.md       this file
 ../_shared/mcpAuth.ts   token extraction, resolution, JWT minting
 ```
