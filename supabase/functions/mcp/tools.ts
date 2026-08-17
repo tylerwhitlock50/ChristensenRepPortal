@@ -819,6 +819,119 @@ const getSkuSales: ToolDef = {
   },
 }
 
+const getSalesSummary: ToolDef = {
+  name: 'get_sales_summary',
+  title: 'Sales by month',
+  description:
+    'Invoiced revenue by calendar month — THE tool for "what are my sales ' +
+    'this month", "last month vs the month before", "this quarter", and ' +
+    '"how am I trending". Whole book by default; pass customer_key for one ' +
+    'account. The newest month is partial up to `data_through` (whoami). ' +
+    'Monthly grain only — for finer or custom windows, say so and use the ' +
+    'series to approximate.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      customer_key: {
+        ...CUSTOMER_KEY,
+        description: 'Optional — one account instead of the whole book.',
+      },
+      months: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 48,
+        default: 25,
+        description:
+          'How many months back, newest month included. 25 (the default) is ' +
+          'enough for every year-over-year figure in `summary`.',
+      },
+    },
+    additionalProperties: false,
+  },
+  async handler(args, { db }) {
+    const months = clampInt(args.months, 25, 1, 48)
+    const key = str(args.customer_key)
+
+    const result = await db.rpc('report_sales_by_month', {
+      p_customer_key: key,
+      p_months: months,
+    })
+    const rows = rowsOf(result, 'monthly sales')
+
+    // Index by 'yyyy-mm' for the summary lookups below.
+    const byMonth = new Map<string, Row>()
+    for (const r of rows) byMonth.set(String(r.sales_month).slice(0, 7), r)
+    const rev = (ym: string) => num(byMonth.get(ym)?.revenue)
+
+    const now = new Date()
+    const ym = (y: number, m: number) => {
+      // m may run negative or past 11; Date normalises it.
+      const d = new Date(Date.UTC(y, m, 1))
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+    }
+    const year = now.getUTCFullYear()
+    const month = now.getUTCMonth() // 0-based
+
+    // Sum of the months from `fromMonth` (0-based) through `month` in `y`,
+    // null when none of them are inside the requested window.
+    const span = (y: number, fromMonth: number): number | null => {
+      let total = 0
+      let seen = false
+      for (let m = fromMonth; m <= month; m++) {
+        const v = rev(ym(y, m))
+        if (v !== null) {
+          total += v
+          seen = true
+        }
+      }
+      return seen ? total : null
+    }
+
+    const thisMonth = rev(ym(year, month))
+    const lastMonth = rev(ym(year, month - 1))
+    const sameMonthLastYear = rev(ym(year - 1, month))
+    const quarterStart = month - (month % 3)
+    const qtd = span(year, quarterStart)
+    const qtdLastYear = span(year - 1, quarterStart)
+    const ytd = span(year, 0)
+    const ytdLastYear = span(year - 1, 0)
+
+    return {
+      scope: key ?? 'whole book',
+      months_requested: months,
+      summary: {
+        this_month: money(thisMonth),
+        this_month_note: 'Partial — through the last nightly load (see whoami data_through).',
+        last_month: money(lastMonth),
+        same_month_last_year: money(sameMonthLastYear),
+        this_month_vs_last_year_pct:
+          thisMonth !== null && sameMonthLastYear ? pct(thisMonth - sameMonthLastYear, sameMonthLastYear) : null,
+        quarter_to_date: money(qtd),
+        quarter_to_date_last_year: money(qtdLastYear),
+        year_to_date: money(ytd),
+        year_to_date_last_year: money(ytdLastYear),
+        ytd_vs_last_year_pct:
+          ytd !== null && ytdLastYear ? pct(ytd - ytdLastYear, ytdLastYear) : null,
+      },
+      // Oldest first, so a model can read the trend left to right.
+      months: rows.map((r) =>
+        compact({
+          month: String(r.sales_month).slice(0, 7),
+          revenue: money(r.revenue),
+          qty: num(r.qty),
+          invoices: num(r.invoice_count),
+          accounts: key ? undefined : num(r.account_count),
+        }),
+      ),
+      note:
+        'Revenue is invoiced (shipped) dollars per calendar month. Months ' +
+        'with no invoices are simply absent from the series. YTD/QTD ' +
+        'comparisons are month-aligned, not day-aligned — for day-aligned ' +
+        'prior-YTD use get_territory_summary or get_account.',
+    }
+  },
+}
+
 const listBacklog: ToolDef = {
   name: 'list_backlog',
   title: 'Open backlog',
@@ -1395,6 +1508,7 @@ const ALL_TOOLS: ToolDef[] = [
   getTerritorySummary,
   listTerritoryAccounts,
   getSkuSales,
+  getSalesSummary,
   listBacklog,
   checkAvailability,
   listOrders,
