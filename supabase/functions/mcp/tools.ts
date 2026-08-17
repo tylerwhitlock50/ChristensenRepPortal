@@ -608,7 +608,8 @@ function pivotSkuRows(rows: Row[], cappedAt: number | null, sort: string, limit:
 const TERRITORY_COLUMNS =
   'customer_key, customer_name, sold_to_city, sold_to_state, yearly_sales_goal, ' +
   'revenue_ytd, revenue_prior_ytd, revenue_trailing_12m, last_invoice_date, ' +
-  'open_order_value, backlog_qty, backlog_amount, yoy_change_amount, yoy_change_pct'
+  'open_order_value, backlog_qty, backlog_amount, yoy_change_amount, yoy_change_pct, ' +
+  'first_invoice_date'
 
 // The sort keys list_territory_accounts accepts. Named once so the schema the
 // model reads and the check the handler runs cannot drift apart. Every entry
@@ -621,6 +622,9 @@ const TERRITORY_SORTS = [
   'yoy_change_pct',
   'open_order_value',
   'backlog_amount',
+  // desc = newest accounts first (the "who is new" question); accounts that
+  // have never invoiced sort last in either direction (nulls last).
+  'first_invoice_date',
 ] as const
 type TerritorySort = (typeof TERRITORY_SORTS)[number]
 
@@ -637,6 +641,7 @@ function territoryRow(r: Row) {
     open_order_value: money(r.open_order_value),
     backlog_amount: money(r.backlog_amount),
     last_invoice_date: r.last_invoice_date,
+    first_invoice_date: r.first_invoice_date,
   })
 }
 
@@ -752,7 +757,10 @@ const listTerritoryAccounts: ToolDef = {
   description:
     'The book as a ranked list — top accounts by YTD revenue, worst YoY ' +
     'decliners, biggest backlog, and so on. Answers "which accounts should I ' +
-    'call this week" better than search_accounts, which sorts by name.',
+    'call this week" better than search_accounts, which sorts by name. ' +
+    'sort "first_invoice_date" desc answers "which accounts are NEW" — ' +
+    'first_invoice_date is the account\'s first invoice ever, absent = ' +
+    'never invoiced (a pure prospect).',
   inputSchema: {
     type: 'object',
     properties: {
