@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import TaskQuickAdd from '@/components/TaskQuickAdd.vue'
+import { useSessionStore } from '@/stores/session'
 import { useAccountTasks, useToggleTask, type Task } from '@/composables/useTasks'
 import { daysUntilDue, dueLabel } from '@/lib/format'
 
@@ -20,6 +21,8 @@ import { daysUntilDue, dueLabel } from '@/lib/format'
  * from, so there is nothing to backfill.
  */
 const props = defineProps<{ customerKey: string }>()
+
+const session = useSessionStore()
 
 const query = useAccountTasks(computed(() => props.customerKey))
 const tasks = computed<Task[]>(() => query.data.value ?? [])
@@ -51,6 +54,7 @@ async function complete(task: Task) {
        to say so or it reads as "this account has none". -->
   <AppCard title="Your follow-ups here">
     <TaskQuickAdd
+      v-if="session.canWrite"
       :customer-key="customerKey"
       placeholder="Remind me about this account…"
     />
@@ -79,6 +83,7 @@ async function complete(task: Task) {
             class="flex items-start gap-3 py-3 first:pt-0 last:pb-0"
           >
             <button
+              v-if="session.canWrite"
               type="button"
               class="tap-target border-line-2 flex w-12 shrink-0 items-center justify-center rounded-[2px] border"
               :disabled="busyId === task.id"

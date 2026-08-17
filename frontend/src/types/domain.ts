@@ -8,7 +8,7 @@
  * are shared with the Edge Functions.
  */
 
-export const ROLES = ['admin', 'rep'] as const
+export const ROLES = ['admin', 'rep', 'order_entry'] as const
 export type Role = (typeof ROLES)[number]
 
 export const REC_STATUSES = ['open', 'acted', 'closed', 'dismissed'] as const
@@ -119,6 +119,49 @@ export const DEACTIVATION_REASON_LABELS: Record<DeactivationReason, string> = {
   low_potential: 'Not worth the calls',
   duplicate_account: 'Duplicate account',
   other: 'Something else',
+}
+
+/**
+ * Order lifecycle — orders.status (20260817000200_orders.sql). Drafts are
+ * the only state a rep edits directly; every other move is a transition RPC.
+ */
+export const ORDER_STATUSES = [
+  'draft',
+  'submitted',
+  'entered',
+  'verified',
+  'discrepancy',
+  'cancelled',
+] as const
+export type OrderStatus = (typeof ORDER_STATUSES)[number]
+
+export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
+  draft: 'Draft',
+  submitted: 'Submitted',
+  entered: 'Entered in ERP',
+  verified: 'Verified',
+  discrepancy: 'Discrepancy',
+  cancelled: 'Cancelled',
+}
+
+/** QC finding kinds — order_qc_results.result (20260817000200_orders.sql). */
+export const QC_RESULTS = [
+  'customer_mismatch',
+  'price_mismatch',
+  'qty_mismatch',
+  'missing_in_erp',
+  'extra_in_erp',
+  'order_not_found',
+] as const
+export type QcResult = (typeof QC_RESULTS)[number]
+
+export const QC_RESULT_LABELS: Record<QcResult, string> = {
+  customer_mismatch: 'Wrong customer in ERP',
+  price_mismatch: 'Price differs',
+  qty_mismatch: 'Quantity differs',
+  missing_in_erp: 'Missing from ERP order',
+  extra_in_erp: 'Extra line in ERP order',
+  order_not_found: 'ERP order not found',
 }
 
 /** Mission scope options — mission_batches.scope_type (016_missions_admin.sql). */

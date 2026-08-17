@@ -51,6 +51,8 @@ export const qk = {
     backlog: () => ['intel', 'backlog'] as const,
     ats: () => ['intel', 'ats'] as const,
     global: (months: number) => ['intel', 'global', months] as const,
+    /** public.account_signals across the book — the nightly behaviour scores. */
+    signals: () => ['intel', 'signals'] as const,
   },
   /** Cached AI Action output (public.ai_briefs). subject '' = territory. */
   aiBrief: (action: string, subject = '') =>
@@ -74,6 +76,8 @@ export const qk = {
     skuSales: (key: string) => ['account', key, 'sku-sales'] as const,
     backlogSku: (key: string) => ['account', key, 'backlog-sku'] as const,
     goal: (key: string) => ['account', key, 'goal'] as const,
+    signals: (key: string) => ['account', key, 'signals'] as const,
+    skuGaps: (key: string) => ['account', key, 'sku-gaps'] as const,
   },
   /**
    * Rep-entered account goals (migration 023). The per-account read lives
@@ -99,6 +103,30 @@ export const qk = {
     forAccount: (userId: string, key: string) =>
       ['tasks', 'account', userId, key] as const,
   },
+  /**
+   * Published price lists (20260817000100): the downloadable approved
+   * sheets and the structured lists the order writer sells from. Global,
+   * not account-scoped — every rep reads the same lists.
+   */
+  priceLists: {
+    root: () => ['price-lists'] as const,
+    files: () => ['price-lists', 'files'] as const,
+    lists: () => ['price-lists', 'lists'] as const,
+    items: (listId: number) => ['price-lists', 'items', listId] as const,
+    effective: (customerType: string) =>
+      ['price-lists', 'effective', customerType] as const,
+  },
+  /**
+   * Portal-written orders (20260817000200). List reads are scoped by user
+   * id for the same shared-truck-iPad reason as `tasks`; the queue is the
+   * entry/admin view over everyone's post-draft orders.
+   */
+  orders: {
+    root: () => ['orders'] as const,
+    list: (userId: string) => ['orders', 'list', userId] as const,
+    detail: (id: number) => ['orders', 'detail', id] as const,
+    queue: () => ['orders', 'queue'] as const,
+  },
   admin: {
     execution: () => ['admin', 'execution'] as const,
     goals: () => ['admin', 'goals'] as const,
@@ -112,6 +140,9 @@ export const qk = {
     scoreSettings: () => ['admin', 'score-settings'] as const,
     rules: () => ['admin', 'rules'] as const,
     repGoals: () => ['admin', 'rep-goals'] as const,
+    /** Reports tab (20260816120000): channel and rep-group rollups. */
+    channels: () => ['admin', 'channels'] as const,
+    repGroupPerformance: () => ['admin', 'rep-group-performance'] as const,
   },
 } as const
 

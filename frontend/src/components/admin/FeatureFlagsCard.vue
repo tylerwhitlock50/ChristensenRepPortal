@@ -28,6 +28,7 @@ const LABELS: Record<string, string> = {
   'feature.visits': 'Visit surveys & photos',
   'feature.tasks': 'Personal tasks',
   'feature.action_logging': 'Action logging & notes',
+  'feature.orders': 'Order writer & entry queue',
 }
 
 function label(row: AppSettingRow): string {

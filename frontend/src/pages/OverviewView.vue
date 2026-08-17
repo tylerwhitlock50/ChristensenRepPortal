@@ -18,6 +18,7 @@ import {
   useTerritoryRecentOrders,
   worthInvestigating,
 } from '@/composables/useOverview'
+import { useTerritorySignals } from '@/composables/useAccountSignals'
 import { useAiBrief, useGenerateAiBrief } from '@/composables/useAiBrief'
 import { deltaLabel } from '@/composables/useAccountMetrics'
 import SalesBriefCard from '@/components/SalesBriefCard.vue'
@@ -38,11 +39,18 @@ const session = useSessionStore()
 
 const accountsQuery = useTerritoryAccounts()
 const recentQuery = useTerritoryRecentOrders()
+/* The nightly behaviour scores (public.account_signals). Loads alongside the
+   territory rows rather than gating them: if it is slow, missing, or 019 was
+   never applied, the observations below fall back to the flat dormancy rule
+   and the page is exactly what it was before. */
+const signalsQuery = useTerritorySignals()
 
 const rows = computed(() => accountsQuery.data.value ?? [])
 const totals = computed(() => territoryTotals(rows.value))
 const movers = computed(() => largestMovers(rows.value))
-const observations = computed(() => worthInvestigating(rows.value))
+const observations = computed(() =>
+  worthInvestigating(rows.value, 6, new Date(), signalsQuery.data.value ?? {}),
+)
 
 /**
  * `largestMovers` returns up and down separately and the card used to
@@ -100,6 +108,9 @@ watch(
   () => briefQuery.isSuccess.value,
   (ready) => {
     if (!ready) return
+    // Generating caches a row, so it is a write. Viewing as a rep shows the
+    // rep's existing brief and stops there.
+    if (!session.canWrite) return
     const today = format(new Date(), 'yyyy-MM-dd')
     if (lastAutoBrief === today) return
     const generatedAt = briefQuery.brief.value?.generated_at
@@ -234,8 +245,8 @@ const goalSub = computed(() => {
         <AppCard title="Worth investigating" :padded="false">
           <div v-if="observations.length === 0" class="p-4">
             <p class="text-muted text-[15px]">
-              Nothing stands out right now — no dormant accounts, sharp
-              declines, or large backorder positions.
+              Nothing stands out right now — nobody overdue against their usual
+              ordering rhythm, no sharp declines, no large backorder positions.
             </p>
           </div>
           <ul v-else class="divide-line divide-y">

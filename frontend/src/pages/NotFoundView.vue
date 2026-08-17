@@ -11,8 +11,11 @@ import AppButton from '@/components/ui/AppButton.vue'
       <h1 class="u-display text-ink mt-2 text-4xl">
         That page doesn't exist
       </h1>
-      <RouterLink :to="{ name: 'today' }" class="mt-6 inline-block">
-        <AppButton variant="secondary">Back to today</AppButton>
+      <!-- 'overview', not 'today': /today is gated on feature.recommendations
+           and ships disabled, so this button both bounced through the guard
+           and named a page most reps have never seen. -->
+      <RouterLink :to="{ name: 'overview' }" class="mt-6 inline-block">
+        <AppButton variant="secondary">Back to overview</AppButton>
       </RouterLink>
     </div>
   </div>

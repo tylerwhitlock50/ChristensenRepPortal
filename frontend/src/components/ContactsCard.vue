@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useSessionStore } from '@/stores/session'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -14,6 +15,7 @@ import {
 
 const props = defineProps<{ customerKey: string }>()
 
+const session = useSessionStore()
 const key = computed(() => props.customerKey)
 const contacts = useContacts(key)
 const rows = computed(() => contacts.data.value ?? [])
@@ -108,7 +110,7 @@ function telHref(phone: string): string {
           {{ rows.length === 1 ? '1 person' : `${rows.length} people` }}
         </p>
       </div>
-      <AppButton v-if="!adding" variant="secondary" @click="startAdd">
+      <AppButton v-if="!adding && session.canWrite" variant="secondary" @click="startAdd">
         Add contact
       </AppButton>
     </template>
@@ -131,7 +133,7 @@ function telHref(phone: string): string {
       @retry="contacts.refetch()"
     >
       <template #empty-action>
-        <AppButton @click="startAdd">Add the first contact</AppButton>
+        <AppButton v-if="session.canWrite" @click="startAdd">Add the first contact</AppButton>
       </template>
 
       <ul class="divide-y divide-line">
@@ -153,6 +155,10 @@ function telHref(phone: string): string {
                   <span class="truncate">{{ c.name }}</span>
                   <AppBadge v-if="c.is_primary" tone="neutral">Primary</AppBadge>
                   <AppBadge v-if="c.source === 'erp'" tone="neutral">ERP</AppBadge>
+                  <!-- The ERP's contact-preference flags (migration 034).
+                       High tone: this is an instruction, not a detail. -->
+                  <AppBadge v-if="c.do_not_call" tone="high">Do not call</AppBadge>
+                  <AppBadge v-if="c.do_not_email" tone="high">Do not email</AppBadge>
                 </p>
                 <p v-if="subtitle(c)" class="mt-0.5 text-sm break-words text-muted">
                   {{ subtitle(c) }}
@@ -162,8 +168,11 @@ function telHref(phone: string): string {
                 </p>
               </div>
 
+              <!-- A flagged number keeps its digits visible (the rep may still
+                   need them for a different, permitted reason) but loses the
+                   one-tap action, so dialling can never be an accident. -->
               <a
-                v-if="c.phone"
+                v-if="c.phone && !c.do_not_call"
                 :href="telHref(c.phone)"
                 class="tap-target inline-flex shrink-0 items-center rounded-[2px] border border-line-2 bg-surface px-3 text-sm font-medium text-ink"
               >
@@ -173,14 +182,14 @@ function telHref(phone: string): string {
 
             <div class="mt-2 flex flex-wrap items-center gap-2">
               <a
-                v-if="c.email"
+                v-if="c.email && !c.do_not_email"
                 :href="`mailto:${c.email}`"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
               >
                 Email
               </a>
               <button
-                v-if="c.source === 'rep'"
+                v-if="c.source === 'rep' && session.canWrite"
                 type="button"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                 @click="startEdit(c)"
@@ -188,7 +197,7 @@ function telHref(phone: string): string {
                 Edit
               </button>
               <button
-                v-if="c.source === 'rep' && canDelete && !isConfirmingDelete(c)"
+                v-if="c.source === 'rep' && canDelete && session.canWrite && !isConfirmingDelete(c)"
                 type="button"
                 class="tap-target inline-flex items-center px-1 text-sm font-medium text-danger underline underline-offset-2"
                 @click="askDelete(c)"

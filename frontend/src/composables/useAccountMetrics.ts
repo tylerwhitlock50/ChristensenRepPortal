@@ -1,5 +1,5 @@
 import { computed, unref, type MaybeRef } from 'vue'
-import { useQuery } from '@tanstack/vue-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { format, startOfMonth, subMonths } from 'date-fns'
 import { supabase } from '@/lib/supabase'
@@ -95,6 +95,16 @@ export interface AccountOrderHeaderRow {
   backlog_amount: number
   /** Earliest promise date among the still-open lines. */
   next_promise_date: string | null
+  /** Recency rank within the account, 1 = newest. The paging cursor. */
+  rn: number
+  /**
+   * The dealer's own PO number(s) — migration 035. Comma-joined when an order
+   * consolidates several POs, because showing one of two is how a rep tells a
+   * dealer their PO never arrived when it did.
+   */
+  customer_po_number: string | null
+  /** Earliest desired ship date among open lines — "est. production". */
+  next_desired_ship_date: string | null
 }
 
 /** One row per PACKLIST — public.v_account_recent_shipment_headers. */
@@ -113,6 +123,8 @@ export interface AccountShipmentHeaderRow {
   line_count: number
   shipped_qty: number
   shipped_revenue: number
+  /** Recency rank within the account, 1 = newest. The paging cursor. */
+  rn: number
 }
 
 /** One order's lines, for the drill-in modal — public.v_account_order_lines. */
@@ -129,6 +141,15 @@ export interface AccountOrderLineRow {
   bookings: number | null
   backlog_qty: number | null
   is_backlog_line: boolean | null
+  /** The dealer's PO number for this line — migration 035. */
+  customer_po_number: string | null
+  /** The ERP's desired ship date — shown to reps as "est. production". */
+  desired_ship_date: string | null
+  /**
+   * SEMI-ADDITIVE: cumulative on the line, not a per-event quantity. Display
+   * it; never sum it across lines (sales_semantic_model.md §1 rule 7).
+   */
+  total_shipped_qty_to_date: number | null
 }
 
 /** One packlist's lines — public.v_account_shipment_lines. */
@@ -264,21 +285,43 @@ export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
   })
 }
 
-/** The 20 most recent ORDERS (header grain) for the account card. */
+/**
+ * Orders and shipments are PAGED as of migration 035.
+ *
+ * 018 wrote `where r.rn <= 20` into the views, which made an account's 21st
+ * order unreachable by any query — there was no paging to fall back on, and
+ * a rep chasing something from last season simply could not get to it. 035
+ * uncapped the views and moved the limit here, where a "Load more" can
+ * extend it, exactly as v_account_list / useAccountSearch already work.
+ *
+ * The consequence to respect: an unbounded select now returns EVERY order for
+ * the account. Both queries below must keep sending .range().
+ */
+export const ORDERS_PAGE_SIZE = 20
+
+/** Recent ORDERS (header grain), newest first, paged. */
 export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: computed(() => accountMetricsKeys.orderHeaders(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
-    queryFn: async (): Promise<AccountOrderHeaderRow[]> => {
+    initialPageParam: 0,
+    getNextPageParam: (last: AccountOrderHeaderRow[], all) =>
+      last.length < ORDERS_PAGE_SIZE ? undefined : all.length,
+    queryFn: async ({ pageParam }): Promise<AccountOrderHeaderRow[]> => {
+      const page = pageParam as number
+      const from = page * ORDERS_PAGE_SIZE
       const { data, error } = await db
         .from('v_account_recent_order_headers')
         .select('*')
         .eq('customer_key', key.value) // required — see the file header
-        .order('order_date', { ascending: false, nullsFirst: false })
-        .order('order_id', { ascending: false })
+        // rn is the view's own recency rank and a total order within the
+        // account, so pages can neither overlap nor skip the way they could
+        // on order_date alone (many orders share a date).
+        .order('rn', { ascending: true })
+        .range(from, from + ORDERS_PAGE_SIZE - 1)
       if (error) throw asDisplayError(error)
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
         customer_key: String(r.customer_key),
@@ -293,26 +336,35 @@ export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
         backlog_qty: num(r.backlog_qty),
         backlog_amount: num(r.backlog_amount),
         next_promise_date: (r.next_promise_date as string | null) ?? null,
+        rn: num(r.rn),
+        customer_po_number: (r.customer_po_number as string | null) ?? null,
+        next_desired_ship_date:
+          (r.next_desired_ship_date as string | null) ?? null,
       }))
     },
   })
 }
 
-/** The 20 most recent PACKLISTS (header grain) for the account card. */
+/** Recent PACKLISTS (header grain), newest first, paged. */
 export function useAccountShipmentHeaders(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: computed(() => accountMetricsKeys.shipmentHeaders(key.value)),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
-    queryFn: async (): Promise<AccountShipmentHeaderRow[]> => {
+    initialPageParam: 0,
+    getNextPageParam: (last: AccountShipmentHeaderRow[], all) =>
+      last.length < ORDERS_PAGE_SIZE ? undefined : all.length,
+    queryFn: async ({ pageParam }): Promise<AccountShipmentHeaderRow[]> => {
+      const page = pageParam as number
+      const from = page * ORDERS_PAGE_SIZE
       const { data, error } = await db
         .from('v_account_recent_shipment_headers')
         .select('*')
         .eq('customer_key', key.value)
-        .order('ship_date', { ascending: false, nullsFirst: false })
-        .order('packlist_id', { ascending: false })
+        .order('rn', { ascending: true })
+        .range(from, from + ORDERS_PAGE_SIZE - 1)
       if (error) throw asDisplayError(error)
       return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
         customer_key: String(r.customer_key),
@@ -327,6 +379,7 @@ export function useAccountShipmentHeaders(customerKey: MaybeRef<string>) {
         line_count: num(r.line_count),
         shipped_qty: num(r.shipped_qty),
         shipped_revenue: num(r.shipped_revenue),
+        rn: num(r.rn),
       }))
     },
   })
@@ -371,6 +424,9 @@ export function useAccountOrderLines(
         bookings: numOrNull(r.bookings),
         backlog_qty: numOrNull(r.backlog_qty),
         is_backlog_line: (r.is_backlog_line as boolean | null) ?? null,
+        customer_po_number: (r.customer_po_number as string | null) ?? null,
+        desired_ship_date: (r.desired_ship_date as string | null) ?? null,
+        total_shipped_qty_to_date: numOrNull(r.total_shipped_qty_to_date),
       }))
     },
   })

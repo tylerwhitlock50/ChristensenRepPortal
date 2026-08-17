@@ -26,6 +26,14 @@ export type AccountContact = {
   is_primary: boolean
   notes: string | null
   updated_at: string | null
+  /**
+   * ERP contact-preference flags (migration 034). `do_not_call` describes the
+   * number in THIS row's `phone` column — the landline when there is one,
+   * otherwise the mobile — not the contact in general. Always false for
+   * rep-entered rows, which carry no ERP instruction.
+   */
+  do_not_call: boolean
+  do_not_email: boolean
 }
 
 export function useNotes(customerKey: MaybeRef<string>) {
@@ -77,7 +85,18 @@ export function useContacts(customerKey: MaybeRef<string>) {
         .order('is_primary', { ascending: false })
         .order('name')
       if (error) throw error
-      return (data ?? []) as AccountContact[]
+      /**
+       * 034 adds do_not_call/do_not_email after database.types.ts was last
+       * generated, so the generated Row type is a column short. Default them
+       * to the SAFE value: an un-migrated database must not be read as
+       * "calling is fine" — it means "we don't know yet", and the badge
+       * simply doesn't appear either way.
+       */
+      return ((data ?? []) as unknown as Record<string, unknown>[]).map((r) => ({
+        ...(r as unknown as AccountContact),
+        do_not_call: r.do_not_call === true,
+        do_not_email: r.do_not_email === true,
+      }))
     },
   })
 }

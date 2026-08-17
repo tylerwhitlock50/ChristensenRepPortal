@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import TaskQuickAdd from '@/components/TaskQuickAdd.vue'
+import { useSessionStore } from '@/stores/session'
 import { useMyTasks, useToggleTask, type Task } from '@/composables/useTasks'
 import { daysUntilDue, dueLabel } from '@/lib/format'
 
@@ -26,6 +27,7 @@ const props = withDefaults(
   { names: () => ({}), limit: 5 },
 )
 
+const session = useSessionStore()
 const query = useMyTasks()
 const tasks = computed<Task[]>(() => query.data.value ?? [])
 
@@ -94,7 +96,7 @@ function taskAccount(task: Task): string {
 
     <AppCard :padded="false">
       <div class="border-line border-b p-4">
-        <TaskQuickAdd placeholder="Remind me to…" />
+        <TaskQuickAdd v-if="session.canWrite" placeholder="Remind me to…" />
       </div>
 
       <p v-if="taskError" role="alert" class="text-danger px-4 pt-3 text-sm font-medium">
@@ -121,6 +123,7 @@ function taskAccount(task: Task): string {
               class="flex items-start gap-3 py-3 first:pt-0 last:pb-0"
             >
               <button
+                v-if="session.canWrite"
                 type="button"
                 class="tap-target border-line-2 flex w-12 shrink-0 items-center justify-center rounded-[2px] border"
                 :disabled="busyTaskId === task.id"

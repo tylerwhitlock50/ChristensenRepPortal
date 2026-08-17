@@ -14,12 +14,16 @@ const tabs = computed(() => {
   const items: { to: { name: string }; label: string }[] = [
     { to: { name: 'admin-execution' }, label: 'Execution' },
     { to: { name: 'admin-goals' }, label: 'Goals' },
+    { to: { name: 'admin-reports' }, label: 'Reports' },
     { to: { name: 'admin-users' }, label: 'Users' },
   ]
   if (flags.recommendations.value) {
     items.push({ to: { name: 'admin-missions' }, label: 'Missions' })
   }
   items.push(
+    // Always visible, not gated on feature.orders: the downloadable-sheet
+    // half serves the always-on Intel page either way.
+    { to: { name: 'admin-price-lists' }, label: 'Price Lists' },
     { to: { name: 'admin-activity' }, label: 'Activity' },
     { to: { name: 'admin-settings' }, label: 'Settings' },
   )

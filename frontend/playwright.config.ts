@@ -19,6 +19,10 @@ const baseURL = process.env.E2E_BASE_URL ?? 'http://localhost:5173'
 
 export default defineConfig({
   testDir: './tests',
+  // tests/unit holds plain vite-node scripts (npm run test:unit), not
+  // Playwright specs. Without this, Playwright's default testMatch picks up
+  // *.test.ts there and fails on files that never call test().
+  testIgnore: '**/unit/**',
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

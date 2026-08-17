@@ -2,7 +2,9 @@
 import { computed, ref } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useAtsList, type AtsRow } from '@/composables/useIntel'
-import { isViewMissing } from '@/composables/useOverview'
+import { isViewMissing, useTerritoryAccounts } from '@/composables/useOverview'
+import { useAccountSkuGaps } from '@/composables/useAccountGaps'
+import AccountPicker from '@/components/AccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -21,7 +23,51 @@ import { count } from '@/lib/format'
  */
 const search = ref('')
 const query = useAtsList()
-const rows = computed(() => query.data.value ?? [])
+const allRows = computed(() => query.data.value ?? [])
+
+/* ---- "show me the gaps for one dealer" ---------------------------------
+   The catalog minus what the chosen account already buys. The account's
+   history comes from the same RPC the account page's opportunity card uses
+   (036), so the two screens can never disagree about what a dealer carries.
+
+   The picker is fed from the territory rows the Overview already cached, so
+   choosing an account costs one RPC and no book query.
+------------------------------------------------------------------------- */
+const gapAccountKey = ref('')
+const gapsQuery = useAccountSkuGaps(gapAccountKey)
+const accountsQuery = useTerritoryAccounts()
+
+const accounts = computed(() =>
+  [...(accountsQuery.data.value ?? [])].sort((a, b) =>
+    (a.customer_name ?? a.customer_key).localeCompare(
+      b.customer_name ?? b.customer_key,
+    ),
+  ),
+)
+
+const gapAccountName = computed(() => {
+  const a = accounts.value.find((x) => x.customer_key === gapAccountKey.value)
+  return a?.customer_name || gapAccountKey.value || 'this account'
+})
+
+/**
+ * The RPC returns only what this dealer does NOT carry, so its part_keys are
+ * exactly the filter. On error or while loading, fall through to the whole
+ * catalog rather than showing an empty grid — a rep who picked an account
+ * and got nothing would read that as "no stock", not "still loading".
+ */
+const gapKeys = computed(() => {
+  if (!gapAccountKey.value) return null
+  const rowsOut = gapsQuery.data.value
+  if (!rowsOut) return null
+  return new Set(rowsOut.filter((r) => !r.bought_before).map((r) => r.part_key))
+})
+
+const rows = computed(() =>
+  gapKeys.value
+    ? allRows.value.filter((r) => gapKeys.value!.has(r.part_key))
+    : allRows.value,
+)
 
 /** Feed-not-landed reads differently from a real failure. */
 const feedMissing = computed(() => isViewMissing(query.error.value))
@@ -93,17 +139,44 @@ const csvColumns: CsvColumn<AtsRow>[] = [
         />
       </div>
 
+      <!--
+        "What can I sell THIS dealer?" — the catalog filtered to what the
+        chosen account does not already carry. Same one-click shape as the
+        account dropdown on BacklogIntel, but answering the opposite
+        question. Without it this page is territory-agnostic: it can say what
+        is in stock, but not who to put it in front of.
+      -->
       <AppCard :padded="false" class="mt-4">
         <template #header>
           <h2 class="u-label text-ink">Available to sell</h2>
           <AppButton
             variant="ghost"
             :disabled="visible.length === 0"
-            @click="exportCsv('ats-list', visible, csvColumns)"
+            @click="exportCsv(gapAccountKey ? `ats-gaps-${gapAccountKey}` : 'ats-list', visible, csvColumns)"
           >
             Export CSV
           </AppButton>
         </template>
+
+        <div class="border-line space-y-2 border-b p-3">
+          <AccountPicker
+            v-model="gapAccountKey"
+            :accounts="accounts"
+            placeholder="Show gaps for one account…"
+          />
+          <p v-if="gapAccountKey" class="text-muted text-[13px]">
+            <template v-if="gapsQuery.isPending.value">Working out what they don't carry…</template>
+            <template v-else-if="gapsQuery.error.value">
+              Couldn't load that account's history — showing the whole catalog.
+            </template>
+            <template v-else>
+              {{ count(rows.length) }} in stock that
+              {{ gapAccountName }} doesn't carry, out of
+              {{ count(allRows.length) }}.
+            </template>
+          </p>
+        </div>
+
         <DataGrid
           :columns="columns"
           :data="rows"

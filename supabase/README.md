@@ -30,6 +30,8 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `022_job_run_duration.sql` | `log_job_run()` stamps `finished_at` with `clock_timestamp()`, so job durations are real |
 | `023_account_deactivations.sql` | `account_deactivations` — rep-side "stop working this account" override with reason + history; dismiss/de-score trigger; exclusions in `v_account_list`, `refresh_account_signals()`, `create_mission()`, coverage views |
 | `20260803223924_account_goals.sql` | `account_goals` (rep-entered annual goal, one per account/year), `v_account_goal_progress` (seasonal pace), `v_my_goal_rollup`, `v_rep_goal_attainment` — reconstructed from prod, where it was applied as "023_account_goals" |
+| `20260816120000_mcp_access.sql` | `mcp_tokens` (SHA-256 at rest, column-granted so `token_hash` is unreadable over PostgREST) + `mcp_token_create()` / `mcp_token_revoke()` / `mcp_token_resolve()` — credentials for the `mcp` Edge Function. A token is an identity, not a grant: it confers no access of its own |
+| `20260816140000_admin_view_as_rep.sql` | Admin "view as rep": `impersonation` state + `impersonation_events` audit, `is_real_admin()` / `acting_as_user_id()` / `effective_user_id()`, `is_admin()` and `my_customer_keys()` re-pointed at the effective user, `start_impersonation()` / `stop_impersonation()` / `acting_context()` / `impersonatable_profiles()`, and a read-only trigger on every RLS-enabled `public` table |
 
 ## Applying
 
@@ -57,7 +59,9 @@ or apply via MCP `apply_migration` (one call per file, keep the order).
 2. **Auth → Providers → Email**: disable signups ("Allow new users to sign up" = off). Users are created by the admin only.
 3. Create your own auth user, then promote it:
    `update public.profiles set role = 'admin' where user_id = '<your-uuid>';`
-4. Schedule the recommendation job — either call
+4. **Edge Function secrets**: `MCP_JWT_SECRET` (Settings → API → JWT Secret)
+   if the MCP endpoint is deployed — see `supabase/functions/mcp/README.md`.
+5. Schedule the recommendation job — either call
    `select public.generate_recommendations();` as the last step of the ETL
    (recommended), or enable the `pg_cron` extension and use the schedule in
    the header of `008_recommendation_engine.sql`.
@@ -96,6 +100,13 @@ or apply via MCP `apply_migration` (one call per file, keep the order).
   both. Deactivation never removes *access* — `my_customer_keys()` and
   `has_account_access()` are deliberately untouched, so the rep can still
   open the account and undo it.
+- **An MCP token is an identity, not a grant.** The `mcp` Edge Function
+  resolves a token to a `user_id` with one `service_role` call and then mints
+  a five-minute `authenticated` JWT for that user, so every read it makes goes
+  through the same policies the SPA hits. The tempting alternative — read with
+  `service_role`, filter by the rep's book in TypeScript — is a second
+  implementation of the rules in 010, in a language with no RLS. Nothing in
+  `functions/mcp/` may scope by customer; RLS is the only filter.
 - **A goal belongs to the account, not to the rep who typed it.**
   `account_goals` is unique on `(customer_key, period_year)`, so a principal
   and their rep report against the same number and the admin rollup never has

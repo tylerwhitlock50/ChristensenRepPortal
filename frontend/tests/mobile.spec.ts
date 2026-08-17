@@ -47,10 +47,24 @@ test.describe('login screen', () => {
 test.describe('signed in', () => {
   test.skip(!EMAIL || !PASSWORD, 'set E2E_EMAIL and E2E_PASSWORD')
 
+  /**
+   * The routes a rep actually reaches under the shipped feature flags.
+   *
+   * Was: `/` labelled "today" and `/tasks`. Both were wrong — `/` is the
+   * Overview, and `/tasks` is gated on feature.tasks (disabled by default),
+   * so that probe measured the Overview twice and called one of them Tasks.
+   * The four Intel tabs and the account page carry the heaviest layouts in
+   * the app (DataGrid, charts) and were never probed at all; the account
+   * page has its own test below, so the grids are what this list adds.
+   */
   const routes = [
-    { path: '/', name: 'today' },
-    { path: '/tasks', name: 'tasks' },
+    { path: '/', name: 'overview' },
     { path: '/accounts', name: 'accounts' },
+    { path: '/lookup', name: 'lookup' },
+    { path: '/intel/sku-sales', name: 'intel-sku-sales' },
+    { path: '/intel/backlog', name: 'intel-backlog' },
+    { path: '/intel/ats', name: 'intel-ats' },
+    { path: '/intel/global', name: 'intel-global' },
   ]
 
   for (const route of routes) {

@@ -33,6 +33,14 @@ const router = createRouter({
       meta: { public: true, title: 'Sign in' },
     },
     {
+      // Public: the rep arriving here is by definition signed out, and the
+      // recovery link in the email is the only credential they have.
+      path: '/reset-password',
+      name: 'reset-password',
+      component: () => import('@/pages/ResetPasswordView.vue'),
+      meta: { public: true, title: 'Set a new password' },
+    },
+    {
       // The morning briefing IS the app's front door (data-first restructure):
       // territory health, the AI sales brief, movers, worth-investigating.
       path: '/',
@@ -52,6 +60,14 @@ const router = createRouter({
       name: 'tasks',
       component: () => import('@/pages/TasksView.vue'),
       meta: { title: 'Tasks', feature: 'feature.tasks' },
+    },
+    {
+      // "Where's my order?" — searchable by the dealer's PO, our order
+      // number, or a tracking number, across the whole book.
+      path: '/lookup',
+      name: 'lookup',
+      component: () => import('@/pages/LookupView.vue'),
+      meta: { title: 'Find an order' },
     },
     {
       path: '/accounts',
@@ -95,7 +111,63 @@ const router = createRouter({
           component: () => import('@/pages/intel/GlobalIntel.vue'),
           meta: { title: 'Global' },
         },
+        {
+          // Always on — a read-only reference surface like the rest of
+          // Intel, deliberately NOT behind feature.orders.
+          path: 'price-lists',
+          name: 'intel-price-lists',
+          component: () => import('@/pages/intel/PriceListsView.vue'),
+          meta: { title: 'Price Lists' },
+        },
       ],
+    },
+    {
+      path: '/orders',
+      component: () => import('@/pages/orders/OrdersLayout.vue'),
+      // feature on the parent covers every child, same as /admin's adminOnly.
+      meta: { feature: 'feature.orders' },
+      children: [
+        {
+          path: '',
+          name: 'orders',
+          component: () => import('@/pages/orders/OrderListView.vue'),
+          meta: { title: 'My Orders' },
+        },
+        {
+          path: 'new',
+          name: 'orders-new',
+          component: () => import('@/pages/orders/OrderWriterView.vue'),
+          meta: { title: 'New Order' },
+        },
+        {
+          path: 'queue',
+          name: 'orders-queue',
+          component: () => import('@/pages/orders/OrderQueueView.vue'),
+          meta: { title: 'Entry Queue' },
+        },
+        {
+          path: ':id(\\d+)',
+          name: 'order-detail',
+          component: () => import('@/pages/orders/OrderDetailView.vue'),
+          props: true,
+          meta: { title: 'Order' },
+        },
+        {
+          path: ':id(\\d+)/edit',
+          name: 'order-edit',
+          component: () => import('@/pages/orders/OrderWriterView.vue'),
+          props: true,
+          meta: { title: 'Edit Order' },
+        },
+      ],
+    },
+    {
+      // Reached from the account menu, not the nav bar: a rep sets this up
+      // once and never comes back, so it does not earn a tab.
+      path: '/connect',
+      name: 'connect',
+      component: () => import('@/pages/ConnectView.vue'),
+      meta: { title: 'Connect Claude' },
     },
     {
       path: '/admin',
@@ -118,6 +190,12 @@ const router = createRouter({
           meta: { title: 'Goals' },
         },
         {
+          path: 'reports',
+          name: 'admin-reports',
+          component: () => import('@/pages/admin/AdminReportsView.vue'),
+          meta: { title: 'Reports' },
+        },
+        {
           path: 'users',
           name: 'admin-users',
           component: () => import('@/pages/admin/AdminUsersView.vue'),
@@ -128,6 +206,12 @@ const router = createRouter({
           name: 'admin-missions',
           component: () => import('@/pages/admin/AdminMissionsView.vue'),
           meta: { title: 'Missions', feature: 'feature.recommendations' },
+        },
+        {
+          path: 'price-lists',
+          name: 'admin-price-lists',
+          component: () => import('@/pages/admin/AdminPriceListsView.vue'),
+          meta: { title: 'Price Lists' },
         },
         {
           path: 'activity',
@@ -171,6 +255,22 @@ router.beforeEach(async (to) => {
 
   if (to.meta.adminOnly && !session.isAdmin) {
     return { name: 'overview' }
+  }
+
+  // An order_entry user's book is empty by design, so the Overview is a
+  // blank page for them — the entry queue IS their app. Redirect only when
+  // the flag is on: with it off the queue route would bounce straight back
+  // here and loop.
+  if (to.name === 'overview' && session.isOrderEntry) {
+    try {
+      const settings = await ensureSettings()
+      if (isFeatureEnabled(settings, 'feature.orders')) {
+        return { name: 'orders-queue' }
+      }
+    } catch {
+      // Settings unreachable — fail closed onto the Overview like the
+      // feature guard below does.
+    }
   }
 
   if (to.meta.feature) {

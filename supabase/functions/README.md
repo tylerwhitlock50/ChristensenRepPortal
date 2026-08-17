@@ -1,17 +1,19 @@
 # supabase/functions
 
-Four Supabase Edge Functions (Deno + TypeScript). Exactly four, because
-TECH_STACK §3.2 admits only code that holds a secret or needs `service_role`:
+Supabase Edge Functions (Deno + TypeScript). The list is short on purpose:
+TECH_STACK §3.2 admits only code that holds a secret or needs `service_role`.
 
 | Function | Why it can't be client-side |
 |---|---|
 | `ai-account-summary` | Holds `OPENAI_API_KEY` |
 | `ai-summary-batch` | Holds `OPENAI_API_KEY`; pre-generates briefings overnight |
+| `ai-brief` | Holds `OPENAI_API_KEY`; the AI Actions / territory brief path |
 | `admin-create-user` | Needs `service_role` to create auth users and set passwords (PRD: no self-signup) |
 | `admin-update-user` | Needs `service_role` to set passwords and ban/unban sign-in on deactivate |
+| `mcp` | Holds `MCP_JWT_SECRET`, and needs `service_role` for exactly one call — resolving an MCP token to a user. Speaks an HTTP protocol, so it cannot be a Postgres function. See [`mcp/README.md`](./mcp/README.md). |
 
 Everything else — reads, writes, photo upload/download — goes straight to
-PostgREST and Storage with the user's JWT. If a third candidate appears, the
+PostgREST and Storage with the user's JWT. If a new candidate appears, the
 first question is "can this be a Postgres function with `security definer`
 instead?" (usually yes).
 
@@ -29,8 +31,12 @@ functions/
 │   └── index.ts             nightly pre-generation; the ONE service_role exception
 ├── admin-create-user/
 │   └── index.ts
-└── admin-update-user/
-    └── index.ts
+├── admin-update-user/
+│   └── index.ts
+└── mcp/
+    ├── index.ts             MCP over stateless Streamable HTTP
+    ├── tools.ts             sixteen read-only tools over the security_invoker views
+    └── README.md            deploy, secrets, and how a rep connects Claude
 ```
 
 `accountContext.ts` and `aiSummary.ts` exist so the interactive and batch paths
@@ -47,9 +53,10 @@ Set these once per project (`dev` and `prod` are separate projects — §8):
 |---|---|---|
 | `OPENAI_API_KEY` | `ai-account-summary`, `ai-summary-batch` | Edge Function secrets **only**. Never in Vercel, never in the frontend bundle. |
 | `AI_BATCH_SECRET` | `ai-summary-batch` | The **only** thing standing between the batch and the internet — it authenticates nothing else. Generate with `openssl rand -hex 32` and give the same value to the ETL environment. |
-| `SUPABASE_SERVICE_ROLE_KEY` | `admin-create-user`, `admin-update-user` | Auto-injected by the platform on deploy; set explicitly only for `supabase functions serve`. |
-| `SUPABASE_URL` | both | Auto-injected. |
-| `SUPABASE_ANON_KEY` | both | Auto-injected. Used to build the caller-scoped client that then carries the user's `Authorization` header. |
+| `SUPABASE_SERVICE_ROLE_KEY` | `admin-create-user`, `admin-update-user`, `mcp` | Auto-injected by the platform on deploy; set explicitly only for `supabase functions serve`. |
+| `MCP_JWT_SECRET` | `mcp` | The project's HS256 JWT secret (Settings → API → JWT Secret). NOT auto-injected. The `mcp` function signs a five-minute `authenticated` token with it so every read runs under the rep's own RLS. |
+| `SUPABASE_URL` | all | Auto-injected. |
+| `SUPABASE_ANON_KEY` | all | Auto-injected. Used to build the caller-scoped client that then carries the user's `Authorization` header. |
 
 ```bash
 supabase secrets set OPENAI_API_KEY=sk-...
@@ -76,11 +83,12 @@ supabase functions deploy ai-account-summary --no-verify-jwt
 supabase functions deploy ai-summary-batch   --no-verify-jwt
 supabase functions deploy admin-create-user  --no-verify-jwt
 supabase functions deploy admin-update-user  --no-verify-jwt
+supabase functions deploy mcp                --no-verify-jwt
 ```
 
 **Why `--no-verify-jwt`.** The gateway's built-in check rejects the browser's
-CORS preflight, which by spec carries no `Authorization` header. Both functions
-verify the caller themselves and do strictly more than the gateway would:
+CORS preflight, which by spec carries no `Authorization` header. Every function
+here verifies the caller itself and does strictly more than the gateway would:
 
 - `ai-account-summary` resolves the user from their JWT and then asks Postgres
   `has_account_access(customer_key)` **as that user**.
@@ -90,6 +98,11 @@ verify the caller themselves and do strictly more than the gateway would:
 An unauthenticated request reaches the function and gets a `401` from our own
 code. If you prefer the gateway check, drop the flag and handle the preflight
 at the CDN instead — but do not remove the in-function checks either way.
+
+`mcp` follows the same rule from a different direction: it resolves the caller
+from an MCP token rather than a JWT, using `service_role` for that one lookup,
+and then does every data read as that user with a token it mints itself. It
+never reads sales data with `service_role` — see `mcp/README.md`.
 
 `ai-summary-batch` is the exception to the pattern above: it has no caller and
 no JWT. It authenticates a constant-time match on `x-batch-secret`, and it is
