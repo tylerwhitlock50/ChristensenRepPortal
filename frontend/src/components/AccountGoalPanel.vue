@@ -167,6 +167,13 @@ const progressLine = computed(() => {
 const paceText = computed(() => paceLabel(goal.value))
 const paceHelp = computed(() => paceBasisLabel(goal.value))
 
+/**
+ * ERP-sourced goals (dim_customer's USER_3 default, 20260817140000) have no
+ * account_goals row: there is nothing to remove, and "Edit" means "set your
+ * own number over the ERP's", not "change the ERP".
+ */
+const isErpGoal = computed(() => goal.value?.goal_source === 'erp')
+
 const behind = computed(() => goal.value?.on_track === false)
 
 /** "$35,700 to go, 150 days left" — what is actually left to do. */
@@ -236,9 +243,11 @@ const setByLine = computed(() => {
 
       <!-- The ERP's number stays visible. The drift between the two is the
            interesting part, and it is what a push-back to Visual would
-           reconcile (023 header). -->
+           reconcile (023 header). When the ERP number IS the goal there is
+           no drift to show — say where it came from instead. -->
       <p class="text-muted mt-2 text-[13px]">
-        <template v-if="erpGoal != null">ERP goal {{ money(erpGoal) }}</template>
+        <template v-if="isErpGoal">This is the ERP's goal — edit to set your own.</template>
+        <template v-else-if="erpGoal != null">ERP goal {{ money(erpGoal) }}</template>
         <template v-else>No goal in the ERP</template>
         <template v-if="setByLine"> · {{ setByLine }}</template>
       </p>
@@ -328,7 +337,7 @@ const setByLine = computed(() => {
         </AppButton>
         <AppButton variant="ghost" @click="cancelEdit">Cancel</AppButton>
         <AppButton
-          v-if="goal && !confirmingRemove"
+          v-if="goal && !isErpGoal && !confirmingRemove"
           variant="ghost"
           class="ml-auto"
           @click="confirmingRemove = true"

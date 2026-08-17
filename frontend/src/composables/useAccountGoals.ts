@@ -37,6 +37,15 @@ export function currentGoalYear(): number {
 /** Which basis v_account_goal_progress used for "should be here by now". */
 export type PaceBasis = 'seasonal' | 'straight_line' | 'not_started'
 
+/**
+ * Where the target came from: 'crm' = entered in the portal (account_goals,
+ * editable, wins on conflict); 'erp' = dim_customer.yearly_sales_goal — the
+ * customer master's USER_3 field, surfaced as the current-year default when
+ * no portal goal exists (migration 20260817140000). ERP rows have no
+ * account_goals row behind them, so there is nothing to remove.
+ */
+export type GoalSource = 'crm' | 'erp'
+
 export interface AccountGoalProgress {
   goal_id: number
   customer_key: string
@@ -63,6 +72,7 @@ export interface AccountGoalProgress {
   on_track: boolean | null
   pace_basis: PaceBasis
   days_remaining: number
+  goal_source: GoalSource
 }
 
 export interface GoalRollup {
@@ -134,6 +144,8 @@ function toProgress(row: Record<string, unknown>): AccountGoalProgress {
     on_track: (row.on_track as boolean | null) ?? null,
     pace_basis: (row.pace_basis as PaceBasis) ?? 'straight_line',
     days_remaining: num(row.days_remaining),
+    // Absent only if the view predates 20260817140000 — then every row is CRM.
+    goal_source: (row.goal_source as GoalSource) ?? 'crm',
   }
 }
 

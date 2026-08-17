@@ -367,7 +367,7 @@ const getAccount: ToolDef = {
         .select(
           'period_year, target_amount, revenue_to_date, attainment_pct, expected_pct, ' +
             'gap_to_pace, gap_to_goal, projected_amount, on_track, pace_basis, ' +
-            'erp_yearly_sales_goal, days_remaining',
+            'erp_yearly_sales_goal, days_remaining, goal_source',
         )
         .eq('customer_key', key)
         .eq('period_year', year)
@@ -1081,7 +1081,8 @@ const getGoalProgress: ToolDef = {
     const columns =
       'customer_key, customer_name, period_year, target_amount, revenue_to_date, ' +
       'attainment_pct, expected_pct, expected_amount, gap_to_pace, gap_to_goal, ' +
-      'projected_amount, on_track, pace_basis, days_remaining, erp_yearly_sales_goal'
+      'projected_amount, on_track, pace_basis, days_remaining, erp_yearly_sales_goal, ' +
+      'goal_source'
 
     if (key) {
       const single = await db
@@ -1093,11 +1094,12 @@ const getGoalProgress: ToolDef = {
       const goal = rowOf(single, 'the goal')
       if (!goal) {
         throw new ToolError(
-          `No ${year} goal is set for "${key}". Goals are entered per account in ` +
-            `the portal; erp_yearly_sales_goal on get_account carries the ERP's own ` +
-            `number when there is one.`,
+          `No ${year} goal exists for "${key}" — neither a portal-entered target ` +
+            `nor an ERP yearly goal (the customer master's USER_3 field).`,
         )
       }
+      // goal_source: 'crm' = entered in the portal (overrides), 'erp' = the
+      // customer master's USER_3 yearly goal, current year only.
       return { goal: compact(goal) }
     }
 
