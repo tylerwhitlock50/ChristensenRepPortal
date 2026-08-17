@@ -64,7 +64,8 @@ Three money words that are NOT interchangeable:
 Typical path: \`get_territory_summary\` for the shape of the book →
 \`list_territory_accounts\` to rank → \`search_accounts\` to resolve a name to a
 customer_key → \`get_account\` for the full picture → \`get_account_sku_sales\`,
-\`list_orders\`, \`list_backlog\` for detail.
+\`list_orders\`, \`list_backlog\` for detail. \`get_sales_summary\` answers
+"this month / last month / trend" at monthly grain.
 
 Figures are US dollars and calendar-year to date. Goal pace is seasonal, not
 straight-line, so an account behind on days can still be on pace.
@@ -154,7 +155,7 @@ async function dispatch(
       return rpcResult(id, {})
 
     case 'tools/list':
-      // No pagination: nineteen tools fit in one response, and a nextCursor
+      // No pagination: twenty tools fit in one response, and a nextCursor
       // nobody needs is a round trip every client pays on every connect.
       return rpcResult(id, { tools: TOOLS.map(describeTool) })
 

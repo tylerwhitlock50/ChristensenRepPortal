@@ -7,7 +7,7 @@ can point Claude at their own sales data and ask questions in English.
 https://<project-ref>.supabase.co/functions/v1/mcp
 ```
 
-Read-only. Nineteen tools. No new access model: a token identifies a user, and
+Read-only. Twenty tools. No new access model: a token identifies a user, and
 that user's existing RLS decides everything they can see.
 
 ---
@@ -127,6 +127,7 @@ means for every other answer.
 | `get_territory_summary` | `v_territory_account_yoy`, `v_my_goal_rollup` | How am I doing; growers, decliners, gone quiet |
 | `list_territory_accounts` | `v_territory_account_yoy` | Rank the book by any revenue/backlog measure |
 | `get_sku_sales` | `v_territory_sku_sales` | What sells across the whole territory |
+| `get_sales_summary` | `report_sales_by_month()` | Sales this month / last month / QTD / the monthly trend, book or one account |
 | `list_backlog` | `v_backlog_by_sku` | What customers are owed, and when it ships |
 | `check_availability` | `v_ats_list` | Company-wide stock / available-to-sell |
 | `list_orders` | `v_account_recent_order_headers`, `v_account_order_lines` | Order history and one order's lines |
@@ -189,7 +190,7 @@ or an unknown tool name.
 ```
 mcp/
 ├── index.ts        transport, JSON-RPC dispatch, auth handover
-├── tools.ts        the nineteen tools + the registry
+├── tools.ts        the twenty tools + the registry
 └── README.md       this file
 ../_shared/mcpAuth.ts   token extraction, resolution, JWT minting
 ```
