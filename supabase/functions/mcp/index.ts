@@ -154,7 +154,7 @@ async function dispatch(
       return rpcResult(id, {})
 
     case 'tools/list':
-      // No pagination: sixteen tools fit in one response, and a nextCursor
+      // No pagination: nineteen tools fit in one response, and a nextCursor
       // nobody needs is a round trip every client pays on every connect.
       return rpcResult(id, { tools: TOOLS.map(describeTool) })
 
