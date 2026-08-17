@@ -140,7 +140,16 @@ def push_table(ms, pg, source_view: str, target_table: str, overrides: dict) -> 
     return total
 
 
+def fmt_elapsed(seconds: float) -> str:
+    m, s = divmod(int(round(seconds)), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+
 def main() -> int:
+    run_started = time.monotonic()
+    print(f"push started at {datetime.now():%Y-%m-%d %H:%M:%S}")
+
     cfg = load_config()
     overrides = cfg.get("column_map") or {}
     only = {a.lower() for a in sys.argv[1:]}
@@ -172,15 +181,21 @@ def main() -> int:
 
     if not failed and not only:
         for sql in cfg.get("post_load_sql") or []:
+            step_started = time.monotonic()
             with pg.transaction():
                 res = pg.execute(sql).fetchall()
-            print(f"post_load: {sql} -> {res}")
+            print(f"post_load: {sql} -> {res} "
+                  f"({time.monotonic() - step_started:.1f}s)")
 
         for call in cfg.get("post_load_http") or []:
             post_load_http(call)
 
     ms.close()
     pg.close()
+
+    print(f"push finished at {datetime.now():%Y-%m-%d %H:%M:%S} "
+          f"— elapsed {fmt_elapsed(time.monotonic() - run_started)}"
+          + (" (with failures)" if failed else ""))
     return 1 if failed else 0
 
 
