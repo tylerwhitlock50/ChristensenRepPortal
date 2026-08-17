@@ -455,6 +455,10 @@ const getAccountSkuSales: ToolDef = {
               'sales_year, revenue, qty, last_invoice_date',
           )
           .eq('customer_key', key)
+          // Unique-key ordering: unordered LIMIT/OFFSET pages can skip and
+          // duplicate rows between requests.
+          .order('part_key')
+          .order('sales_year')
           .range(from, to),
       3000,
       'SKU sales for this account',
@@ -553,62 +557,63 @@ function pivotSkuRows(rows: Row[], truncated: boolean, sort: string, limit: numb
 /*----------------------------------------------------------------------------
   Territory. Both tools read the same nightly rollup (030), so they always
   agree with each other and with the portal's Overview page.
+
+  Ranking and totals happen IN POSTGRES (view columns + ORDER BY … LIMIT,
+  and report_territory_summary() for the aggregates — 20260817120000). The
+  previous shape — page 5,000 rows with no ORDER BY, then sort in TypeScript
+  — silently ranked an arbitrary physical-order prefix of a big book: an
+  admin's reported top account was actually #4 and totals were 82% short.
+  The rollup is one indexed row per account, so the full ORDER BY is
+  milliseconds; there is nothing left to cap.
 ----------------------------------------------------------------------------*/
 
 const TERRITORY_COLUMNS =
   'customer_key, customer_name, sold_to_city, sold_to_state, yearly_sales_goal, ' +
   'revenue_ytd, revenue_prior_ytd, revenue_trailing_12m, last_invoice_date, ' +
-  'open_order_value, backlog_qty, backlog_amount'
+  'open_order_value, backlog_qty, backlog_amount, yoy_change_amount, yoy_change_pct'
 
-const TERRITORY_CAP = 5000
+// The sort keys list_territory_accounts accepts. Named once so the schema the
+// model reads and the check the handler runs cannot drift apart. Every entry
+// must be a real column of v_territory_account_yoy — the ORDER BY is SQL now.
+const TERRITORY_SORTS = [
+  'revenue_ytd',
+  'revenue_prior_ytd',
+  'revenue_trailing_12m',
+  'yoy_change_amount',
+  'yoy_change_pct',
+  'open_order_value',
+  'backlog_amount',
+] as const
+type TerritorySort = (typeof TERRITORY_SORTS)[number]
 
-async function fetchTerritory(db: SupabaseClient) {
-  const { rows, truncated } = await fetchCapped(
-    (from, to) => db.from('v_territory_account_yoy').select(TERRITORY_COLUMNS).range(from, to),
-    TERRITORY_CAP,
-    'the territory rollup',
-  )
-  return {
-    truncated,
-    accounts: rows.map((r) => {
-      const ytd = num(r.revenue_ytd) ?? 0
-      const prior = num(r.revenue_prior_ytd) ?? 0
-      return {
-        customer_key: String(r.customer_key),
-        customer_name: (r.customer_name as string) ?? null,
-        sold_to_city: (r.sold_to_city as string) ?? null,
-        sold_to_state: (r.sold_to_state as string) ?? null,
-        revenue_ytd: ytd,
-        revenue_prior_ytd: prior,
-        revenue_trailing_12m: num(r.revenue_trailing_12m) ?? 0,
-        yoy_change_amount: ytd - prior,
-        yoy_change_pct: prior > 0 ? pct(ytd - prior, prior) : null,
-        open_order_value: num(r.open_order_value) ?? 0,
-        backlog_amount: num(r.backlog_amount) ?? 0,
-        backlog_qty: num(r.backlog_qty) ?? 0,
-        yearly_sales_goal: num(r.yearly_sales_goal),
-        last_invoice_date: (r.last_invoice_date as string) ?? null,
-      }
-    }),
-  }
+function territoryRow(r: Row) {
+  return compact({
+    customer_key: r.customer_key,
+    customer_name: r.customer_name,
+    city: r.sold_to_city,
+    state: r.sold_to_state,
+    revenue_ytd: money(r.revenue_ytd),
+    revenue_prior_ytd: money(r.revenue_prior_ytd),
+    yoy_change_amount: money(r.yoy_change_amount),
+    yoy_change_pct: num(r.yoy_change_pct),
+    open_order_value: money(r.open_order_value),
+    backlog_amount: money(r.backlog_amount),
+    last_invoice_date: r.last_invoice_date,
+  })
 }
 
-type TerritoryAccount = Awaited<ReturnType<typeof fetchTerritory>>['accounts'][number]
-
-function territoryRow(a: TerritoryAccount) {
-  return compact({
-    customer_key: a.customer_key,
-    customer_name: a.customer_name,
-    city: a.sold_to_city,
-    state: a.sold_to_state,
-    revenue_ytd: money(a.revenue_ytd),
-    revenue_prior_ytd: money(a.revenue_prior_ytd),
-    yoy_change_amount: money(a.yoy_change_amount),
-    yoy_change_pct: a.yoy_change_pct,
-    open_order_value: money(a.open_order_value),
-    backlog_amount: money(a.backlog_amount),
-    last_invoice_date: a.last_invoice_date,
-  })
+/**
+ * A ranked slice of the book. `customer_key` as the final ORDER BY term so
+ * ties (whole pages of $0 accounts) rank deterministically; nulls last in
+ * both directions so "worst decliners, ascending" never leads with accounts
+ * that simply have no comparison.
+ */
+function territoryQuery(db: SupabaseClient, sort: string, ascending: boolean) {
+  return db
+    .from('v_territory_account_yoy')
+    .select(TERRITORY_COLUMNS, { count: 'exact' })
+    .order(sort, { ascending, nullsFirst: false })
+    .order('customer_key')
 }
 
 const getTerritorySummary: ToolDef = {
@@ -644,8 +649,13 @@ const getTerritorySummary: ToolDef = {
     const top = clampInt(args.highlight_count, 5, 1, 25)
     const quietDays = clampInt(args.quiet_days, 120, 30, 730)
 
-    const [{ accounts, truncated }, goals] = await Promise.all([
-      fetchTerritory(db),
+    const cutoff = new Date(Date.now() - quietDays * 86_400_000).toISOString().slice(0, 10)
+
+    // Totals come from report_territory_summary() — a true whole-book
+    // aggregate — and each highlight list is its own ORDER BY … LIMIT.
+    // Six small indexed reads instead of hauling the book into TypeScript.
+    const [totals, goals, topAccounts, growth, decline, quiet] = await Promise.all([
+      db.rpc('report_territory_summary').maybeSingle(),
       db
         .from('v_my_goal_rollup')
         .select(
@@ -654,52 +664,43 @@ const getTerritorySummary: ToolDef = {
         )
         .eq('period_year', currentYear())
         .maybeSingle(),
+      territoryQuery(db, 'revenue_ytd', false).limit(top),
+      territoryQuery(db, 'yoy_change_amount', false).gt('yoy_change_amount', 0).limit(top),
+      territoryQuery(db, 'yoy_change_amount', true).lt('yoy_change_amount', 0).limit(top),
+      // Gone quiet: some business on the books, but nothing invoiced since
+      // the cutoff (or ever). Biggest prior-year accounts first.
+      territoryQuery(db, 'revenue_prior_ytd', false)
+        .or('revenue_trailing_12m.gt.0,revenue_prior_ytd.gt.0')
+        .or(`last_invoice_date.is.null,last_invoice_date.lt.${cutoff}`)
+        .limit(top),
     ])
 
-    const sum = (pick: (a: TerritoryAccount) => number) =>
-      accounts.reduce((total, a) => total + pick(a), 0)
-
-    const ytd = sum((a) => a.revenue_ytd)
-    const prior = sum((a) => a.revenue_prior_ytd)
-
-    const cutoff = new Date(Date.now() - quietDays * 86_400_000).toISOString().slice(0, 10)
-    const quiet = accounts
-      .filter((a) => a.revenue_trailing_12m > 0 || a.revenue_prior_ytd > 0)
-      .filter((a) => !a.last_invoice_date || a.last_invoice_date < cutoff)
-      .sort((a, b) => b.revenue_prior_ytd - a.revenue_prior_ytd)
-
-    const movers = [...accounts].sort((a, b) => b.yoy_change_amount - a.yoy_change_amount)
+    const t = (rowOf(totals as PgResult, 'the territory totals') ?? {}) as Row
+    const ytd = num(t.revenue_ytd) ?? 0
+    const prior = num(t.revenue_prior_ytd) ?? 0
 
     return {
       totals: {
-        accounts: accounts.length,
-        accounts_with_ytd_revenue: accounts.filter((a) => a.revenue_ytd > 0).length,
+        accounts: num(t.accounts) ?? 0,
+        accounts_with_ytd_revenue: num(t.accounts_with_ytd_revenue) ?? 0,
         revenue_ytd: money(ytd),
         revenue_prior_ytd: money(prior),
         yoy_change_amount: money(ytd - prior),
         yoy_change_pct: prior > 0 ? pct(ytd - prior, prior) : null,
-        revenue_trailing_12m: money(sum((a) => a.revenue_trailing_12m)),
-        open_order_value: money(sum((a) => a.open_order_value)),
-        backlog_amount: money(sum((a) => a.backlog_amount)),
-        backlog_qty: sum((a) => a.backlog_qty),
+        revenue_trailing_12m: money(t.revenue_trailing_12m),
+        open_order_value: money(t.open_order_value),
+        backlog_amount: money(t.backlog_amount),
+        backlog_qty: num(t.backlog_qty) ?? 0,
       },
       goal: rowOf(goals, 'the goal rollup') ?? null,
-      top_accounts: [...accounts]
-        .sort((a, b) => b.revenue_ytd - a.revenue_ytd)
-        .slice(0, top)
-        .map(territoryRow),
-      biggest_growth: movers.filter((a) => a.yoy_change_amount > 0).slice(0, top).map(territoryRow),
-      biggest_decline: movers
-        .filter((a) => a.yoy_change_amount < 0)
-        .reverse()
-        .slice(0, top)
-        .map(territoryRow),
+      top_accounts: rowsOf(topAccounts, 'the top accounts').map(territoryRow),
+      biggest_growth: rowsOf(growth, 'the biggest growers').map(territoryRow),
+      biggest_decline: rowsOf(decline, 'the biggest decliners').map(territoryRow),
       gone_quiet: {
         no_invoice_since_days: quietDays,
-        count: quiet.length,
-        accounts: quiet.slice(0, top).map(territoryRow),
+        count: (quiet as PgResult).count ?? rowsOf(quiet, 'the gone-quiet accounts').length,
+        accounts: rowsOf(quiet, 'the gone-quiet accounts').map(territoryRow),
       },
-      truncated,
       note:
         'Revenue is invoiced (shipped) dollars. Open order value and backlog are ' +
         'booked but not yet shipped, so they are NOT included in revenue.',
@@ -719,15 +720,7 @@ const listTerritoryAccounts: ToolDef = {
     properties: {
       sort: {
         type: 'string',
-        enum: [
-          'revenue_ytd',
-          'revenue_prior_ytd',
-          'revenue_trailing_12m',
-          'yoy_change_amount',
-          'yoy_change_pct',
-          'open_order_value',
-          'backlog_amount',
-        ],
+        enum: TERRITORY_SORTS,
         default: 'revenue_ytd',
         description: 'Sort key. Pair with direction "asc" to get the bottom of the list.',
       },
@@ -745,34 +738,34 @@ const listTerritoryAccounts: ToolDef = {
   },
   async handler(args, { db }) {
     const limit = clampInt(args.limit, 20, 1, 200)
-    const sort = String(args.sort ?? 'revenue_ytd') as keyof TerritoryAccount
+    // Validate before it reaches ORDER BY: a clear "use one of …" beats
+    // PostgREST's column-does-not-exist error, and a model that guessed
+    // "revenue" can then guess again.
+    const requested = String(args.sort ?? 'revenue_ytd')
+    if (!TERRITORY_SORTS.includes(requested as TerritorySort)) {
+      throw new ToolError(
+        `"${requested}" is not a sort key for this tool. Use one of: ` +
+          `${TERRITORY_SORTS.join(', ')}.`,
+      )
+    }
+    const sort = requested as TerritorySort
     const ascending = args.direction === 'asc'
     const state = str(args.state)
     const minPrior = num(args.min_prior_ytd)
 
-    const { accounts, truncated } = await fetchTerritory(db)
+    // Filters and ORDER BY run in Postgres over the whole book — `matched`
+    // is the true filtered count, and the top of the list is the actual top.
+    let q = territoryQuery(db, sort, ascending)
+    if (state) q = q.ilike('sold_to_state', state)
+    if (minPrior !== null) q = q.gte('revenue_prior_ytd', minPrior)
 
-    let list = accounts
-    if (state) list = list.filter((a) => (a.sold_to_state ?? '').toUpperCase() === state.toUpperCase())
-    if (minPrior !== null) list = list.filter((a) => a.revenue_prior_ytd >= minPrior)
-
-    // Nulls (a percentage with no prior year) always sort last, in either
-    // direction — otherwise "worst decliners, ascending" leads with accounts
-    // that simply have no comparison.
-    const sorted = [...list].sort((a, b) => {
-      const av = num(a[sort])
-      const bv = num(b[sort])
-      if (av === null && bv === null) return 0
-      if (av === null) return 1
-      if (bv === null) return -1
-      return ascending ? av - bv : bv - av
-    })
+    const result = await q.limit(limit)
+    const rows = rowsOf(result, 'the territory rollup')
 
     return {
-      matched: list.length,
-      sorted_by: `${String(sort)} ${ascending ? 'asc' : 'desc'}`,
-      truncated,
-      accounts: sorted.slice(0, limit).map(territoryRow),
+      matched: result.count ?? rows.length,
+      sorted_by: `${sort} ${ascending ? 'asc' : 'desc'}`,
+      accounts: rows.map(territoryRow),
     }
   },
 }
@@ -815,7 +808,8 @@ const getSkuSales: ToolDef = {
           const term = safeLike(query)
           if (term) q = q.or(`part_id.ilike.*${term}*,part_description.ilike.*${term}*`)
         }
-        return q.range(from, to)
+        // Unique-key ordering: see get_account_sku_sales.
+        return q.order('part_key').order('sales_year').range(from, to)
       },
       5000,
       'territory SKU sales',
