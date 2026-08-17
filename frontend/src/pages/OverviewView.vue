@@ -1,3 +1,12 @@
+<script lang="ts">
+/**
+ * Module scope on purpose — this block runs once per page load, while
+ * `<script setup>` below re-runs on every mount. See the Sales Brief note
+ * there for why the auto-generate guard has to outlive the component.
+ */
+let lastAutoBrief: string | null = null
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { format, isBefore, startOfDay } from 'date-fns'
@@ -34,19 +43,39 @@ const rows = computed(() => accountsQuery.data.value ?? [])
 const totals = computed(() => territoryTotals(rows.value))
 const movers = computed(() => largestMovers(rows.value))
 const observations = computed(() => worthInvestigating(rows.value))
+
+/**
+ * `largestMovers` returns up and down separately and the card used to
+ * concatenate them into one list, leaving a sign and a colour as the only
+ * thing telling a riser from a faller. "Who is up, who is down" is the
+ * question the card exists to answer, so it gets two labelled groups.
+ * Empty sides drop out rather than render a heading over nothing.
+ */
+const moverGroups = computed(() =>
+  [
+    { key: 'up', label: 'Up the most', rows: movers.value.up },
+    { key: 'down', label: 'Down the most', rows: movers.value.down },
+  ].filter((g) => g.rows.length > 0),
+)
 const recent = computed(() => recentQuery.data.value ?? [])
 
 /* ---- Sales Brief --------------------------------------------------------
-   Auto-generates ONCE per mount when there is no brief or it predates
-   today; the Edge Function's context hash makes a same-data regenerate a
-   free cached return, so "every morning" costs one real generation per
-   actual data change. Manual Regenerate stays available.
+   Auto-generates ONCE A DAY when there is no brief or it predates today; the
+   Edge Function's context hash makes a same-data regenerate a free cached
+   return, so "every morning" costs one real generation per actual data
+   change. Manual Regenerate stays available.
+
+   The guard is module-scoped, and that is the point. As a ref inside setup it
+   reset on every mount, so a rep bouncing Overview → Account → Overview fired
+   a generation each time — and when generation came back insufficient_data or
+   errored, the stored brief stayed stale, so it fired again on the next visit
+   and the one after that, forever. Module scope makes it once per page load
+   instead of once per navigation; a hard reload re-arming it is fine.
 ------------------------------------------------------------------------- */
 const briefQuery = useAiBrief('territory.brief')
 const generate = useGenerateAiBrief()
 const briefNotice = ref('')
 const briefError = ref('')
-const autoFired = ref(false)
 
 async function runBrief() {
   briefNotice.value = ''
@@ -70,12 +99,17 @@ async function runBrief() {
 watch(
   () => briefQuery.isSuccess.value,
   (ready) => {
-    if (!ready || autoFired.value) return
-    autoFired.value = true
+    if (!ready) return
+    const today = format(new Date(), 'yyyy-MM-dd')
+    if (lastAutoBrief === today) return
     const generatedAt = briefQuery.brief.value?.generated_at
     const staleBrief =
       !generatedAt || isBefore(new Date(generatedAt), startOfDay(new Date()))
-    if (staleBrief) void runBrief()
+    if (!staleBrief) return
+    // Claimed before the await, not after: a generation that fails must not
+    // re-fire on the next navigation. Regenerate is one tap away.
+    lastAutoBrief = today
+    void runBrief()
   },
   { immediate: true },
 )
@@ -152,32 +186,48 @@ const goalSub = computed(() => {
       <!-- 3 · Largest movers -->
       <div class="mt-5 grid gap-5 lg:grid-cols-2">
         <AppCard title="Largest movers" :padded="false">
-          <div v-if="movers.up.length === 0 && movers.down.length === 0" class="p-4">
+          <div v-if="moverGroups.length === 0" class="p-4">
             <p class="text-muted text-[15px]">No year-over-year movement yet.</p>
           </div>
-          <ul v-else class="divide-line divide-y">
-            <li v-for="m in [...movers.up, ...movers.down]" :key="m.customer_key">
-              <RouterLink
-                :to="{ name: 'account', params: { customerKey: m.customer_key } }"
-                class="hover:bg-canvas flex items-center justify-between gap-3 px-4 py-3"
-              >
-                <span class="min-w-0">
-                  <span class="text-ink block truncate text-[15px] font-semibold">
-                    {{ m.customer_name || m.customer_key }}
-                  </span>
-                  <span class="text-muted block text-xs">
-                    {{ money(m.revenue_ytd) }} YTD · was {{ money(m.revenue_prior_ytd) }}
-                  </span>
-                </span>
-                <span
-                  class="shrink-0 text-[15px] font-bold tabular-nums"
-                  :class="m.delta > 0 ? 'text-brand' : 'text-accent'"
-                >
-                  {{ m.delta > 0 ? '+' : '−' }}{{ money(Math.abs(m.delta)).slice(1) }}
-                </span>
-              </RouterLink>
-            </li>
-          </ul>
+          <!-- template wrapper so v-else isn't sharing an element with v-for -->
+          <template v-else>
+            <section
+              v-for="(group, i) in moverGroups"
+              :key="group.key"
+              :class="i > 0 ? 'border-line border-t' : ''"
+            >
+              <h3 class="u-label bg-canvas border-line border-b px-4 py-2">
+                {{ group.label }}
+              </h3>
+              <ul class="divide-line divide-y">
+                <li v-for="m in group.rows" :key="m.customer_key">
+                  <RouterLink
+                    :to="{ name: 'account', params: { customerKey: m.customer_key } }"
+                    class="hover:bg-canvas flex items-center justify-between gap-3 px-4 py-3"
+                  >
+                    <span class="min-w-0">
+                      <span class="text-ink block truncate text-[15px] font-semibold">
+                        {{ m.customer_name || m.customer_key }}
+                      </span>
+                      <span class="text-muted block text-xs">
+                        {{ money(m.revenue_ytd) }} YTD · was
+                        {{ money(m.revenue_prior_ytd) }}
+                      </span>
+                    </span>
+                    <!-- money(), not money().slice(1): the dollar sign came off
+                         to save width, which left "+12,400" sitting in a column
+                         of "$45,200" and reading like a unit-less count. -->
+                    <span
+                      class="shrink-0 text-[15px] font-bold tabular-nums"
+                      :class="m.delta > 0 ? 'text-brand' : 'text-accent'"
+                    >
+                      {{ m.delta > 0 ? '+' : '−' }}{{ money(Math.abs(m.delta)) }}
+                    </span>
+                  </RouterLink>
+                </li>
+              </ul>
+            </section>
+          </template>
         </AppCard>
 
         <!-- 4 · Worth investigating — observations, never assignments. -->

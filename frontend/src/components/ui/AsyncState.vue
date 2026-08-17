@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import AppButton from './AppButton.vue'
-import { isSchemaNotExposed } from '@/lib/supabase'
+import { describeError } from '@/lib/supabase'
 
 const props = withDefaults(
   defineProps<{
@@ -19,14 +19,13 @@ const props = withDefaults(
 
 defineEmits<{ retry: [] }>()
 
-const message = computed(() => {
-  const e = props.error as { message?: string } | null
-  if (!e) return ''
-  if (isSchemaNotExposed(e)) {
-    return 'The ERP read models are not published to the API yet. An admin needs to add the `erp` schema under Settings → API → Exposed schemas in Supabase.'
-  }
-  return e.message || 'Something went wrong.'
-})
+/**
+ * Every failed read in the app renders here, so this is the one place worth
+ * translating Postgres into English. The branches live in lib/supabase.ts
+ * because the composables' own `asDisplayError` helpers need the same
+ * vocabulary.
+ */
+const message = computed(() => describeError(props.error))
 </script>
 
 <template>

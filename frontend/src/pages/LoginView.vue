@@ -20,10 +20,14 @@ async function submit() {
   try {
     await session.signIn(email.value, password.value)
     const redirect = route.query.redirect
+    // Overview, not Today: the morning briefing is the front door since the
+    // data-first restructure, and /today only exists while the recommendations
+    // flag is on — sending everyone there meant a guard bounce at best and the
+    // demoted landing page at worst.
     await router.replace(
       typeof redirect === 'string' && redirect.startsWith('/')
         ? redirect
-        : { name: 'today' },
+        : { name: 'overview' },
     )
   } catch (e) {
     const message = (e as Error).message ?? ''
