@@ -220,6 +220,21 @@ const whoami: ToolDef = {
 
     if (all.error) fail(all.error, 'your account book')
 
+    // Freshness is the one field the instructions tell every session to read
+    // first — if it cannot be read (typically: the nightly ETL is mid-load
+    // and holding locks), say so instead of returning an empty object.
+    const freshness = fresh.error
+      ? {
+          unavailable: true,
+          note:
+            'Data freshness could not be read — the nightly load may be ' +
+            'running right now. Figures may shift; retry in a few minutes.',
+        }
+      : compact({
+          etl_loaded_at: fresh.data?.data_loaded_at ?? null,
+          data_through: fresh.data?.data_through ?? null,
+        })
+
     return {
       user: compact({
         name: caller.fullName,
@@ -231,10 +246,7 @@ const whoami: ToolDef = {
         accounts_total: all.count ?? 0,
         accounts_active: active.count ?? 0,
       },
-      data_freshness: compact({
-        etl_loaded_at: fresh.data?.data_loaded_at ?? null,
-        data_through: fresh.data?.data_through ?? null,
-      }),
+      data_freshness: freshness,
       today: new Date().toISOString().slice(0, 10),
       access_note:
         caller.role === 'admin'
@@ -362,9 +374,13 @@ const getAccount: ToolDef = {
       db
         .from('account_signals')
         .select(
+          // Aliased: this yoy is TRAILING-12M vs the prior 12 months (the
+          // scoring window, 019), not the calendar-YTD figure in `revenue` —
+          // the two legitimately disagree in sign and read as a contradiction
+          // when both are called yoy_change.
           'score, priority, days_since_order, cadence_days, cadence_confident, ' +
-            'days_since_touch, last_touch_date, yoy_change, families_dropped, ' +
-            'open_backlog_amount, revenue_percentile, computed_at',
+            'days_since_touch, last_touch_date, yoy_change_trailing_12m:yoy_change, ' +
+            'families_dropped, open_backlog_amount, revenue_percentile, computed_at',
         )
         .eq('customer_key', key)
         .maybeSingle(),
@@ -1006,6 +1022,12 @@ const listBacklog: ToolDef = {
       const term = safeLike(query)
       if (term) q = q.or(`part_id.ilike.*${term}*,part_description.ilike.*${term}*`)
     }
+    // Date sorts answer "what is most overdue" — a question about product
+    // owed. Zero-dollar lines (RMA repair workflow rows with promise dates
+    // years back) and credit lines would otherwise fill the whole first
+    // page, so they are excluded HERE ONLY; amount/qty sorts still return
+    // them, flagged below.
+    if (ascending) q = q.gt('backlog_amount', 0)
 
     const result = await q.order(column, { ascending, nullsFirst: false }).limit(limit)
     const rows = rowsOf(result, 'the backlog')
@@ -1028,7 +1050,9 @@ const listBacklog: ToolDef = {
       note:
         'Totals cover the returned rows only — raise `limit` for a full picture. ' +
         'Rows flagged is_credit_or_discount are open credit/discount lines ' +
-        '(negative amount): they reduce the dollar backlog but are not product owed.',
+        '(negative amount): they reduce the dollar backlog but are not product owed. ' +
+        'Date sorts exclude zero/negative-amount lines (RMA repair rows carry ' +
+        'years-old promise dates); amount and qty sorts include everything.',
     }
   },
 }
