@@ -154,15 +154,46 @@ const browseList = computed(
 
 const itemsQuery = usePriceListItems(browseListId)
 const itemSearch = ref('')
+
+/**
+ * Family/caliber narrowing, fed by the ERP part attributes on the item view
+ * (v_price_list_items) — options are whatever the browsed list actually
+ * carries. Selections reset with the list: a family picked on one list is
+ * meaningless (or silently empties the results) on another.
+ */
+const familyFilter = ref('')
+const caliberFilter = ref('')
+watch(browseListId, () => {
+  familyFilter.value = ''
+  caliberFilter.value = ''
+})
+
+function distinctOf(key: 'product_family' | 'chambering') {
+  const values = new Set<string>()
+  for (const i of itemsQuery.data.value ?? []) {
+    const v = i[key]
+    if (v) values.add(v)
+  }
+  return [...values].sort((a, b) => a.localeCompare(b))
+}
+const familyOptions = computed(() => distinctOf('product_family'))
+const caliberOptions = computed(() => distinctOf('chambering'))
+
 const matchingItems = computed(() => {
   const term = itemSearch.value.trim().toLowerCase()
-  const pool = itemsQuery.data.value ?? []
+  const pool = (itemsQuery.data.value ?? []).filter(
+    (i) =>
+      (!familyFilter.value || i.product_family === familyFilter.value) &&
+      (!caliberFilter.value || i.chambering === caliberFilter.value),
+  )
   if (!term) return pool.slice(0, 30)
   return pool
     .filter(
       (i) =>
         i.part_id.toLowerCase().includes(term) ||
-        (i.description ?? '').toLowerCase().includes(term),
+        (i.description ?? '').toLowerCase().includes(term) ||
+        (i.product_family ?? '').toLowerCase().includes(term) ||
+        (i.chambering ?? '').toLowerCase().includes(term),
     )
     .slice(0, 30)
 })
@@ -417,9 +448,35 @@ onBeforeRouteLeave(() => {
             <input
               v-model="itemSearch"
               class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
-              :placeholder="`Search ${browseList?.name ?? 'the list'} by SKU or description…`"
+              :placeholder="`Search ${browseList?.name ?? 'the list'} by SKU, description, family or caliber…`"
             />
           </label>
+
+          <div
+            v-if="familyOptions.length > 0 || caliberOptions.length > 0"
+            class="flex flex-wrap gap-2"
+          >
+            <label v-if="familyOptions.length > 0" class="min-w-0 flex-1">
+              <span class="sr-only">Filter by family</span>
+              <select
+                v-model="familyFilter"
+                class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
+              >
+                <option value="">All families</option>
+                <option v-for="f in familyOptions" :key="f" :value="f">{{ f }}</option>
+              </select>
+            </label>
+            <label v-if="caliberOptions.length > 0" class="min-w-0 flex-1">
+              <span class="sr-only">Filter by caliber</span>
+              <select
+                v-model="caliberFilter"
+                class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
+              >
+                <option value="">All calibers</option>
+                <option v-for="c in caliberOptions" :key="c" :value="c">{{ c }}</option>
+              </select>
+            </label>
+          </div>
 
           <div v-if="itemsQuery.isLoading.value" class="text-muted text-[14px]">
             Loading items…
@@ -429,6 +486,9 @@ onBeforeRouteLeave(() => {
             class="text-muted text-[14px]"
           >
             This list has no items yet — an admin needs to upload them.
+          </p>
+          <p v-else-if="matchingItems.length === 0" class="text-muted text-[14px]">
+            No items match the search or filters.
           </p>
           <ul v-else class="divide-line border-line max-h-72 divide-y overflow-y-auto border">
             <li v-for="item in matchingItems" :key="item.id">
@@ -443,6 +503,12 @@ onBeforeRouteLeave(() => {
                   </span>
                   <span class="text-muted block truncate text-[13px]">
                     {{ item.description || '—' }}
+                  </span>
+                  <span
+                    v-if="item.product_family || item.chambering"
+                    class="text-muted block truncate text-[12px]"
+                  >
+                    {{ [item.product_family, item.chambering].filter(Boolean).join(' · ') }}
                   </span>
                 </span>
                 <span class="text-ink shrink-0 text-[15px] font-semibold">

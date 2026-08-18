@@ -64,8 +64,16 @@ with ins as (
 )
 insert into t_pl select name, id from ins;
 
+-- Two items: PLT-PART-1 is unknown to the ERP (the uploaded description is
+-- all there is); PLT-PART-2 has a part-master row whose description must WIN
+-- over the uploaded one in v_price_list_items (migration 20260818000100).
 insert into public.price_list_items (price_list_id, part_id, description, unit_price)
-values ((select id from t_pl where label = 'PLT general dealer'), 'PLT-PART-1', 'Test part', 100.00);
+values
+  ((select id from t_pl where label = 'PLT general dealer'), 'PLT-PART-1', 'Test part', 100.00),
+  ((select id from t_pl where label = 'PLT general dealer'), 'PLT-PART-2', 'Sheet says this', 250.00);
+
+insert into erp.dim_part (part_key, part_id, part_description, product_family, chambering)
+values ('PLT-KEY-2', 'PLT-PART-2', 'ERP says this', 'PLT Family', '6.5 PLT');
 
 insert into public.price_list_files (customer_type, title, storage_path, file_name)
 values ('PLT-DEALER', 'Dealer price list', 'plt-dealer/test.xlsx', 'dealer.xlsx');
@@ -138,6 +146,28 @@ select pg_temp.assert(
 select pg_temp.assert(
   (select count(*) from public.price_list_files where customer_type = 'PLT-DEALER') = 1,
   'rep reads price list file metadata');
+
+--------------------------------------------------------------------------
+-- 1b. v_price_list_items — the ERP part-master lookup.
+--------------------------------------------------------------------------
+select pg_temp.assert(
+  (select description from public.v_price_list_items where part_id = 'PLT-PART-2')
+    = 'ERP says this'
+  and (select in_erp from public.v_price_list_items where part_id = 'PLT-PART-2'),
+  'a part the ERP knows takes the part-master description');
+
+select pg_temp.assert(
+  (select product_family from public.v_price_list_items where part_id = 'PLT-PART-2')
+    = 'PLT Family'
+  and (select chambering from public.v_price_list_items where part_id = 'PLT-PART-2')
+    = '6.5 PLT',
+  'family and caliber come through from the part master');
+
+select pg_temp.assert(
+  (select description from public.v_price_list_items where part_id = 'PLT-PART-1')
+    = 'Test part'
+  and not (select in_erp from public.v_price_list_items where part_id = 'PLT-PART-1'),
+  'a part the ERP does not know falls back to the uploaded description');
 
 --------------------------------------------------------------------------
 -- 2. Reps write nothing.

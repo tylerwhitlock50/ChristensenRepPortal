@@ -31,12 +31,24 @@ export interface PriceListRow {
   updated_at: string
 }
 
+/**
+ * A row of v_price_list_items (migration 20260818000100): the stored item
+ * with the ERP part master looked up by part_id. description is the ERP's
+ * when the part is known (in_erp), the uploaded CSV text when it is not;
+ * the family/caliber attributes are what the picker filters on.
+ */
 export interface PriceListItemRow {
   id: number
   price_list_id: number
   part_id: string
   description: string | null
   unit_price: number
+  in_erp: boolean
+  product_family: string | null
+  chambering: string | null
+  action_type: string | null
+  barrel_length: string | null
+  finish: string | null
 }
 
 /** "Buy 10, get 2" — the chip text wherever a promo list is shown. */
@@ -67,7 +79,7 @@ export function usePriceListItems(listId: MaybeRef<number | null>) {
     enabled: computed(() => unref(listId) != null),
     queryFn: async (): Promise<PriceListItemRow[]> => {
       const { data, error } = await db
-        .from('price_list_items')
+        .from('v_price_list_items')
         .select('*')
         .eq('price_list_id', unref(listId))
         .order('part_id')
