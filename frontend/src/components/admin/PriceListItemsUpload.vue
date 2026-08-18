@@ -12,6 +12,10 @@ import {
 /**
  * Per-list item upload: "Save as CSV" from the approved Excel sheet, columns
  * part_id, description, unit_price (a header row is detected and skipped).
+ * The description column is a FALLBACK only: the app reads items through
+ * v_price_list_items, where the ERP part master's description and
+ * family/caliber attributes win whenever dim_part knows the part. The
+ * uploaded text only ever shows for SKUs the ERP doesn't have yet.
  *
  * Same shape as the missions composer: parse → PREVIEW → confirm, and any
  * change of file voids the preview. The upload REPLACES the list's items —
@@ -149,6 +153,8 @@ async function confirm() {
       <span class="text-muted mt-1 block text-[13px]">
         Columns: part number, description, unit price — “Save as CSV” from the
         approved sheet. Uploading replaces every item on this list.
+        Descriptions come from the ERP part master when it knows the part;
+        the sheet's description only shows for SKUs the ERP doesn't have yet.
       </span>
     </label>
 
