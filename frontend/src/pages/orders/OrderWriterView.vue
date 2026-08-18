@@ -113,9 +113,13 @@ const customerLoaded = computed(
   () => !!customerKey.value && customer.isSuccess.value,
 )
 
-/** Changing the account invalidates every line's list eligibility. */
+/**
+ * Changing the account invalidates every line's list eligibility — and the
+ * browsed list itself, even when no lines were added yet: leaving the old
+ * account's list open would show its SKUs and prices against the new one.
+ */
 watch(customerKey, (next, prev) => {
-  if (prev && next !== prev && lines.value.length > 0) {
+  if (prev && next !== prev) {
     lines.value = []
     browseListId.value = null
   }
@@ -128,10 +132,19 @@ const effective = useEffectivePriceLists(
 const effectiveLists = computed(() => effective.data.value ?? [])
 const specialLists = computed(() => effectiveLists.value.filter((l) => l.is_special))
 
-/** Which list the SKU picker is browsing. General preselects itself. */
+/**
+ * Which list the SKU picker is browsing. General preselects itself, and the
+ * selection re-resolves whenever the account changes or the current id is no
+ * longer among the effective lists (account switch cleared it, or the type's
+ * lists changed) — customerKey is a source so a switch between two accounts
+ * of the same type, whose list set is identical and thus never re-fires
+ * `effectiveLists`, still lands on a selected tab.
+ */
 const browseListId = ref<number | null>(null)
-watch(effectiveLists, (lists) => {
-  if (browseListId.value == null && lists.length > 0) {
+watch([effectiveLists, customerKey], () => {
+  const lists = effectiveLists.value
+  if (lists.length === 0) return
+  if (browseListId.value == null || !lists.some((l) => l.id === browseListId.value)) {
     browseListId.value = (lists.find((l) => !l.is_special) ?? lists[0]).id
   }
 })

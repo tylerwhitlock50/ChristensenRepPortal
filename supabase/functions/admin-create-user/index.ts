@@ -128,8 +128,11 @@ async function handle(req: Request): Promise<Response> {
     )
   }
 
-  const salesRepKey = nullIfBlank(body.sales_rep_key)
-  const repGroupVendorId = nullIfBlank(body.rep_group_vendor_id)
+  // order_entry owns no book (constraint order_entry_empty_book): scope
+  // fields are forced null rather than trusted from the form.
+  const salesRepKey = role === 'order_entry' ? null : nullIfBlank(body.sales_rep_key)
+  const repGroupVendorId =
+    role === 'order_entry' ? null : nullIfBlank(body.rep_group_vendor_id)
   const active = body.active ?? true
 
   // Placeholder guard — the whole reason this validation block exists.
@@ -154,6 +157,16 @@ async function handle(req: Request): Promise<Response> {
   --------------------------------------------------------------------*/
   const admin = serviceClient()
   const warnings: string[] = []
+
+  if (
+    role === 'order_entry' &&
+    (nullIfBlank(body.sales_rep_key) || nullIfBlank(body.rep_group_vendor_id))
+  ) {
+    warnings.push(
+      'order_entry users have no account book — the rep code / rep group ' +
+        'fields were ignored.',
+    )
+  }
 
   // Soft check: a typo'd rep code is valid SQL and grants nothing at all,
   // which looks identical to "the ETL hasn't run yet". Warn, don't block.

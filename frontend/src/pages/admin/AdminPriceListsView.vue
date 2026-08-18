@@ -189,15 +189,30 @@ async function saveList() {
   }
 }
 
+/**
+ * Delete is for lists nothing references yet (a typo'd publish). Once any
+ * order line points at a list, order_lines.price_list_id RESTRICTs the
+ * delete — deliberately, the list is those orders' pricing record — so the
+ * FK failure is translated into "retire it instead" rather than surfacing
+ * a raw constraint error (or, worse, nothing at all).
+ */
+const deleteError = ref('')
+
 async function removeList(list: PriceListRow) {
-  if (
-    !window.confirm(
-      `Delete "${list.name}" and its items? Existing orders keep their captured prices.`,
-    )
-  )
-    return
-  await deleteList.mutateAsync(list.id)
-  if (itemsFor.value === list.id) itemsFor.value = null
+  if (!window.confirm(`Delete "${list.name}" and its items?`)) return
+  deleteError.value = ''
+  try {
+    await deleteList.mutateAsync(list.id)
+    if (itemsFor.value === list.id) itemsFor.value = null
+  } catch (err) {
+    const e = err as { code?: string; message?: string }
+    deleteError.value =
+      e.code === '23503'
+        ? `"${list.name}" is referenced by existing orders, so it can't be ` +
+          'deleted — those orders keep it as their pricing record. Retire it ' +
+          'instead: Edit → uncheck Active (reps stop seeing it immediately).'
+        : e.message || 'Delete failed.'
+  }
 }
 
 /** Which list's item panel is open. */
@@ -372,6 +387,10 @@ function rangeLabel(list: PriceListRow): string {
             </li>
           </ul>
         </AsyncState>
+
+        <p v-if="deleteError" role="alert" class="text-danger text-sm">
+          {{ deleteError }}
+        </p>
 
         <div v-if="!showListForm">
           <AppButton variant="secondary" @click="openCreate">New price list</AppButton>
