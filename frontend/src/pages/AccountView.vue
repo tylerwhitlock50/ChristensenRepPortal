@@ -9,6 +9,7 @@ import { useAccountRecommendations } from '@/composables/useRecommendations'
 import {
   useAccountActions,
   useAddNote,
+  useContacts,
   useLogAccountAction,
   useNotes,
 } from '@/composables/useAccountData'
@@ -64,7 +65,7 @@ import {
   useReactivateAccount,
 } from '@/composables/useAccountStatus'
 import { isCreditBlocked } from '@/lib/ffl'
-import { count, daysAgo, humanize, money, shortDate } from '@/lib/format'
+import { count, daysAgo, humanize, money, shortDate, telHref } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
 const key = computed(() => props.customerKey)
@@ -116,6 +117,22 @@ const lastOrderDate = computed(
 )
 const notes = useNotes(key)
 const actions = useAccountActions(key)
+
+/**
+ * The buyer, in the header — who to ring before walking in. Same query
+ * ContactsCard runs at the bottom of the page (vue-query dedupes it); the
+ * list already comes back is_primary first, so row 0 is the best answer we
+ * have even when nobody is flagged primary.
+ */
+const contacts = useContacts(key)
+/* An explicit find, not row 0: the query orders is_primary DESC, and the
+   ERP branch of v_account_contacts leaves is_primary NULL (not false) when
+   the flag is unset — NULLs sort first under DESC, so row 0 can be an
+   unflagged ERP contact sitting above the rep's actual primary. */
+const primaryContact = computed(() => {
+  const list = contacts.data.value ?? []
+  return list.find((c) => c.is_primary === true) ?? list[0] ?? null
+})
 
 /**
  * The header's Goal tile. Same query AccountGoalPanel runs in the Performance
@@ -403,6 +420,38 @@ const noteSection = ref<HTMLElement | null>(null)
 const photoSection = ref<HTMLElement | null>(null)
 const summarySection = ref<HTMLElement | null>(null)
 
+/* ---- clickable order stats ----------------------------------------------
+   "Last order", "Open orders" and "Last invoice" (header strip + Performance
+   card) all resolve to the orders/shipments cards further down: expand the
+   right card, then the same nextTick-then-scroll move as onQuickAction.
+   "Last order" additionally pops the newest order's line modal.
+------------------------------------------------------------------------- */
+const ordersSection = ref<HTMLElement | null>(null)
+const ordersCard = ref<InstanceType<typeof AccountOrdersCard> | null>(null)
+
+async function scrollToOrders(behavior: ScrollBehavior = 'smooth') {
+  await nextTick()
+  ordersSection.value?.scrollIntoView({ behavior, block: 'start' })
+}
+
+async function showLastOrder() {
+  ordersCard.value?.expandOrders()
+  // Instant, not smooth: the modal about to open locks body scroll
+  // (AppModal), which would freeze a smooth scroll mid-flight. Jump first,
+  // so closing the modal lands the rep on the orders card.
+  await scrollToOrders('auto')
+  ordersCard.value?.openNewestOrder()
+}
+function showOpenOrders() {
+  ordersCard.value?.expandOrders()
+  void scrollToOrders()
+}
+async function showLastInvoice() {
+  ordersCard.value?.expandShipments()
+  await nextTick()
+  ordersCard.value?.scrollToShipments()
+}
+
 async function onQuickAction(action: QuickAction) {
   const targets: Record<QuickAction, typeof logSection> = {
     visit: surveySection,
@@ -519,30 +568,73 @@ watch(key, () => {
         >
           ← All accounts
         </RouterLink>
-        <h1 class="u-display mt-3 text-[32px]">{{ title }}</h1>
-        <p class="mt-1 text-sm text-[#8E8A80]">
-          {{ customerKey }}<template v-if="place"> · {{ place }}</template>
-          <template v-if="account.data.value?.territory">
-            · {{ account.data.value.territory }}
-          </template>
-        </p>
-        <div class="mt-3 flex flex-wrap items-center gap-2">
-          <!-- The rep's write-off outranks the ERP flag: the ERP will keep
-               saying Active forever, and that's the whole reason 023 exists. -->
-          <AppBadge v-if="deactivation" tone="high">Deactivated</AppBadge>
-          <AppBadge
-            v-else-if="account.data.value?.active_flag === 'Y'"
-            tone="good"
+        <div class="sm:flex sm:items-start sm:justify-between sm:gap-6">
+          <div class="min-w-0">
+            <h1 class="u-display mt-3 text-[32px]">{{ title }}</h1>
+            <p class="mt-1 text-sm text-[#8E8A80]">
+              {{ customerKey }}<template v-if="place"> · {{ place }}</template>
+              <template v-if="account.data.value?.territory">
+                · {{ account.data.value.territory }}
+              </template>
+            </p>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <!-- The rep's write-off outranks the ERP flag: the ERP will keep
+                   saying Active forever, and that's the whole reason 023 exists. -->
+              <AppBadge v-if="deactivation" tone="high">Deactivated</AppBadge>
+              <AppBadge
+                v-else-if="account.data.value?.active_flag === 'Y'"
+                tone="good"
+              >
+                Active
+              </AppBadge>
+              <AppBadge v-else tone="neutral">Inactive</AppBadge>
+              <span
+                v-if="account.data.value?.assigned_sales_rep_name"
+                class="text-sm text-[#8E8A80]"
+              >
+                Rep: {{ account.data.value.assigned_sales_rep_name }}
+              </span>
+            </div>
+          </div>
+
+          <!-- The buyer — who to ring before walking in. Same rows as the
+               ContactsCard at the bottom; the compliance flags (034) decide
+               whether the phone/email are links at all. -->
+          <div
+            v-if="primaryContact"
+            class="mt-4 shrink-0 sm:mt-3 sm:max-w-[18rem] sm:text-right"
           >
-            Active
-          </AppBadge>
-          <AppBadge v-else tone="neutral">Inactive</AppBadge>
-          <span
-            v-if="account.data.value?.assigned_sales_rep_name"
-            class="text-sm text-[#8E8A80]"
-          >
-            Rep: {{ account.data.value.assigned_sales_rep_name }}
-          </span>
+            <p class="text-canvas text-sm font-semibold">
+              {{ primaryContact.name }}
+            </p>
+            <p v-if="primaryContact.title" class="text-xs text-[#8E8A80]">
+              {{ primaryContact.title }}
+            </p>
+            <p v-if="primaryContact.phone" class="mt-1 text-sm">
+              <a
+                v-if="!primaryContact.do_not_call"
+                :href="telHref(primaryContact.phone)"
+                class="text-canvas underline decoration-dotted underline-offset-2"
+              >
+                {{ primaryContact.phone }}
+              </a>
+              <span v-else class="text-[#8E8A80]">
+                {{ primaryContact.phone }} · do not call
+              </span>
+            </p>
+            <p v-if="primaryContact.email" class="mt-0.5 text-sm break-all">
+              <a
+                v-if="!primaryContact.do_not_email"
+                :href="`mailto:${primaryContact.email}`"
+                class="text-canvas underline decoration-dotted underline-offset-2"
+              >
+                {{ primaryContact.email }}
+              </a>
+              <span v-else class="text-[#8E8A80]">
+                {{ primaryContact.email }} · do not email
+              </span>
+            </p>
+          </div>
         </div>
 
         <!-- What the rep can do, before the numbers rather than after them. -->
@@ -564,7 +656,19 @@ watch(key, () => {
             Last order
           </dt>
           <dd class="u-display mt-0.5 text-xl">
-            {{ daysAgo(lastOrderDate) }}
+            <!-- Straight to the order itself: expands the orders card below
+                 and opens the newest order's lines. Plain text when there's
+                 no order — a clickable "never" that goes nowhere is worse. -->
+            <button
+              v-if="lastOrderDate"
+              type="button"
+              class="underline decoration-dotted underline-offset-4"
+              title="Show the most recent order"
+              @click="showLastOrder"
+            >
+              {{ daysAgo(lastOrderDate) }}
+            </button>
+            <template v-else>{{ daysAgo(lastOrderDate) }}</template>
           </dd>
         </div>
         <div class="bg-surface px-3 py-2.5">
@@ -621,13 +725,18 @@ watch(key, () => {
         the Performance card already runs (vue-query dedupes it), so this
         costs no extra request.
       -->
-      <div
+      <button
         v-if="openOrders"
-        class="border-line bg-surface -mx-4 border-b px-4 py-3"
+        type="button"
+        class="border-line bg-surface hover:bg-canvas -mx-4 block w-[calc(100%+2rem)] border-b px-4 py-3 text-left"
+        title="Show the open orders"
+        @click="showOpenOrders"
       >
-        <p class="text-ink text-[15px] font-semibold">{{ openOrders.label }}</p>
+        <p class="text-ink text-[15px] font-semibold underline decoration-dotted underline-offset-4">
+          {{ openOrders.label }}
+        </p>
         <p class="text-muted text-[13px]">{{ openOrders.detail }}</p>
-      </div>
+      </button>
     </AsyncState>
 
     <!-- Deactivated: say so up top, with the way back. The full story and
@@ -684,7 +793,12 @@ watch(key, () => {
     />
 
     <!-- Mini-dashboard: every number below is aggregated in Postgres. -->
-    <AccountSummaryCard :customer-key="customerKey" />
+    <AccountSummaryCard
+      :customer-key="customerKey"
+      @show-orders="showOpenOrders"
+      @show-last-order="showLastOrder"
+      @show-last-invoice="showLastInvoice"
+    />
     <AccountRevenueChart :customer-key="customerKey" />
 
     <!-- The account Sales Brief — cached copy first, regeneration on request
@@ -885,7 +999,9 @@ watch(key, () => {
     </section>
 
     <!-- Orders and shipments, straight off the rollup views. -->
-    <AccountOrdersCard :customer-key="customerKey" />
+    <section ref="ordersSection" class="scroll-mt-16">
+      <AccountOrdersCard ref="ordersCard" :customer-key="customerKey" />
+    </section>
 
     <!-- What they buy and what they're owed, by SKU (data-first additions). -->
     <AccountSkuSalesCard :customer-key="customerKey" />

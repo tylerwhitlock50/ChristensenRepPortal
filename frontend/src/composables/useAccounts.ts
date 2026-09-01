@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useInfiniteQuery, useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, isSchemaNotExposed, supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { isViewMissing } from '@/composables/useAccountMetrics'
 import type { DimCustomerRow } from '@/types/erp'
@@ -65,6 +66,9 @@ export interface AccountPage {
 export function useAccountSearch(
   search: MaybeRef<string>,
   activeOnly: MaybeRef<boolean>,
+  /** Gate for pages with another mode (AccountsView's table) — a search
+      keystroke must not cost server round trips for a list not rendered. */
+  enabled: MaybeRef<boolean> = true,
 ) {
   const term = computed(() => sanitizeSearch(unref(search)))
   const active = computed(() => unref(activeOnly))
@@ -73,6 +77,7 @@ export function useAccountSearch(
     queryKey: computed(
       () => [...qk.me.accounts(), { q: term.value, active: active.value }] as const,
     ),
+    enabled: computed(() => unref(enabled)),
     initialPageParam: 0,
     queryFn: async ({ pageParam }): Promise<AccountPage> => {
       const page = pageParam as number
@@ -121,6 +126,111 @@ export function useAccountSearch(
       last.rows.length === ACCOUNTS_PAGE_SIZE ? last.page + 1 : undefined,
     // The ETL lands this once a night.
     staleTime: 10 * 60_000,
+  })
+}
+
+/* ---- table mode ---------------------------------------------------------
+   The accounts page's column view reads public.v_account_table
+   (20260901000100): identity + the nightly rollup's ship/booking windows +
+   the current-year goal, one row per account, no fact-table scans. Fetched
+   WHOLE (fetchAllRows) rather than paged: sorting a metric column over a
+   page of 50 would silently rank only the 50 that happened to load, and a
+   rep's book is a few hundred rows at most. An admin's ~41k is the known
+   cost of this v1 — the active-only server filter carries most of it.
+------------------------------------------------------------------------- */
+
+export interface AccountTableRow {
+  customer_key: string
+  customer_name: string | null
+  sold_to_city: string | null
+  sold_to_state: string | null
+  active_flag: string | null
+  assigned_sales_rep_name: string | null
+  last_order_date: string | null
+  last_invoice_date: string | null
+  revenue_ytd: number
+  revenue_prior_ytd: number
+  revenue_prior_full: number
+  bookings_ytd: number
+  bookings_prior_ytd: number
+  open_order_value: number
+  open_order_count: number
+  goal_amount: number | null
+  goal_source: string | null
+  attainment_pct: number | null
+  on_track: boolean | null
+  deactivated_at: string | null
+}
+
+function tableNum(value: unknown): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
+
+export function useAccountTable(
+  activeOnly: MaybeRef<boolean>,
+  enabled: MaybeRef<boolean>,
+) {
+  const active = computed(() => unref(activeOnly))
+  const on = computed(() => unref(enabled))
+  return useQuery({
+    queryKey: computed(
+      () => [...qk.me.accounts(), 'table', { active: active.value }] as const,
+    ),
+    enabled: on,
+    staleTime: 10 * 60_000,
+    queryFn: async (): Promise<AccountTableRow[]> => {
+      const rows = await fetchAllRows<Record<string, unknown>>((from, to) => {
+        const base = db
+          .from('v_account_table')
+          // Explicit columns, not '*': the mapper below is the contract, and
+          // over an admin's ~20k rows every stray column is real payload.
+          .select(
+            'customer_key, customer_name, sold_to_city, sold_to_state, ' +
+              'active_flag, assigned_sales_rep_name, last_order_date, ' +
+              'last_invoice_date, revenue_ytd, revenue_prior_ytd, ' +
+              'revenue_prior_full, bookings_ytd, bookings_prior_ytd, ' +
+              'open_order_value, open_order_count, goal_amount, goal_source, ' +
+              'attainment_pct, on_track, deactivated_at',
+            { count: 'exact' },
+          )
+        const scoped = active.value
+          ? base.eq('active_flag', 'Y').is('deactivated_at', null)
+          : base
+        return scoped
+          .order('customer_name', { ascending: true })
+          .order('customer_key') // unique tiebreak — fetchAllRows contract
+          .range(from, to)
+          // The explicit column list defeats supabase-js's string-parsing
+          // of select() on this untyped handle; assert the row shape the
+          // mapper below consumes.
+          .returns<Record<string, unknown>[]>()
+      })
+      return rows.map((r) => ({
+        customer_key: String(r.customer_key),
+        customer_name: (r.customer_name as string | null) ?? null,
+        sold_to_city: (r.sold_to_city as string | null) ?? null,
+        sold_to_state: (r.sold_to_state as string | null) ?? null,
+        active_flag: (r.active_flag as string | null) ?? null,
+        assigned_sales_rep_name:
+          (r.assigned_sales_rep_name as string | null) ?? null,
+        last_order_date: (r.last_order_date as string | null) ?? null,
+        last_invoice_date: (r.last_invoice_date as string | null) ?? null,
+        revenue_ytd: tableNum(r.revenue_ytd),
+        revenue_prior_ytd: tableNum(r.revenue_prior_ytd),
+        revenue_prior_full: tableNum(r.revenue_prior_full),
+        bookings_ytd: tableNum(r.bookings_ytd),
+        bookings_prior_ytd: tableNum(r.bookings_prior_ytd),
+        open_order_value: tableNum(r.open_order_value),
+        open_order_count: tableNum(r.open_order_count),
+        goal_amount: r.goal_amount == null ? null : tableNum(r.goal_amount),
+        goal_source: (r.goal_source as string | null) ?? null,
+        attainment_pct:
+          r.attainment_pct == null ? null : tableNum(r.attainment_pct),
+        on_track: (r.on_track as boolean | null) ?? null,
+        deactivated_at: (r.deactivated_at as string | null) ?? null,
+      }))
+    },
   })
 }
 

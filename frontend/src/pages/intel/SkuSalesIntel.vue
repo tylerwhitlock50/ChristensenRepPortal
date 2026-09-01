@@ -15,6 +15,7 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import { deltaLabel, percentChange } from '@/composables/useAccountMetrics'
+import ProductLink from '@/components/ui/ProductLink.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
 import { count, money, shortDate } from '@/lib/format'
 
@@ -61,10 +62,20 @@ const accounts = computed(() =>
 )
 
 const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
-  { id: 'part_id', header: 'SKU', accessorKey: 'part_id' },
+  { id: 'part_id', header: 'SKU', accessorKey: 'part_id', meta: { filter: 'text' } },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
-  { id: 'product_family', header: 'Family', accessorKey: 'product_family' },
-  { id: 'chambering', header: 'Chambering', accessorKey: 'chambering' },
+  {
+    id: 'product_family',
+    header: 'Family',
+    accessorKey: 'product_family',
+    meta: { filter: 'select' },
+  },
+  {
+    id: 'chambering',
+    header: 'Chambering',
+    accessorKey: 'chambering',
+    meta: { filter: 'select' },
+  },
   { id: 'qtyThisYear', header: `Qty ${yearNow}`, accessorKey: 'qtyThisYear' },
   { id: 'revenueThisYear', header: `Rev ${yearNow}`, accessorKey: 'revenueThisYear' },
   { id: 'qtyLastYear', header: `Qty ${yearNow - 1}`, accessorKey: 'qtyLastYear' },
@@ -185,6 +196,11 @@ function onExport() {
             class="p-3"
             @rows-change="visible = $event"
           >
+            <!-- The picture lives on the website: the family page has the
+                 photography the ERP doesn't. -->
+            <template #cell-part_id="{ row }">
+              <ProductLink :family="row.product_family">{{ row.part_id }}</ProductLink>
+            </template>
             <template #cell-revenueThisYear="{ row }">
               <span class="tabular-nums">{{ money(row.revenueThisYear) }}</span>
             </template>
@@ -207,6 +223,9 @@ function onExport() {
                 </p>
                 <p class="text-muted mt-0.5 text-xs">
                   {{ row.product_family }} · {{ row.chambering }}
+                  <ProductLink :family="row.product_family" fallback="none">
+                    · see it
+                  </ProductLink>
                 </p>
                 <p class="text-ink-2 mt-1 text-sm tabular-nums">
                   {{ yearNow }}: {{ count(row.qtyThisYear) }} units,

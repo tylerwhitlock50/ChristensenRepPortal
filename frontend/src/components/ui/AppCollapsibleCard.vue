@@ -27,6 +27,15 @@ withDefaults(
 
 const open = ref(false)
 const panelId = useId()
+
+/* Parents that scroll a rep to this card ("last order →") need to force it
+   open on the way; the collapsed state stays local otherwise. */
+defineExpose({
+  expand: () => {
+    open.value = true
+  },
+  isOpen: open,
+})
 </script>
 
 <template>

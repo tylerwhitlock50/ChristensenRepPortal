@@ -30,6 +30,15 @@ import {
  */
 const props = defineProps<{ customerKey: string }>()
 
+/* The stats that name a document are doors to it: AccountView catches these
+   and expands/scrolls the orders or shipments card. StatTile itself stays a
+   dumb display block — the button wrapper lives here. */
+const emit = defineEmits<{
+  (e: 'show-orders'): void
+  (e: 'show-last-order'): void
+  (e: 'show-last-invoice'): void
+}>()
+
 const query = useAccountSummary(toRef(props, 'customerKey'))
 const summary = computed(() => query.data.value ?? null)
 
@@ -102,11 +111,23 @@ const openOrdersSub = computed(() => {
           :value="money(summary.revenue_trailing_12m)"
           sub="Rolling, to today"
         />
-        <StatTile
-          label="Open orders"
-          :value="count(summary.open_order_count)"
-          :sub="openOrdersSub"
-        />
+        <!-- h-full on both button and tile: the button is the grid item now,
+             and a content-height tile inside it would leave a bare band of
+             the gap color under this cell only. Hover goes on the tile —
+             its opaque bg-surface would paint over a button hover. -->
+        <button
+          type="button"
+          class="block h-full w-full text-left"
+          title="Show the open orders"
+          @click="emit('show-orders')"
+        >
+          <StatTile
+            class="h-full transition-colors hover:bg-canvas"
+            label="Open orders"
+            :value="count(summary.open_order_count)"
+            :sub="openOrdersSub"
+          />
+        </button>
       </div>
 
       <!-- Recency in plain English first; persona #1 reads "23 days ago"
@@ -119,7 +140,14 @@ const openOrdersSub = computed(() => {
         <div class="flex items-baseline gap-2">
           <dt class="text-muted">Last order</dt>
           <dd class="text-ink font-medium">
-            {{ daysAgo(summary.last_order_date) }}
+            <button
+              type="button"
+              class="underline decoration-dotted underline-offset-2"
+              title="Show the most recent order"
+              @click="emit('show-last-order')"
+            >
+              {{ daysAgo(summary.last_order_date) }}
+            </button>
             <span v-if="summary.last_order_date" class="text-muted font-normal">
               ({{ shortDate(summary.last_order_date) }})
             </span>
@@ -128,7 +156,14 @@ const openOrdersSub = computed(() => {
         <div class="flex items-baseline gap-2">
           <dt class="text-muted">Last invoice</dt>
           <dd class="text-ink font-medium">
-            {{ daysAgo(summary.last_invoice_date) }}
+            <button
+              type="button"
+              class="underline decoration-dotted underline-offset-2"
+              title="Show recent shipments"
+              @click="emit('show-last-invoice')"
+            >
+              {{ daysAgo(summary.last_invoice_date) }}
+            </button>
             <span v-if="summary.last_invoice_date" class="text-muted font-normal">
               ({{ shortDate(summary.last_invoice_date) }})
             </span>

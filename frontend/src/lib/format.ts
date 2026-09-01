@@ -93,3 +93,12 @@ export function humanize(value: string | null | undefined): string {
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase())
 }
+
+/**
+ * A dialable tel: URI — keeps digits, +, and the pause/DTMF chars a tel URI
+ * understands, drops formatting. One canonical home: the account header and
+ * ContactsCard must never sanitize the same number two different ways.
+ */
+export function telHref(phone: string): string {
+  return `tel:${phone.replace(/[^\d+;,*#]/g, '')}`
+}
