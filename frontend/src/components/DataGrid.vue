@@ -18,11 +18,34 @@ import { computed, ref, watch } from 'vue'
 import {
   FlexRender,
   getCoreRowModel,
+  getFacetedRowModel,
+  getFacetedUniqueValues,
   getFilteredRowModel,
   getSortedRowModel,
   useVueTable,
 } from '@tanstack/vue-table'
-import type { Column, ColumnDef, SortingState } from '@tanstack/vue-table'
+import type {
+  Column,
+  ColumnDef,
+  ColumnFiltersState,
+  Row,
+  SortingState,
+} from '@tanstack/vue-table'
+
+/**
+ * Per-column filters are OPT-IN via column meta:
+ *
+ *   { accessorKey: 'product_family', header: 'Family',
+ *     meta: { filter: 'select' } }
+ *
+ * 'select' renders a dropdown fed by the column's distinct values (faceted
+ * over the OTHER filters' results) and matches exactly; 'text' renders a
+ * small search input and matches case-insensitive substring. Columns without
+ * meta.filter — i.e. every existing consumer of this grid — get no filter UI
+ * and no behaviour change. Filtered rows flow into `rowsChange`, so CSV
+ * export always matches the screen.
+ */
+type ColumnFilterKind = 'text' | 'select'
 
 const props = withDefaults(
   defineProps<{
@@ -78,18 +101,53 @@ function setFilter(value: string) {
 
 const data = computed(() => props.data)
 
+const columnFilters = ref<ColumnFiltersState>([])
+
+/**
+ * The opted-in filter kind, read off the RESOLVED column's def — never
+ * re-derive the id from accessorKey here: TanStack also derives ids from
+ * headers for accessorFn columns, and a parallel derivation would silently
+ * skip exactly those.
+ */
+function metaFilterKind(def: {
+  meta?: unknown
+}): ColumnFilterKind | undefined {
+  return (def.meta as { filter?: ColumnFilterKind } | undefined)?.filter
+}
+
+/**
+ * Default filterFn, keyed off the column's declared kind: 'select' values
+ * come from the facet list so they match exactly (substring would make
+ * "PRC" swallow "6.5 PRC"); 'text' is the familiar case-insensitive
+ * contains. A columnDef's own filterFn still wins — this is only the
+ * default. (`table` is assigned below; filtering only ever runs after
+ * setup, so the forward reference is safe.)
+ */
+function columnFilterFn(row: Row<T>, columnId: string, filterValue: unknown) {
+  const value = String(row.getValue(columnId) ?? '')
+  const def = table.getColumn(columnId)?.columnDef
+  if (def && metaFilterKind(def) === 'select') {
+    return value === String(filterValue)
+  }
+  return value.toLowerCase().includes(String(filterValue).toLowerCase().trim())
+}
+
 const table = useVueTable<T>({
   data,
   get columns() {
     return props.columns
   },
   getRowId: props.getRowId,
+  defaultColumn: { filterFn: columnFilterFn },
   state: {
     get sorting() {
       return sorting.value
     },
     get globalFilter() {
       return filter.value
+    },
+    get columnFilters() {
+      return columnFilters.value
     },
   },
   onSortingChange: (updater) => {
@@ -99,9 +157,15 @@ const table = useVueTable<T>({
   onGlobalFilterChange: (updater) => {
     setFilter(typeof updater === 'function' ? updater(filter.value) : updater)
   },
+  onColumnFiltersChange: (updater) => {
+    columnFilters.value =
+      typeof updater === 'function' ? updater(columnFilters.value) : updater
+  },
   getCoreRowModel: getCoreRowModel(),
   getSortedRowModel: getSortedRowModel(),
   getFilteredRowModel: getFilteredRowModel(),
+  getFacetedRowModel: getFacetedRowModel(),
+  getFacetedUniqueValues: getFacetedUniqueValues(),
 })
 
 const rows = computed(() => table.getRowModel().rows)
@@ -126,6 +190,52 @@ const sortableColumns = computed(() =>
   table.getAllLeafColumns().filter((c) => c.getCanSort()),
 )
 const activeSort = computed(() => sorting.value[0])
+
+/* ---- per-column filter UI ---------------------------------------------- */
+
+function filterKind(column: Column<T, unknown>): ColumnFilterKind | undefined {
+  return metaFilterKind(column.columnDef)
+}
+
+/** Any column opted in → the desktop filter row exists at all. */
+const hasColumnFilters = computed(() =>
+  table.getAllLeafColumns().some((c) => filterKind(c)),
+)
+
+/** Select-kind columns, for the phone's stacked dropdowns. */
+const selectFilterColumns = computed(() =>
+  table.getAllLeafColumns().filter((c) => filterKind(c) === 'select'),
+)
+
+/**
+ * Distinct values for a select filter, faceted: the options shrink to what
+ * the other active filters leave visible. Sorted for scannability. The
+ * column's OWN active value is always included even when the current data
+ * no longer contains it (a data swap — account picker, in-stock toggle —
+ * must not leave the select rendering blank while its filter still bites).
+ */
+function selectOptions(column: Column<T, unknown>): string[] {
+  const keys = Array.from(column.getFacetedUniqueValues().keys())
+  const active = columnFilterValue(column)
+  if (active && !keys.includes(active)) keys.push(active)
+  return keys
+    .map((k) => String(k ?? ''))
+    .filter((k) => k.trim() !== '')
+    .sort((a, b) => a.localeCompare(b))
+}
+
+function setColumnFilter(column: Column<T, unknown>, value: string) {
+  column.setFilterValue(value === '' ? undefined : value)
+}
+
+function columnFilterValue(column: Column<T, unknown>): string {
+  const v = column.getFilterValue()
+  return v == null ? '' : String(v)
+}
+
+function clearColumnFilters() {
+  columnFilters.value = []
+}
 
 function onMobileSort(event: Event) {
   const id = (event.target as HTMLSelectElement).value
@@ -153,6 +263,37 @@ defineExpose({ table, visibleRows })
           class="field sm:max-w-xs"
           @input="setFilter(($event.target as HTMLInputElement).value)"
         />
+      </label>
+    </div>
+
+    <!-- The way back out of a filtered view — rendered only while one is on,
+         so nobody has to hunt through the dropdowns for the one that's set. -->
+    <div v-if="columnFilters.length" class="mb-2">
+      <button type="button" class="btn-ghost text-[13px]" @click="clearColumnFilters">
+        Clear filters ({{ columnFilters.length }})
+      </button>
+    </div>
+
+    <!-- Phone select filters: outside the card-slot gate on purpose — a
+         grid with no card slot still renders its (sideways-scrolling) table
+         on phones, and the desktop filter row is buried inside that scroll.
+         Text-kind columns are covered by global search. -->
+    <div
+      v-if="selectFilterColumns.length"
+      class="mb-2 grid grid-cols-2 gap-2 sm:hidden"
+    >
+      <label v-for="c in selectFilterColumns" :key="c.id" class="min-w-0">
+        <span class="sr-only">Filter by {{ headerLabel(c) }}</span>
+        <select
+          :value="columnFilterValue(c)"
+          class="field"
+          @change="setColumnFilter(c, ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ headerLabel(c) }}: all</option>
+          <option v-for="opt in selectOptions(c)" :key="opt" :value="opt">
+            {{ opt }}
+          </option>
+        </select>
       </label>
     </div>
 
@@ -244,6 +385,60 @@ defineExpose({ table, visibleRows })
                 :render="header.column.columnDef.header"
                 :props="header.getContext()"
               />
+            </th>
+          </tr>
+
+          <!-- The filter row, only when some column opted in. Deliberately
+               NOT sticky: the labels above stay pinned, the controls scroll
+               away once set, and no pixel-height offset can drift. -->
+          <tr v-if="hasColumnFilters" class="border-line border-b">
+            <th
+              v-for="column in table.getVisibleLeafColumns()"
+              :key="column.id"
+              scope="col"
+              class="bg-canvas px-2 py-1.5 text-left font-normal"
+            >
+              <template v-if="filterKind(column) === 'select'">
+                <label class="block">
+                  <span class="sr-only">Filter by {{ headerLabel(column) }}</span>
+                  <select
+                    :value="columnFilterValue(column)"
+                    class="field h-8 min-w-[6rem] text-[13px]"
+                    @change="
+                      setColumnFilter(
+                        column,
+                        ($event.target as HTMLSelectElement).value,
+                      )
+                    "
+                  >
+                    <option value="">All</option>
+                    <option
+                      v-for="opt in selectOptions(column)"
+                      :key="opt"
+                      :value="opt"
+                    >
+                      {{ opt }}
+                    </option>
+                  </select>
+                </label>
+              </template>
+              <template v-else-if="filterKind(column) === 'text'">
+                <label class="block">
+                  <span class="sr-only">Filter by {{ headerLabel(column) }}</span>
+                  <input
+                    type="search"
+                    :value="columnFilterValue(column)"
+                    placeholder="Filter…"
+                    class="field h-8 min-w-[6rem] text-[13px]"
+                    @input="
+                      setColumnFilter(
+                        column,
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                  />
+                </label>
+              </template>
             </th>
           </tr>
         </thead>

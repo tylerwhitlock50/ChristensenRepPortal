@@ -155,6 +155,37 @@ const openShipment = computed(
 function upsTrackUrl(trackingNumber: string): string {
   return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber)}`
 }
+
+/* ---- programmatic entry points ------------------------------------------
+   The header/Performance stats deep-link here ("Last order →"). The parent
+   scrolls; these open the right card, and openNewestOrder also pops the
+   drill-in for the newest order — index 0, both lists come back newest
+   first. If the query hasn't resolved yet, expanding the card is enough:
+   the rep lands on the list either way.
+------------------------------------------------------------------------- */
+const ordersCardRef = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
+const shipmentsCardRef = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
+
+function expandOrders() {
+  ordersCardRef.value?.expand()
+}
+function expandShipments() {
+  shipmentsCardRef.value?.expand()
+}
+function openNewestOrder() {
+  expandOrders()
+  const newest = allOrders.value[0]
+  if (newest) openOrderId.value = newest.order_id
+}
+
+/** The shipments card is halfway down this component — "Last invoice →"
+    needs to land on IT, not on the orders card above it. */
+function scrollToShipments() {
+  const el = shipmentsCardRef.value?.$el as HTMLElement | undefined
+  el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments })
 </script>
 
 <template>
@@ -162,7 +193,7 @@ function upsTrackUrl(trackingNumber: string): string {
        shrink below the tables' min-w and the overflow-x-auto wrappers scroll
        instead of the whole card getting clipped at the phone edge. -->
   <div class="grid grid-cols-1 gap-4">
-    <AppCollapsibleCard title="Recent orders" :hint="ordersHint">
+    <AppCollapsibleCard ref="ordersCardRef" title="Recent orders" :hint="ordersHint">
       <AsyncState
         :loading="ordersQuery.isPending.value"
         :error="ordersQuery.error.value"
@@ -311,7 +342,12 @@ function upsTrackUrl(trackingNumber: string): string {
       </AsyncState>
     </AppCollapsibleCard>
 
-    <AppCollapsibleCard title="Recent shipments" :hint="shipmentsHint">
+    <AppCollapsibleCard
+      ref="shipmentsCardRef"
+      class="scroll-mt-16"
+      title="Recent shipments"
+      :hint="shipmentsHint"
+    >
       <AsyncState
         :loading="shipmentsQuery.isPending.value"
         :error="shipmentsQuery.error.value"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
@@ -122,6 +122,11 @@ watch(customerKey, (next, prev) => {
   if (prev && next !== prev) {
     lines.value = []
     browseListId.value = null
+    // Re-arm the ?sku= prefill: it was consumed against the OLD account's
+    // list, and this wipe just discarded whatever it produced. The new
+    // account's items re-resolve it. (Declared below; runs only on later
+    // account switches, never during setup.)
+    prefillSku.value = routeSku.value
   }
 })
 
@@ -154,6 +159,43 @@ const browseList = computed(
 
 const itemsQuery = usePriceListItems(browseListId)
 const itemSearch = ref('')
+
+/**
+ * ?sku= — the ATS page's "Order now" lands here with a SKU in hand. The
+ * account still has to be picked first (it resolves the price lists), so the
+ * SKU waits until the browsed list's items arrive: an exact match is added
+ * as a line, anything else — including an empty list — becomes the search
+ * term so the rep can SEE that the SKU isn't on this account's list rather
+ * than wonder where it went.
+ *
+ * `immediate` matters: on a second "Order now" in the same session the
+ * items are already in the vue-query cache, so there is no data transition
+ * for a lazy watcher to see. And the customerKey watcher below re-arms the
+ * prefill — picking the wrong account first must not eat the SKU.
+ * New orders only — an edit reopening with a stale ?sku would add a line
+ * nobody asked for.
+ */
+const route = useRoute()
+const routeSku = computed(() =>
+  !props.id && typeof route.query.sku === 'string' ? route.query.sku.trim() : '',
+)
+const prefillSku = ref(routeSku.value)
+watch(
+  () => itemsQuery.data.value,
+  (items) => {
+    // `undefined` = not loaded (no account/list picked yet) — keep waiting.
+    // An empty array is a real answer: the list has no items.
+    if (!prefillSku.value || !items) return
+    const sku = prefillSku.value
+    prefillSku.value = ''
+    const match = items.find(
+      (i) => i.part_id.toLowerCase() === sku.toLowerCase(),
+    )
+    if (match) addItem(match)
+    else itemSearch.value = sku
+  },
+  { immediate: true },
+)
 
 /**
  * Family/caliber narrowing, fed by the ERP part attributes on the item view

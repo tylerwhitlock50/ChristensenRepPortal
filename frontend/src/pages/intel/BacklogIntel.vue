@@ -7,6 +7,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
+import ProductLink from '@/components/ui/ProductLink.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
 import { count, isoDate, money } from '@/lib/format'
 
@@ -60,9 +61,20 @@ const columns: ColumnDef<BacklogSkuRow, any>[] = [
     // the full name.
     accessorFn: (r) => `${r.customer_id ?? ''} ${r.customer_name ?? ''}`.trim(),
   },
-  { id: 'part_id', header: 'SKU', accessorKey: 'part_id' },
+  { id: 'part_id', header: 'SKU', accessorKey: 'part_id', meta: { filter: 'text' } },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
-  { id: 'chambering', header: 'Chambering', accessorKey: 'chambering' },
+  {
+    id: 'product_family',
+    header: 'Family',
+    accessorKey: 'product_family',
+    meta: { filter: 'select' },
+  },
+  {
+    id: 'chambering',
+    header: 'Chambering',
+    accessorKey: 'chambering',
+    meta: { filter: 'select' },
+  },
   { id: 'backlog_qty', header: 'Qty', accessorKey: 'backlog_qty' },
   { id: 'backlog_amount', header: 'Value', accessorKey: 'backlog_amount' },
   {
@@ -165,6 +177,10 @@ const csvColumns: CsvColumn<BacklogSkuRow>[] = [
               {{ row.customer_name }}
             </span>
           </template>
+          <!-- The picture lives on the website — the family page. -->
+          <template #cell-part_id="{ row }">
+            <ProductLink :family="row.product_family">{{ row.part_id }}</ProductLink>
+          </template>
           <template #cell-part_description="{ row }">
             <span
               class="block max-w-[18rem] truncate"
@@ -200,6 +216,9 @@ const csvColumns: CsvColumn<BacklogSkuRow>[] = [
               <p class="text-muted mt-1 text-xs tabular-nums">
                 {{ count(row.backlog_qty) }} units · {{ money(row.backlog_amount) }} ·
                 est. production {{ isoDate(row.earliest_desired_ship_date) }}
+                <ProductLink :family="row.product_family" fallback="none">
+                  · see it
+                </ProductLink>
               </p>
             </div>
           </template>

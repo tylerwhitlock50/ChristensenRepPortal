@@ -6,6 +6,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import ContactForm from '@/components/ContactForm.vue'
+import { telHref } from '@/lib/format'
 import {
   useCanDeleteContacts,
   useContacts,
@@ -96,9 +97,6 @@ function subtitle(contact: AccountContact): string {
   return [contact.title, contact.phone, contact.email].filter(Boolean).join(' · ')
 }
 
-function telHref(phone: string): string {
-  return `tel:${phone.replace(/[^\d+;,*#]/g, '')}`
-}
 </script>
 
 <template>

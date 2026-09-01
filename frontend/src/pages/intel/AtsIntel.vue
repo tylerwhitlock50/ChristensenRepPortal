@@ -10,8 +10,10 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
+import ProductLink from '@/components/ui/ProductLink.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
 import { count } from '@/lib/format'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 
 /**
  * ATS — what the company can actually sell right now, straight from the
@@ -69,6 +71,17 @@ const rows = computed(() =>
     : allRows.value,
 )
 
+/**
+ * Default-on per rep feedback: the list is "what can I sell", and a page of
+ * zeros isn't that. The tiles keep counting the full set so "Out of stock"
+ * stays truthful — and tapping that tile flips this off to show them.
+ */
+const inStockOnly = ref(true)
+
+const displayRows = computed(() =>
+  inStockOnly.value ? rows.value.filter((r) => r.ats_qty > 0) : rows.value,
+)
+
 /** Feed-not-landed reads differently from a real failure. */
 const feedMissing = computed(() => isViewMissing(query.error.value))
 
@@ -81,16 +94,34 @@ const totals = computed(() => {
   }
 })
 
-const columns: ColumnDef<AtsRow, any>[] = [
-  { id: 'part_id', header: 'SKU', accessorKey: 'part_id' },
+/* "Order now" — a door into the order writer with the SKU carried along.
+   Exists only while the orders feature is on; the /orders routes redirect
+   away when it's off, so a dead link would be worse than none. */
+const flags = useFeatureFlags()
+
+const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
+  { id: 'part_id', header: 'SKU', accessorKey: 'part_id', meta: { filter: 'text' } },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
-  { id: 'product_family', header: 'Family', accessorKey: 'product_family' },
-  { id: 'chambering', header: 'Chambering', accessorKey: 'chambering' },
+  {
+    id: 'product_family',
+    header: 'Family',
+    accessorKey: 'product_family',
+    meta: { filter: 'select' },
+  },
+  {
+    id: 'chambering',
+    header: 'Chambering',
+    accessorKey: 'chambering',
+    meta: { filter: 'select' },
+  },
   { id: 'ats_qty', header: 'ATS', accessorKey: 'ats_qty' },
   { id: 'on_hand_qty', header: 'On hand', accessorKey: 'on_hand_qty' },
   { id: 'committed_qty', header: 'Committed', accessorKey: 'committed_qty' },
   { id: 'backlog_qty', header: 'Backlog', accessorKey: 'backlog_qty' },
-]
+  ...(flags.orders.value
+    ? [{ id: 'order', header: '', enableSorting: false } as ColumnDef<AtsRow, any>]
+    : []),
+])
 
 const visible = ref<AtsRow[]>([])
 const csvColumns: CsvColumn<AtsRow>[] = [
@@ -132,11 +163,21 @@ const csvColumns: CsvColumn<AtsRow>[] = [
       <div class="border-line bg-line grid grid-cols-3 gap-px border">
         <StatTile label="Sellable SKUs" :value="count(totals.sellable)" />
         <StatTile label="Units available" :value="count(totals.units)" />
-        <StatTile
-          label="Out of stock"
-          :value="count(totals.out)"
-          :tone="totals.out > 0 ? 'alert' : 'default'"
-        />
+        <!-- The out-of-stock rows are hidden by default (toggle below), so
+             this tile is also the way to see them. -->
+        <button
+          type="button"
+          class="block h-full w-full text-left"
+          :title="inStockOnly ? 'Show the out-of-stock rows' : 'Hide the out-of-stock rows'"
+          @click="inStockOnly = !inStockOnly"
+        >
+          <StatTile
+            class="h-full transition-colors hover:bg-canvas"
+            label="Out of stock"
+            :value="count(totals.out)"
+            :tone="totals.out > 0 ? 'alert' : 'default'"
+          />
+        </button>
       </div>
 
       <!--
@@ -159,6 +200,24 @@ const csvColumns: CsvColumn<AtsRow>[] = [
         </template>
 
         <div class="border-line space-y-2 border-b p-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
+              :class="
+                inStockOnly
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="inStockOnly"
+              @click="inStockOnly = !inStockOnly"
+            >
+              In stock only
+            </button>
+            <span v-if="!inStockOnly" class="text-muted text-[13px]">
+              showing {{ count(totals.out) }} out-of-stock too
+            </span>
+          </div>
           <AccountPicker
             v-model="gapAccountKey"
             :accounts="accounts"
@@ -179,7 +238,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
 
         <DataGrid
           :columns="columns"
-          :data="rows"
+          :data="displayRows"
           :initial-sorting="[{ id: 'ats_qty', desc: true }]"
           searchable
           search-placeholder="Filter by SKU, description, chambering…"
@@ -188,6 +247,30 @@ const csvColumns: CsvColumn<AtsRow>[] = [
           class="p-3"
           @rows-change="visible = $event"
         >
+          <!-- The picture lives on the website — the family page. -->
+          <template #cell-part_id="{ row }">
+            <ProductLink :family="row.product_family">{{ row.part_id }}</ProductLink>
+          </template>
+          <!-- The grid can be empty because of the in-stock toggle, not the
+               data — say so, or a searched-for out-of-stock SKU reads as
+               "doesn't exist". -->
+          <template #empty>
+            <p class="text-muted py-10 text-center text-[15px]">
+              <template v-if="inStockOnly">
+                Nothing in stock matches. Turn off "In stock only" to include
+                out-of-stock SKUs.
+              </template>
+              <template v-else>Nothing to show.</template>
+            </p>
+          </template>
+          <template #cell-order="{ row }">
+            <RouterLink
+              :to="{ name: 'orders-new', query: { sku: row.part_id ?? undefined } }"
+              class="btn-ghost text-[13px] whitespace-nowrap"
+            >
+              Order now
+            </RouterLink>
+          </template>
           <template #cell-ats_qty="{ row }">
             <span
               class="font-semibold tabular-nums"
@@ -215,6 +298,17 @@ const csvColumns: CsvColumn<AtsRow>[] = [
               </p>
               <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
                 ATS {{ count(row.ats_qty) }} · on hand {{ count(row.on_hand_qty) }}
+                <ProductLink :family="row.product_family" fallback="none">
+                  · see it
+                </ProductLink>
+              </p>
+              <p v-if="flags.orders.value" class="mt-1">
+                <RouterLink
+                  :to="{ name: 'orders-new', query: { sku: row.part_id ?? undefined } }"
+                  class="text-ink text-sm font-semibold underline decoration-dotted underline-offset-2"
+                >
+                  Order now
+                </RouterLink>
               </p>
             </div>
           </template>

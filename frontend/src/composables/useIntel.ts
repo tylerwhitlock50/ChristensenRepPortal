@@ -284,6 +284,10 @@ export function useAccountBacklog(customerKey: MaybeRef<string>) {
         .from('v_backlog_by_sku')
         .select('*')
         .eq('customer_key', key.value)
+        // Oldest promise first — rep feedback: the card is "what's overdue",
+        // and the line the dealer is angriest about is the oldest one. No
+        // promise date sorts last; dollars break ties.
+        .order('earliest_promise_date', { ascending: true, nullsFirst: false })
         .order('backlog_amount', { ascending: false })
       if (error) throw asDisplayError(error, '025_intel_views.sql')
       return ((data ?? []) as Record<string, unknown>[]).map(mapBacklogRow)

@@ -1,7 +1,7 @@
 import { computed, unref, type MaybeRef } from 'vue'
 import { useInfiniteQuery, useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { format, startOfMonth, subMonths } from 'date-fns'
+import { format } from 'date-fns'
 import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
 
@@ -259,7 +259,7 @@ export function useAccountSummary(customerKey: MaybeRef<string>) {
 /**
  * Trailing 24 months of invoiced revenue, ascending. 24 rather than 12 so
  * the chart draws this year and last year from one round trip — see
- * buildRevenueSeries().
+ * buildCalendarYearSeries().
  */
 export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
@@ -473,70 +473,98 @@ export function useAccountShipmentLines(
 
 /* ----------------------------------------------------------- chart shape */
 
-export interface RevenueSeries {
-  /** 12 short month labels, oldest first — 'Aug', 'Sep', … */
+export interface CalendarYearSeries {
+  /** Always the 12 short month names, 'Jan' … 'Dec'. */
   labels: string[]
-  /** 12 full labels for tooltips and the screen-reader table — 'Aug 2025'. */
-  monthLabels: string[]
-  /** Same 12 months a year earlier — 'Aug 2024'. */
-  priorMonthLabels: string[]
-  /** Revenue for each of the last 12 months. */
-  current: number[]
-  /** Revenue for the same 12 months a year earlier. */
+  /** The two years drawn — 2026 and 2025 in Sep 2026. */
+  currentYear: number
+  priorYear: number
+  /**
+   * This year's revenue per calendar month. Months that haven't happened yet
+   * are null, not 0 — chart.js draws no bar for null, and a zero bar for
+   * November in September would read as a collapse.
+   */
+  current: (number | null)[]
+  /** The prior calendar year, all 12 months. */
   prior: number[]
+  /** This year through today — YTD, including the partial current month. */
   currentTotal: number
-  priorTotal: number
-  /** Percent change vs the prior year. Null when the prior year was zero. */
+  /**
+   * Both years summed over COMPLETE months only (January through last
+   * month). The current month is partial, so including it on either side
+   * would poison the comparison — on Sep 2 a flat account would read −11%
+   * against a full prior September. Zero in January.
+   */
+  currentCompleted: number
+  priorCompleted: number
+  /** 'Aug' — the last complete month the delta covers. Null in January. */
+  completedThroughLabel: string | null
+  /** The full prior calendar year — what the gray bars sum to. */
+  priorTotalFull: number
+  /** currentCompleted vs priorCompleted. Null when there's no basis. */
   deltaPct: number | null
-  /** False when every one of the 24 months is zero — nothing to draw. */
+  /** False when both years are silent — nothing to draw. */
   hasData: boolean
 }
 
 /**
- * Aligns the 24 monthly rows into two 12-month series, month-of-year for
- * month-of-year, filling silent months with 0.
+ * Aligns the trailing-24-month rows into a Jan–Dec calendar view: this year's
+ * months next to the same month last year. The view's 23-month window always
+ * reaches back past Jan 1 of the prior year, so both years are complete.
  *
  * This is date alignment over at most 24 rows, not aggregation — the sums
  * were done in Postgres. Exported so it can be unit-tested without a DB.
  */
-export function buildRevenueSeries(
+export function buildCalendarYearSeries(
   rows: AccountRevenueMonthRow[],
   today: Date = new Date(),
-): RevenueSeries {
+): CalendarYearSeries {
   const byMonth = new Map<string, number>()
   for (const row of rows) byMonth.set(row.month, row.revenue)
 
-  const thisMonth = startOfMonth(today)
-  const months = Array.from({ length: 12 }, (_, i) => subMonths(thisMonth, 11 - i))
+  const currentYear = today.getFullYear()
+  const priorYear = currentYear - 1
+  const monthIndexNow = today.getMonth() // 0-based
+
+  const monthKey = (year: number, monthIndex: number) =>
+    format(new Date(year, monthIndex, 1), 'yyyy-MM-dd')
 
   const labels: string[] = []
-  const monthLabels: string[] = []
-  const priorMonthLabels: string[] = []
-  const current: number[] = []
+  const current: (number | null)[] = []
   const prior: number[] = []
 
-  for (const m of months) {
-    const p = subMonths(m, 12)
-    labels.push(format(m, 'MMM'))
-    monthLabels.push(format(m, 'MMM yyyy'))
-    priorMonthLabels.push(format(p, 'MMM yyyy'))
-    current.push(byMonth.get(format(m, 'yyyy-MM-dd')) ?? 0)
-    prior.push(byMonth.get(format(p, 'yyyy-MM-dd')) ?? 0)
+  for (let m = 0; m < 12; m++) {
+    labels.push(format(new Date(currentYear, m, 1), 'MMM'))
+    current.push(m <= monthIndexNow ? (byMonth.get(monthKey(currentYear, m)) ?? 0) : null)
+    prior.push(byMonth.get(monthKey(priorYear, m)) ?? 0)
   }
 
-  const currentTotal = current.reduce((a, b) => a + b, 0)
-  const priorTotal = prior.reduce((a, b) => a + b, 0)
+  const currentTotal = current.reduce<number>((a, b) => a + (b ?? 0), 0)
+  // Complete months only — the current month is partial on BOTH the data
+  // side (mid-month) and the ETL side (loaded nightly), so the fair
+  // comparison stops at last month's end.
+  const currentCompleted = current
+    .slice(0, monthIndexNow)
+    .reduce<number>((a, b) => a + (b ?? 0), 0)
+  const priorCompleted = prior.slice(0, monthIndexNow).reduce((a, b) => a + b, 0)
+  const priorTotalFull = prior.reduce((a, b) => a + b, 0)
 
   return {
     labels,
-    monthLabels,
-    priorMonthLabels,
+    currentYear,
+    priorYear,
     current,
     prior,
     currentTotal,
-    priorTotal,
-    deltaPct: priorTotal > 0 ? ((currentTotal - priorTotal) / priorTotal) * 100 : null,
-    hasData: currentTotal !== 0 || priorTotal !== 0,
+    currentCompleted,
+    priorCompleted,
+    completedThroughLabel: monthIndexNow > 0 ? labels[monthIndexNow - 1] : null,
+    priorTotalFull,
+    deltaPct:
+      monthIndexNow > 0 && priorCompleted > 0
+        ? ((currentCompleted - priorCompleted) / priorCompleted) * 100
+        : null,
+    hasData: currentTotal !== 0 || priorTotalFull !== 0,
   }
 }
 

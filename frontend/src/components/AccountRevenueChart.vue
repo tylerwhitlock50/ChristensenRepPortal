@@ -5,10 +5,7 @@ import {
   BarElement,
   CategoryScale,
   Chart as ChartJS,
-  LineController,
-  LineElement,
   LinearScale,
-  PointElement,
   Tooltip,
   type ChartData,
   type ChartOptions,
@@ -20,18 +17,21 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { money } from '@/lib/format'
 import {
-  buildRevenueSeries,
+  buildCalendarYearSeries,
   deltaLabel,
   useAccountRevenueMonthly,
 } from '@/composables/useAccountMetrics'
 
 /**
- * Revenue by month — the last 12 months as bars, the same 12 months a year
- * earlier as a dashed line, on one axis.
+ * Revenue by month, Jan–Dec: two bars per month — this calendar year next to
+ * the same month last year. Rep feedback asked for exactly this shape; the
+ * old view was trailing-12 bars with a dashed prior-year line, and reading
+ * "how is March doing vs last March" took a tooltip.
  *
- * Both series are the same measure (invoiced revenue, USD) on one scale.
- * There is deliberately no second y-axis: two scales on one chart is the
- * fastest way to make a rep read a crossing as a story that isn't there.
+ * Months that haven't happened yet draw NOTHING for the current year (null,
+ * not 0) — a zero-height November in September is a story that isn't there.
+ * There is deliberately no trend line and no second y-axis: both series are
+ * the same measure (invoiced revenue, USD) on one scale.
  *
  * Everything drawn here was summed in Postgres by
  * public.v_account_revenue_monthly. This component only aligns 24 rows into
@@ -40,29 +40,17 @@ import {
 const props = defineProps<{ customerKey: string }>()
 
 // Only what this chart draws. Importing `registerables` would pull every
-// controller in chart.js into the bundle for a chart that uses two.
-ChartJS.register(
-  BarController,
-  BarElement,
-  LineController,
-  LineElement,
-  PointElement,
-  CategoryScale,
-  LinearScale,
-  Tooltip,
-)
+// controller in chart.js into the bundle for a chart that uses one.
+ChartJS.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip)
 
-// Current = the one brand green. Prior = a warm gray, dashed. Shape (bar vs
-// line) and dash pattern carry the identity as well as color does, so the
-// two series stay separable for a red-green colorblind rep and on a phone in
-// direct sunlight. Both clear 3:1 against white.
+// Current = the one brand green. Prior = a warm gray. Position carries the
+// identity too (prior always left, current right), so the pairs stay
+// separable for a red-green colorblind rep and on a phone in direct
+// sunlight. Both clear 3:1 against white.
 const CURRENT_COLOR = '#1f3a2e' // --color-brand
 const PRIOR_COLOR = '#8a857a'
 const GRID_COLOR = '#e6e3dc'
 const TICK_COLOR = '#6e6a61' // --color-muted
-
-const CURRENT_LABEL = 'Last 12 months'
-const PRIOR_LABEL = 'Prior year'
 
 const compactMoney = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -72,40 +60,32 @@ const compactMoney = new Intl.NumberFormat('en-US', {
 })
 
 const query = useAccountRevenueMonthly(toRef(props, 'customerKey'))
-const series = computed(() => buildRevenueSeries(query.data.value ?? []))
+const series = computed(() => buildCalendarYearSeries(query.data.value ?? []))
 
-const chartData = computed<ChartData<'bar' | 'line', number[], string>>(() => ({
+const currentLabel = computed(() => String(series.value.currentYear))
+const priorLabel = computed(() => String(series.value.priorYear))
+
+const chartData = computed<ChartData<'bar', (number | null)[], string>>(() => ({
   labels: series.value.labels,
   datasets: [
     {
-      type: 'bar',
-      label: CURRENT_LABEL,
+      label: priorLabel.value,
+      data: series.value.prior,
+      backgroundColor: PRIOR_COLOR,
+      borderRadius: 2,
+      categoryPercentage: 0.72,
+      barPercentage: 0.9,
+    },
+    {
+      label: currentLabel.value,
       data: series.value.current,
       backgroundColor: CURRENT_COLOR,
       // 2px, like every other corner in the design system. borderSkipped is
       // left at its default so only the far end of the bar is rounded and
       // the baseline stays square.
       borderRadius: 2,
-      categoryPercentage: 0.78,
-      barPercentage: 0.92,
-      order: 1,
-    },
-    {
-      type: 'line',
-      label: PRIOR_LABEL,
-      data: series.value.prior,
-      borderColor: PRIOR_COLOR,
-      backgroundColor: PRIOR_COLOR,
-      borderWidth: 2,
-      borderDash: [5, 4],
-      tension: 0.3,
-      pointRadius: 0,
-      pointHoverRadius: 5,
-      pointBackgroundColor: PRIOR_COLOR,
-      pointBorderColor: '#ffffff',
-      pointBorderWidth: 2,
-      // Lower order draws last, i.e. on top of the bars.
-      order: 0,
+      categoryPercentage: 0.72,
+      barPercentage: 0.9,
     },
   ],
 }))
@@ -117,8 +97,8 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
   maintainAspectRatio: false,
   animation: { duration: 220 },
   layout: { padding: { top: 4 } },
-  // Whole-column hit target: a thumb anywhere in the month gets that month
-  // instead of having to land on a 6px-wide bar.
+  // Whole-column hit target: a thumb anywhere in the month gets both bars
+  // instead of having to land on a 6px-wide one.
   interaction: { mode: 'index', intersect: false },
   plugins: {
     // The legend is HTML below the canvas — it wraps properly at 390px, stays
@@ -133,12 +113,12 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
       boxHeight: 8,
       titleFont: { size: 13, weight: 600 },
       bodyFont: { size: 13 },
-      // Current year first, whichever dataset happens to draw on top.
+      // Current year first, even though it draws second.
       itemSort: (a: TooltipItem<'bar'>, b: TooltipItem<'bar'>) =>
-        a.datasetIndex - b.datasetIndex,
+        b.datasetIndex - a.datasetIndex,
       callbacks: {
         title: (items: TooltipItem<'bar'>[]) =>
-          series.value.monthLabels[items[0]?.dataIndex ?? 0] ?? '',
+          series.value.labels[items[0]?.dataIndex ?? 0] ?? '',
         label: (ctx: TooltipItem<'bar'>) =>
           ` ${ctx.dataset.label ?? ''}: ${money(ctx.parsed.y)}`,
       },
@@ -186,11 +166,16 @@ const optionsProp = computed(
 /** What a screen reader gets in place of the canvas, before the table. */
 const chartAriaLabel = computed(() => {
   const s = series.value
+  const compare = s.completedThroughLabel
+    ? `Through ${s.completedThroughLabel}: ${money(s.currentCompleted)} versus ` +
+      `${money(s.priorCompleted)} in ${s.priorYear} (${deltaLabel(s.deltaPct)}). `
+    : ''
   return (
-    'Bar and line chart of monthly invoiced revenue. ' +
-    `${s.monthLabels[0]} through ${s.monthLabels[11]} totals ${money(s.currentTotal)}, ` +
-    `versus ${money(s.priorTotal)} in the same months a year earlier ` +
-    `(${deltaLabel(s.deltaPct)}). The same figures follow as a table.`
+    `Bar chart of monthly invoiced revenue, January through December, ` +
+    `${s.currentYear} next to ${s.priorYear}. ` +
+    `${money(s.currentTotal)} so far in ${s.currentYear}. ` +
+    compare +
+    `The same figures follow as a table.`
   )
 })
 
@@ -214,7 +199,9 @@ const deltaTone = computed(() => {
       :rows="2"
       @retry="query.refetch()"
     >
-      <!-- HTML legend: wraps at 390px, no canvas hit-testing involved -->
+      <!-- HTML legend: wraps at 390px, no canvas hit-testing involved. The
+           two totals cover different spans (YTD vs full year), and the words
+           say so — comparing them raw would flatter every mid-year read. -->
       <ul class="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px]">
         <li class="flex items-center gap-2">
           <span
@@ -222,19 +209,21 @@ const deltaTone = computed(() => {
             :style="{ backgroundColor: CURRENT_COLOR }"
             aria-hidden="true"
           />
-          <span class="text-ink">{{ CURRENT_LABEL }}</span>
-          <span class="text-muted tabular-nums">{{ money(series.currentTotal) }}</span>
+          <span class="text-ink">{{ currentLabel }}</span>
+          <span class="text-muted tabular-nums">
+            {{ money(series.currentTotal) }} YTD
+          </span>
         </li>
         <li class="flex items-center gap-2">
           <span
-            class="inline-block h-0.5 w-4"
-            :style="{
-              backgroundImage: `repeating-linear-gradient(to right, ${PRIOR_COLOR} 0 5px, transparent 5px 9px)`,
-            }"
+            class="inline-block h-2.5 w-2.5 rounded-[1px]"
+            :style="{ backgroundColor: PRIOR_COLOR }"
             aria-hidden="true"
           />
-          <span class="text-ink">{{ PRIOR_LABEL }}</span>
-          <span class="text-muted tabular-nums">{{ money(series.priorTotal) }}</span>
+          <span class="text-ink">{{ priorLabel }}</span>
+          <span class="text-muted tabular-nums">
+            {{ money(series.priorTotalFull) }} full year
+          </span>
         </li>
       </ul>
 
@@ -247,18 +236,27 @@ const deltaTone = computed(() => {
         />
       </div>
 
+      <!-- The delta covers COMPLETE months only — the in-progress month
+           would read as a collapse against last year's full month. In
+           January there's nothing complete to compare, so just the total. -->
       <p class="text-muted mt-3 text-[13px] leading-relaxed">
         <span class="text-ink font-semibold tabular-nums">{{
           money(series.currentTotal)
         }}</span>
-        over the last 12 months, versus
-        <span class="text-ink font-semibold tabular-nums">{{
-          money(series.priorTotal)
-        }}</span>
-        the year before —
-        <span :class="deltaTone" class="font-semibold">{{
-          deltaLabel(series.deltaPct)
-        }}</span>
+        so far in {{ series.currentYear
+        }}<template v-if="series.completedThroughLabel">
+          — through {{ series.completedThroughLabel }}:
+          <span class="text-ink font-semibold tabular-nums">{{
+            money(series.currentCompleted)
+          }}</span>
+          versus
+          <span class="text-ink font-semibold tabular-nums">{{
+            money(series.priorCompleted)
+          }}</span>
+          in {{ series.priorYear }} —
+          <span :class="deltaTone" class="font-semibold">{{
+            deltaLabel(series.deltaPct)
+          }}</span></template>
       </p>
 
       <!--
@@ -269,28 +267,30 @@ const deltaTone = computed(() => {
       -->
       <table class="sr-only">
         <caption>
-          Monthly invoiced revenue, last 12 months versus the same months a
-          year earlier
+          Monthly invoiced revenue, January through December,
+          {{ series.currentYear }} versus {{ series.priorYear }}
         </caption>
         <thead>
           <tr>
             <th scope="col">Month</th>
-            <th scope="col">{{ CURRENT_LABEL }}</th>
-            <th scope="col">{{ PRIOR_LABEL }}</th>
+            <th scope="col">{{ currentLabel }}</th>
+            <th scope="col">{{ priorLabel }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(label, i) in series.monthLabels" :key="label">
+          <tr v-for="(label, i) in series.labels" :key="label">
             <th scope="row">{{ label }}</th>
-            <td>{{ money(series.current[i]) }}</td>
-            <td>{{ series.priorMonthLabels[i] }}: {{ money(series.prior[i]) }}</td>
+            <td>
+              {{ series.current[i] == null ? 'not yet' : money(series.current[i]) }}
+            </td>
+            <td>{{ money(series.prior[i]) }}</td>
           </tr>
         </tbody>
         <tfoot>
           <tr>
             <th scope="row">Total</th>
-            <td>{{ money(series.currentTotal) }}</td>
-            <td>{{ money(series.priorTotal) }}</td>
+            <td>{{ money(series.currentTotal) }} (year to date)</td>
+            <td>{{ money(series.priorTotalFull) }}</td>
           </tr>
         </tfoot>
       </table>

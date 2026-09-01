@@ -2,7 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { refDebounced } from '@vueuse/core'
-import { useAccountSearch } from '@/composables/useAccounts'
+import type { ColumnDef } from '@tanstack/vue-table'
+import {
+  useAccountSearch,
+  useAccountTable,
+  type AccountTableRow,
+} from '@/composables/useAccounts'
 import {
   currentGoalYear,
   paceLabel,
@@ -12,8 +17,10 @@ import {
 } from '@/composables/useAccountGoals'
 import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import DataGrid from '@/components/DataGrid.vue'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
-import { count as fmtCount, daysAgo, humanize, money } from '@/lib/format'
+import { exportCsv, type CsvColumn } from '@/lib/csv'
+import { count as fmtCount, daysAgo, humanize, money, shortDate } from '@/lib/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,6 +50,95 @@ watch(goalMode, (on) => {
   })
 })
 
+/* ---- card / table toggle ------------------------------------------------
+   Rep feedback: the book as a metric table — ships and bookings YTD/prior,
+   open orders, rep, goal. Cards stay the phone experience (the toggle is
+   hidden below sm); the table reads public.v_account_table, the whole book
+   in one query, so every column sorts over ALL rows rather than the 50
+   that happened to be loaded. Deep-linkable as ?view=table, same pattern
+   as ?goal=behind above.
+------------------------------------------------------------------------- */
+const view = ref<'cards' | 'table'>(route.query.view === 'table' ? 'table' : 'cards')
+
+watch(view, (v) => {
+  void router.replace({
+    query: { ...route.query, view: v === 'table' ? 'table' : undefined },
+  })
+})
+
+const tableQuery = useAccountTable(
+  activeOnly,
+  computed(() => view.value === 'table'),
+)
+
+/** In table mode the Behind-goal chip is a filter, not a different list. */
+const tableRows = computed(() => {
+  const rows = tableQuery.data.value ?? []
+  if (!goalMode.value) return rows
+  return rows.filter((r) => r.goal_amount != null && r.on_track === false)
+})
+
+/** % of the prior year's same-days ships — the rep's "% of PYTD" column. */
+function pctOfPytd(r: AccountTableRow): number | null {
+  if (!r.revenue_prior_ytd) return null
+  return (r.revenue_ytd / r.revenue_prior_ytd) * 100
+}
+
+const tableColumns: ColumnDef<AccountTableRow, any>[] = [
+  {
+    id: 'account',
+    header: 'Account',
+    // Name + key so the global search box sees both.
+    accessorFn: (r) => `${r.customer_name ?? ''} ${r.customer_key}`.trim(),
+  },
+  {
+    id: 'assigned_sales_rep_name',
+    header: 'Rep',
+    accessorKey: 'assigned_sales_rep_name',
+    meta: { filter: 'select' },
+  },
+  { id: 'revenue_ytd', header: 'YTD ships', accessorKey: 'revenue_ytd' },
+  { id: 'revenue_prior_ytd', header: 'PYTD ships', accessorKey: 'revenue_prior_ytd' },
+  { id: 'revenue_prior_full', header: 'PY ships', accessorKey: 'revenue_prior_full' },
+  { id: 'bookings_ytd', header: 'YTD orders', accessorKey: 'bookings_ytd' },
+  {
+    id: 'bookings_prior_ytd',
+    header: 'PYTD orders',
+    accessorKey: 'bookings_prior_ytd',
+  },
+  { id: 'open_order_value', header: 'Open orders', accessorKey: 'open_order_value' },
+  { id: 'goal_amount', header: 'Goal', accessorKey: 'goal_amount' },
+  { id: 'attainment_pct', header: '% of goal', accessorKey: 'attainment_pct' },
+  { id: 'pct_of_pytd', header: '% of PYTD', accessorFn: (r) => pctOfPytd(r) },
+  { id: 'last_order_date', header: 'Last order', accessorKey: 'last_order_date' },
+]
+
+const tableVisible = ref<AccountTableRow[]>([])
+const tableCsvColumns: CsvColumn<AccountTableRow>[] = [
+  { key: 'customer_key', header: 'Customer key' },
+  { key: 'customer_name', header: 'Account' },
+  { key: 'sold_to_city', header: 'City' },
+  { key: 'sold_to_state', header: 'State' },
+  { key: 'assigned_sales_rep_name', header: 'Rep' },
+  { key: 'revenue_ytd', header: 'YTD ships' },
+  { key: 'revenue_prior_ytd', header: 'PYTD ships' },
+  { key: 'revenue_prior_full', header: 'PY ships' },
+  { key: 'bookings_ytd', header: 'YTD orders' },
+  { key: 'bookings_prior_ytd', header: 'PYTD orders' },
+  { key: 'open_order_value', header: 'Open order value' },
+  { key: 'open_order_count', header: 'Open order count' },
+  { key: 'goal_amount', header: 'Goal' },
+  { key: 'attainment_pct', header: '% of goal' },
+  { key: 'last_order_date', header: 'Last order' },
+]
+
+function pct(value: number | null | undefined): string {
+  // The finite check matters: attainment against a zero-ish goal upstream
+  // can arrive as Infinity, and "Infinity%" in a metric column reads as a
+  // bug rather than "no basis".
+  return value == null || !Number.isFinite(value) ? '—' : `${Math.round(value)}%`
+}
+
 const {
   data,
   isPending,
@@ -51,7 +147,13 @@ const {
   fetchNextPage,
   hasNextPage,
   isFetchingNextPage,
-} = useAccountSearch(debouncedSearch, activeOnly)
+} = useAccountSearch(
+  debouncedSearch,
+  activeOnly,
+  // Table mode filters client-side over the whole book — the paged server
+  // search would fire per keystroke for a list that isn't rendered.
+  computed(() => view.value !== 'table'),
+)
 
 const rows = computed(() => data.value?.pages.flatMap((p) => p.rows) ?? [])
 const total = computed(() => data.value?.pages[0]?.total ?? 0)
@@ -62,7 +164,11 @@ const total = computed(() => data.value?.pages[0]?.total ?? 0)
  * renders exactly as it did before.
  */
 const { data: goals } = useAccountGoalsFor(
-  computed(() => (goalMode.value ? [] : rows.value.map((r) => r.customer_key))),
+  computed(() =>
+    goalMode.value || view.value === 'table'
+      ? []
+      : rows.value.map((r) => r.customer_key),
+  ),
   goalYear,
 )
 
@@ -105,8 +211,11 @@ function goalAmounts(g: AccountGoalProgress): string {
   <div class="space-y-4">
     <header class="flex items-baseline justify-between gap-3">
       <h1 class="u-display text-[34px]">Accounts</h1>
+      <!-- Card-mode only: the table filters internal customers out, so its
+           count is a different denominator — showing both would read as a
+           discrepancy. The table has its own footer count. -->
       <span
-        v-if="!goalMode && total"
+        v-if="!goalMode && view === 'cards' && total"
         class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums"
       >
         {{ fmtCount(total) }} in book
@@ -154,12 +263,146 @@ function goalAmounts(g: AccountGoalProgress): string {
         >
           Behind goal
         </button>
+
+        <!-- Cards or columns. Visible on phones too — ?view=table deep links
+             land there, and without the toggle a phone would have no way
+             back to cards. The table itself scrolls inside its own box. -->
+        <div
+          class="border-line ml-auto flex border"
+          role="group"
+          aria-label="Layout"
+        >
+          <button
+            type="button"
+            class="tap-target font-label px-4 text-[13px] font-semibold tracking-[0.12em] uppercase"
+            :class="view === 'cards' ? 'bg-ink text-canvas' : 'text-muted'"
+            @click="view = 'cards'"
+          >
+            Cards
+          </button>
+          <button
+            type="button"
+            class="tap-target font-label px-4 text-[13px] font-semibold tracking-[0.12em] uppercase"
+            :class="view === 'table' ? 'bg-ink text-canvas' : 'text-muted'"
+            @click="view = 'table'"
+          >
+            Table
+          </button>
+        </div>
       </div>
     </div>
 
+    <!-- ── The table ────────────────────────────────────────────────────────
+         The whole book with the metric columns, every one sortable over ALL
+         rows. Behind-goal here is a filter on the same table, not the
+         ranked list — that list is the cards experience. -->
+    <AsyncState
+      v-if="view === 'table'"
+      :loading="tableQuery.isPending.value"
+      :error="tableQuery.error.value"
+      :empty="!tableQuery.isPending.value && tableRows.length === 0"
+      :empty-title="goalMode ? 'Nothing behind goal' : 'No accounts'"
+      :empty-body="
+        goalMode
+          ? 'No account with a goal is behind pace right now.'
+          : 'Your book comes from the ERP. If this is empty, ask your admin to check your rep code.'
+      "
+      :rows="6"
+      @retry="tableQuery.refetch()"
+    >
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <p class="text-muted text-sm">
+          <template v-if="goalMode">
+            Accounts with a {{ goalYear }} goal that are behind pace.
+          </template>
+          <template v-else>Ships are invoiced revenue; orders are bookings.</template>
+        </p>
+        <AppButton
+          variant="ghost"
+          :disabled="tableVisible.length === 0"
+          @click="exportCsv('accounts', tableVisible, tableCsvColumns)"
+        >
+          Export CSV
+        </AppButton>
+      </div>
+
+      <div class="border-line bg-surface border p-3">
+        <DataGrid
+          :columns="tableColumns"
+          :data="tableRows"
+          :initial-sorting="[{ id: 'revenue_ytd', desc: true }]"
+          :global-filter="debouncedSearch"
+          :get-row-id="(r: AccountTableRow) => r.customer_key"
+          min-width="72rem"
+          @rows-change="tableVisible = $event"
+        >
+          <template #cell-account="{ row }">
+            <RouterLink
+              :to="{ name: 'account', params: { customerKey: row.customer_key } }"
+              class="text-ink block font-semibold underline-offset-2 hover:underline"
+            >
+              {{ row.customer_name || row.customer_key }}
+            </RouterLink>
+            <span class="text-muted block text-xs">
+              {{ row.customer_key
+              }}<template v-if="place(row)"> · {{ place(row) }}</template>
+            </span>
+          </template>
+          <template #cell-revenue_ytd="{ row }">
+            <span class="tabular-nums">{{ money(row.revenue_ytd) }}</span>
+          </template>
+          <template #cell-revenue_prior_ytd="{ row }">
+            <span class="tabular-nums">{{ money(row.revenue_prior_ytd) }}</span>
+          </template>
+          <template #cell-revenue_prior_full="{ row }">
+            <span class="tabular-nums">{{ money(row.revenue_prior_full) }}</span>
+          </template>
+          <template #cell-bookings_ytd="{ row }">
+            <span class="tabular-nums">{{ money(row.bookings_ytd) }}</span>
+          </template>
+          <template #cell-bookings_prior_ytd="{ row }">
+            <span class="tabular-nums">{{ money(row.bookings_prior_ytd) }}</span>
+          </template>
+          <template #cell-open_order_value="{ row }">
+            <span class="tabular-nums">{{ money(row.open_order_value) }}</span>
+            <span v-if="row.open_order_count" class="text-muted block text-xs tabular-nums">
+              {{ fmtCount(row.open_order_count) }} orders
+            </span>
+          </template>
+          <template #cell-goal_amount="{ row }">
+            <span class="tabular-nums">
+              {{ row.goal_amount == null ? '—' : money(row.goal_amount) }}
+            </span>
+          </template>
+          <template #cell-attainment_pct="{ row }">
+            <span
+              class="tabular-nums"
+              :class="row.on_track === false ? 'text-accent font-semibold' : ''"
+            >
+              {{ pct(row.attainment_pct) }}
+            </span>
+          </template>
+          <template #cell-pct_of_pytd="{ row }">
+            <span class="tabular-nums">{{ pct(pctOfPytd(row)) }}</span>
+          </template>
+          <template #cell-last_order_date="{ row }">
+            <span class="whitespace-nowrap tabular-nums">
+              {{ shortDate(row.last_order_date) }}
+            </span>
+          </template>
+        </DataGrid>
+      </div>
+
+      <p
+        class="font-label text-muted mt-4 text-center text-xs font-semibold tracking-[0.12em] uppercase tabular-nums"
+      >
+        {{ fmtCount(tableVisible.length) }} of {{ fmtCount(tableRows.length) }} shown
+      </p>
+    </AsyncState>
+
     <!-- ── Ranked by attainment ─────────────────────────────────────────── -->
     <AsyncState
-      v-if="goalMode"
+      v-else-if="goalMode"
       :loading="behind.isPending.value"
       :error="behind.error.value"
       :empty="behindRows.length === 0"
