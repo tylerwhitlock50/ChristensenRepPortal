@@ -113,12 +113,24 @@ export function useSkuSalesByAccount(customerKey: MaybeRef<string>) {
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<SkuYearRow[]> => {
-      const { data, error } = await db
-        .from('v_sku_sales_by_account')
-        .select('*')
-        .eq('customer_key', key.value) // required — see 020's header
-      if (error) throw asDisplayError(error, '025_intel_views.sql')
-      return ((data ?? []) as Record<string, unknown>[]).map(mapSkuRow)
+      // A big dealer's SKU × year history exceeds PostgREST's 1,000-row cap
+      // (LIPSEYS: 1,692 rows) — unpaged, the grid AND the header totals were
+      // silently truncated. (part_key, sales_year) is the view's grain per
+      // customer, so ordering by both is a total order.
+      try {
+        const data = await fetchAllRows<Record<string, unknown>>((from, to) =>
+          db
+            .from('v_sku_sales_by_account')
+            .select('*', { count: 'exact' })
+            .eq('customer_key', key.value) // required — see 020's header
+            .order('part_key')
+            .order('sales_year')
+            .range(from, to),
+        )
+        return data.map(mapSkuRow)
+      } catch (error) {
+        throw asDisplayError(error, '025_intel_views.sql')
+      }
     },
   })
 }
