@@ -13,14 +13,19 @@ $ErrorActionPreference = "Continue"
 Set-Location -Path $PSScriptRoot
 
 $log = Join-Path $PSScriptRoot "push.log"
-"=== push started $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Tee-Object -FilePath $log -Append
+
+# Not Tee-Object: under Windows PowerShell 5.1 (what the task runs) it writes
+# UTF-16, which tail/grep on the log render as spaced-out characters.
+function Log-Line { process { $_; Add-Content -Path $log -Value $_ -Encoding UTF8 } }
+
+"=== push started $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Log-Line
 
 & .\venv\Scripts\Activate.ps1
 
-& python push_to_supabase.py 2>&1 | Tee-Object -FilePath $log -Append
+& python push_to_supabase.py 2>&1 | ForEach-Object { "$_" } | Log-Line
 $code = $LASTEXITCODE
 
 deactivate
 
-"=== push exited $code at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Tee-Object -FilePath $log -Append
+"=== push exited $code at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Log-Line
 exit $code
