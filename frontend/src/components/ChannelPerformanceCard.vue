@@ -126,7 +126,9 @@ const columns = computed<ColumnDef<ChannelRow, any>[]>(() => [
   {
     id: 'backlog_amount',
     accessorFn: (row: ChannelRow) => row.backlog_amount,
-    header: 'Backlog',
+    // Off the account rollup, where this is the open value already past
+    // its promise date — not the whole open book (that is open_order_value).
+    header: 'Past promise',
   },
   {
     id: 'attainment',
@@ -168,7 +170,7 @@ function onExport() {
     { key: 'revenue_trailing_12m', header: 'Revenue Trailing 12m' },
     { key: 'bookings_ytd', header: 'Booked YTD' },
     { key: 'open_order_value', header: 'Open Order Value' },
-    { key: 'backlog_amount', header: 'Backlog Amount' },
+    { key: 'backlog_amount', header: 'Past Promise Amount' },
     { key: 'goal_total', header: 'Goal Total' },
     {
       key: 'attainment_pct',

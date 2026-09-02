@@ -24,7 +24,7 @@ import {
   type DraftLineInput,
 } from '@/composables/useOrders'
 import { orderTotal, priceOrder, type PricingLineInput } from '@/lib/orderPricing'
-import { money } from '@/lib/format'
+import { moneyCents } from '@/lib/format'
 import { newPhotoId } from '@/lib/photos'
 
 /**
@@ -263,6 +263,23 @@ function removeLine(key: string) {
   lines.value = lines.value.filter((l) => l.key !== key)
 }
 
+/**
+ * A positive whole number, checked HERE and not left to the database.
+ * `v-model.number` hands back '' for a cleared field and passes 0, −1 and
+ * 1.5 through untouched; the order_lines CHECK refuses all of them — but
+ * useSaveDraftLines deletes every line before it inserts, so by the time
+ * Postgres said no the draft's lines were already gone.
+ */
+function qtyValid(line: LocalLine): boolean {
+  return Number.isInteger(line.qty) && line.qty >= 1
+}
+
+/** The first bad line's message, or '' when every quantity is usable. */
+function qtyError(): string {
+  const bad = lines.value.find((l) => !qtyValid(l))
+  return bad ? `Quantity for ${bad.partId} must be a whole number, 1 or more.` : ''
+}
+
 // ------------------------------------------------------------ live pricing
 const promosByListId = computed(() => {
   const map = new Map<number, { buyQty: number; getQty: number }>()
@@ -380,6 +397,8 @@ async function onSaveDraft() {
     formError.value = 'Pick an account first.'
     return
   }
+  formError.value = qtyError()
+  if (formError.value) return
   try {
     await persistDraft()
   } catch (err) {
@@ -397,6 +416,8 @@ async function onSubmit() {
     formError.value = 'Add at least one line.'
     return
   }
+  formError.value = qtyError()
+  if (formError.value) return
   try {
     const id = await persistDraft()
     await submitOrder.mutateAsync(id)
@@ -554,7 +575,7 @@ onBeforeRouteLeave(() => {
                   </span>
                 </span>
                 <span class="text-ink shrink-0 text-[15px] font-semibold">
-                  {{ money(item.unit_price) }}
+                  {{ moneyCents(item.unit_price) }}
                 </span>
               </button>
             </li>
@@ -606,12 +627,14 @@ onBeforeRouteLeave(() => {
                     type="number"
                     min="1"
                     step="1"
-                    class="border-line text-ink min-h-10 w-20 border px-2 text-right text-[14px]"
+                    class="text-ink min-h-10 w-20 border px-2 text-right text-[14px]"
+                    :class="qtyValid(line) ? 'border-line' : 'border-danger'"
+                    :aria-invalid="!qtyValid(line)"
                     :aria-label="`Quantity for ${line.partId}`"
                   />
                 </td>
                 <td class="text-ink py-2 pr-3 text-right">
-                  {{ money(line.listUnitPrice) }}
+                  {{ moneyCents(line.listUnitPrice) }}
                 </td>
                 <td class="text-ink-2 py-2 pr-3 text-right">
                   {{
@@ -621,10 +644,10 @@ onBeforeRouteLeave(() => {
                   }}
                 </td>
                 <td class="text-ink py-2 pr-3 text-right font-medium">
-                  {{ money(pricedByKey.get(line.key)?.effectiveUnitPrice ?? line.listUnitPrice) }}
+                  {{ moneyCents(pricedByKey.get(line.key)?.effectiveUnitPrice ?? line.listUnitPrice) }}
                 </td>
                 <td class="text-ink py-2 pr-3 text-right font-semibold">
-                  {{ money(pricedByKey.get(line.key)?.lineTotal ?? 0) }}
+                  {{ moneyCents(pricedByKey.get(line.key)?.lineTotal ?? 0) }}
                 </td>
                 <td class="py-2 text-right">
                   <button
@@ -643,7 +666,7 @@ onBeforeRouteLeave(() => {
                   Order total
                 </td>
                 <td class="text-ink py-3 pr-3 text-right text-[16px] font-bold">
-                  {{ money(total) }}
+                  {{ moneyCents(total) }}
                 </td>
                 <td></td>
               </tr>

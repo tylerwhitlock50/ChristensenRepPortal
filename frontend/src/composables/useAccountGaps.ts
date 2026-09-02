@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
-import { isViewMissing } from '@/composables/useAccountMetrics'
+// useOverview's variant, not useAccountMetrics': this is an RPC, and a
+// missing function is PGRST202, which only that one recognizes.
+import { isViewMissing } from '@/composables/useOverview'
 
 /**
  * "What should I be selling this dealer?" — public.report_account_sku_gaps,
@@ -49,10 +51,18 @@ function num(value: unknown): number {
 
 const ERP_STALE_TIME = 10 * 60_000
 
-export function useAccountSkuGaps(customerKey: MaybeRef<string>) {
+/**
+ * `limit` is how many of the ranked suggestions come back — 25 fits the
+ * account card; the ATS page asks for more because it lays the answer over a
+ * whole catalog. It is part of the key (still under qk.account.root, so the
+ * account sweep covers it) because the two callers must not share a cache
+ * entry: whichever ran first would otherwise decide how long the other's
+ * list is.
+ */
+export function useAccountSkuGaps(customerKey: MaybeRef<string>, limit = 25) {
   const key = computed(() => unref(customerKey))
   return useQuery({
-    queryKey: computed(() => qk.account.skuGaps(key.value)),
+    queryKey: computed(() => [...qk.account.skuGaps(key.value), limit] as const),
     enabled: computed(() => !!key.value),
     staleTime: ERP_STALE_TIME,
     retry: (failureCount, error) => !isViewMissing(error) && failureCount < 1,
@@ -61,7 +71,7 @@ export function useAccountSkuGaps(customerKey: MaybeRef<string>) {
         p_customer_key: key.value,
         p_months: 12,
         p_min_dealers: 4,
-        p_limit: 25,
+        p_limit: limit,
       })
       if (error) {
         // 036 not applied yet. Nothing else on the account page depends on

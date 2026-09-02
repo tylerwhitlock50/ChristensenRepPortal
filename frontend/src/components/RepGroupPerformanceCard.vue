@@ -134,7 +134,7 @@ function onExport() {
     { key: 'revenue_trailing_12m', header: 'Revenue Trailing 12m' },
     { key: 'bookings_ytd', header: 'Booked YTD' },
     { key: 'open_order_value', header: 'Open Order Value' },
-    { key: 'backlog_amount', header: 'Backlog Amount' },
+    { key: 'backlog_amount', header: 'Past Promise Amount' },
     { key: 'goal_total', header: 'Goal Total' },
     {
       key: 'attainment_pct',
@@ -222,8 +222,10 @@ function onExport() {
 
         <template #cell-bookings_ytd="{ row }">
           <span class="text-ink tabular-nums">{{ money(row.bookings_ytd) }}</span>
+          <!-- Account-rollup backlog_amount: open value past its promise
+               date, not the whole open book. -->
           <span class="text-muted block text-[13px] tabular-nums">
-            {{ money(row.backlog_amount) }} backlog
+            {{ money(row.backlog_amount) }} past promise
           </span>
         </template>
 

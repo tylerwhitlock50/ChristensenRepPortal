@@ -59,19 +59,33 @@ async function copy(value: string, label: string) {
   }, 2000)
 }
 
+/* One error line for both writes. Caught here rather than read off the
+   mutations' `error` refs: an unhandled mutateAsync rejection climbs to
+   App.vue's boundary and replaces the whole page with "This screen didn't
+   load" — for a refused token name. */
+const actionError = ref('')
+
 async function mint() {
+  actionError.value = ''
   minted.value = null
-  minted.value = await create.mutateAsync({ name: name.value })
-  name.value = ''
+  try {
+    minted.value = await create.mutateAsync({ name: name.value })
+    name.value = ''
+  } catch (e) {
+    actionError.value = (e as Error).message || 'Could not create that token.'
+  }
 }
 
 async function doRevoke(token: McpTokenRow) {
-  await revoke.mutateAsync(token.id)
-  confirmingRevoke.value = null
-  if (minted.value?.id === token.id) minted.value = null
+  actionError.value = ''
+  try {
+    await revoke.mutateAsync(token.id)
+    confirmingRevoke.value = null
+    if (minted.value?.id === token.id) minted.value = null
+  } catch (e) {
+    actionError.value = (e as Error).message || 'Could not revoke that token.'
+  }
 }
-
-const createError = computed(() => (create.error.value as Error | null)?.message ?? '')
 </script>
 
 <template>
@@ -204,7 +218,9 @@ const createError = computed(() => (create.error.value as Error | null)?.message
         You have five active tokens, which is the limit. Revoke one you no longer
         use to make room.
       </p>
-      <p v-if="createError" class="text-danger mb-3 text-sm">{{ createError }}</p>
+      <p v-if="actionError" role="alert" class="text-danger mb-3 text-sm">
+        {{ actionError }}
+      </p>
 
       <AsyncState
         :loading="tokens.isLoading.value"

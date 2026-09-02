@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import AppCard from '@/components/ui/AppCard.vue'
 import { QC_RESULT_LABELS } from '@/types/domain'
-import { money, shortDate } from '@/lib/format'
+import { moneyCents, shortDate } from '@/lib/format'
 import type { QcResultRow } from '@/composables/useOrders'
 
 /**
@@ -14,7 +14,7 @@ defineProps<{ qc: QcResultRow[]; checkedAt?: string | null }>()
 function line(row: QcResultRow): string {
   switch (row.result) {
     case 'price_mismatch':
-      return `Portal has ${money(row.app_unit_price)}, the ERP has ${money(row.erp_unit_price)}.`
+      return `Portal has ${moneyCents(row.app_unit_price)}, the ERP has ${moneyCents(row.erp_unit_price)}.`
     case 'qty_mismatch':
       return `Portal has ${row.app_qty ?? '—'} units, the ERP has ${row.erp_qty ?? '—'}.`
     default:

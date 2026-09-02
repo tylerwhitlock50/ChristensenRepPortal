@@ -296,6 +296,9 @@ function openSurvey() {
   savedVisitId.value = null
   queuedNotice.value = false
   offlineError.value = ''
+  // A fresh picker mounts with the panel, so anything still held here is
+  // from a previous survey and must not ride along with this one.
+  pendingSurveyPhotos.value = []
   surveyOpen.value = true
 }
 
@@ -311,6 +314,7 @@ function closeSurvey() {
   surveyOpen.value = false
   savedVisitId.value = null
   surveyRecommendationId.value = null
+  pendingSurveyPhotos.value = []
 }
 
 /* Photos taken inside the survey. Online they upload themselves; offline the
@@ -539,9 +543,21 @@ async function submitReactivation() {
 
 // The router reuses this component across /accounts/:customerKey changes, so
 // without this a survey opened for account A (and its mission id) would still
-// be open on account B and stamp the wrong recommendation.
+// be open on account B and stamp the wrong recommendation. The same goes for
+// every other typed-but-unsaved thing on the page: a half-written note or
+// contact log for A must not be one tap from saving against B, and A's
+// summary notice or "saved on this phone" line must not read as B's.
 watch(key, () => {
   closeSurvey()
+  queuedNotice.value = false
+  offlineError.value = ''
+  logging.value = false
+  actionNote.value = ''
+  logError.value = ''
+  noteBody.value = ''
+  noteError.value = ''
+  aiNotice.value = ''
+  aiError.value = ''
   deactivating.value = false
   deactivationReason.value = null
   deactivationNote.value = ''

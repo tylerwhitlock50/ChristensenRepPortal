@@ -2,14 +2,26 @@
 
 Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
 
-- **Pattern:** truncate-and-load per table, inside one transaction each, so
-  the app never sees a half-loaded table. Facts and dims are small enough
-  (single-site rifle manufacturer) that full reloads beat incremental logic.
-- **Schedule:** daily minimum, hourly capable. Hook `push_to_supabase.py`
-  into the existing scheduler, or run the container in `../docker`.
-- **Post-load:** after a full successful run it executes
-  `select public.generate_recommendations();` so recommendations are
-  generated the moment fresh data lands (see `views.yml → post_load_sql`).
+- **Pattern:** stage-and-swap per table. Each view streams into
+  `etl_stage.<table>` (a schema PostgREST never sees), then one short
+  `DELETE` + `INSERT … SELECT` transaction swaps it into `erp.<table>` —
+  no exclusive lock, so a rep querying during the 5 PM run sees yesterday's
+  rows or tonight's, never a mix and never a lock timeout. Facts and dims
+  are small enough (single-site rifle manufacturer) that full reloads beat
+  incremental logic.
+- **Row-count floor:** a view that returns fewer than `ETL_MIN_ROW_RATIO`
+  (default 0.5) of its previous successful row count is refused before the
+  swap — an empty feed must not zero every rollup. Set it to `0` for a
+  known shrink.
+- **Schedule:** the "Run CRM update" scheduled task runs `push.ps1` at
+  5 PM Mountain daily. It exits with the loader's code and appends to
+  `push.log`, so Task Scheduler's *Last Run Result* is the alarm.
+- **Post-load:** after every table loads it runs `views.yml → post_load_sql`
+  in order (rollup refresh first, then scoring/recommendations, then order
+  QC) and finally logs one `etl:run` row in `public.job_runs`. That row is
+  `success` only when every table AND every post-load step succeeded; the
+  portal's freshness stamp reads it, so a partial night shows as stale
+  instead of fresh.
 
 ## Files
 
@@ -35,7 +47,7 @@ Notes:
 - Generated columns (`order_date`, `ship_date`, …) are computed by Postgres;
   the job pushes only the columns the view returns.
 - If you already have a working push tool + scheduler, `views.yml` is the
-  contract: same mapping, same truncate-and-load semantics, same post-load call.
+  contract: same mapping, same replace-on-load semantics, same post-load call.
 
 ## Deploying migrations
 
@@ -60,3 +72,14 @@ nightly load: `python deploy_migrations.py && python push_to_supabase.py`).
 A recorded file whose content later changes is flagged as drift, never
 silently re-run; `--reapply <file>` is the deliberate way to re-run a
 replay-safe file.
+
+**One apply path.** On 2026-09-01 five files had been applied through the
+Supabase CLI / MCP without a row in `deployed_migrations`, and a CLI hotfix
+had no file at all; the next deployer run would have replayed the lot and
+undone the hotfix. If a file ever has to go in by hand (Dashboard, CLI,
+MCP), commit it to the folder and record it the same day:
+
+```bash
+python deploy_migrations.py --dry-run          # it must NOT list the file
+python deploy_migrations.py --baseline-through <that-file>   # if it does
+```

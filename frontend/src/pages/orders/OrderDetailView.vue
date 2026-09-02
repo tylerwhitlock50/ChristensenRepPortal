@@ -17,7 +17,7 @@ import {
   useSubmitOrder,
 } from '@/composables/useOrders'
 import { useSessionStore } from '@/stores/session'
-import { money, shortDate } from '@/lib/format'
+import { moneyCents, shortDate } from '@/lib/format'
 
 /**
  * One order, for all three audiences. Everyone sees the same facts — the
@@ -266,15 +266,15 @@ const timeline = computed(() => {
                   </span>
                 </td>
                 <td class="text-ink py-2 pr-3 text-right">{{ line.qty }}</td>
-                <td class="text-ink py-2 pr-3 text-right">{{ money(line.unit_price) }}</td>
+                <td class="text-ink py-2 pr-3 text-right">{{ moneyCents(line.unit_price) }}</td>
                 <td class="text-ink-2 py-2 pr-3 text-right">
                   {{ line.discount_pct > 0 ? `${line.discount_pct}%` : '—' }}
                 </td>
                 <td class="text-ink py-2 pr-3 text-right font-medium">
-                  {{ money(line.effective_unit_price) }}
+                  {{ moneyCents(line.effective_unit_price) }}
                 </td>
                 <td class="text-ink py-2 text-right font-semibold">
-                  {{ money(line.line_total) }}
+                  {{ moneyCents(line.line_total) }}
                 </td>
               </tr>
             </tbody>
@@ -284,7 +284,7 @@ const timeline = computed(() => {
                   Order total
                 </td>
                 <td class="text-ink py-3 text-right text-[16px] font-bold">
-                  {{ money(order.total_amount) }}
+                  {{ moneyCents(order.total_amount) }}
                 </td>
               </tr>
             </tfoot>

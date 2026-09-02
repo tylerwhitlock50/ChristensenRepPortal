@@ -12,6 +12,23 @@ export function money(value: number | null | undefined): string {
   return currency0.format(value)
 }
 
+const currency2 = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
+/**
+ * Money where the cents are the point: unit prices, line totals, an order's
+ * total, a QC price mismatch. money() rounding $1,249.99 to $1,250 is right
+ * for a revenue tile and wrong on an order a dealer will check line by line.
+ */
+export function moneyCents(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return currency2.format(value)
+}
+
 export function count(value: number | null | undefined): string {
   if (value == null) return '—'
   return new Intl.NumberFormat('en-US').format(value)

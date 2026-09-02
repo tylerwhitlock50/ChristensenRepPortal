@@ -36,7 +36,9 @@ const allRows = computed(() => query.data.value ?? [])
    choosing an account costs one RPC and no book query.
 ------------------------------------------------------------------------- */
 const gapAccountKey = ref('')
-const gapsQuery = useAccountSkuGaps(gapAccountKey)
+// 100, not the card's 25: this page lays the suggestions over the whole
+// catalog, and a rep scrolling a "gaps" list of 25 reads it as everything.
+const gapsQuery = useAccountSkuGaps(gapAccountKey, 100)
 const accountsQuery = useTerritoryAccounts()
 
 const accounts = computed(() =>
@@ -53,10 +55,13 @@ const gapAccountName = computed(() => {
 })
 
 /**
- * The RPC returns only what this dealer does NOT carry, so its part_keys are
- * exactly the filter. On error or while loading, fall through to the whole
- * catalog rather than showing an empty grid — a rep who picked an account
- * and got nothing would read that as "no stock", not "still loading".
+ * The RPC returns a RANKED SHORTLIST of what this dealer does not carry —
+ * guns only, in stock, bought by 4+ dealers, top N by breadth — not the
+ * complement of their history, so the filtered grid is "suggestions", never
+ * "everything they lack", and the copy below says so. On error or while
+ * loading, fall through to the whole catalog rather than showing an empty
+ * grid — a rep who picked an account and got nothing would read that as
+ * "no stock", not "still loading".
  */
 const gapKeys = computed(() => {
   if (!gapAccountKey.value) return null
@@ -229,9 +234,9 @@ const csvColumns: CsvColumn<AtsRow>[] = [
               Couldn't load that account's history — showing the whole catalog.
             </template>
             <template v-else>
-              {{ count(rows.length) }} in stock that
-              {{ gapAccountName }} doesn't carry, out of
-              {{ count(allRows.length) }}.
+              Top {{ count(rows.length) }} suggestions for {{ gapAccountName }}
+              — in stock, carried by 4+ dealers, never bought here. Not a full
+              list of what they don't carry.
             </template>
           </p>
         </div>

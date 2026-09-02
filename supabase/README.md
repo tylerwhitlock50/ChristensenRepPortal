@@ -32,6 +32,13 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `20260803223924_account_goals.sql` | `account_goals` (rep-entered annual goal, one per account/year), `v_account_goal_progress` (seasonal pace), `v_my_goal_rollup`, `v_rep_goal_attainment` — reconstructed from prod, where it was applied as "023_account_goals" |
 | `20260816120000_mcp_access.sql` | `mcp_tokens` (SHA-256 at rest, column-granted so `token_hash` is unreadable over PostgREST) + `mcp_token_create()` / `mcp_token_revoke()` / `mcp_token_resolve()` — credentials for the `mcp` Edge Function. A token is an identity, not a grant: it confers no access of its own |
 | `20260816140000_admin_view_as_rep.sql` | Admin "view as rep": `impersonation` state + `impersonation_events` audit, `is_real_admin()` / `acting_as_user_id()` / `effective_user_id()`, `is_admin()` and `my_customer_keys()` re-pointed at the effective user, `start_impersonation()` / `stop_impersonation()` / `acting_context()` / `impersonatable_profiles()`, and a read-only trigger on every RLS-enabled `public` table |
+| `20260817*`, `20260818*`, `20260901000100` | Order entry role, price lists, order writer + review hardening, territory ranking, ERP goal fallback, goal pace, monthly/intel rollups, first-invoice date, freshness `orders_through`, price-list item lookup, `v_account_table` — see each file's header |
+| `20260901182504_…fix_month_rollup.sql` | No-op placeholder for a CLI-applied hotfix (superseded by the next file) so both migration ledgers agree |
+| `20260901190000_business_timezone.sql` | Database/role `TimeZone = America/Denver` so `current_date` in every window, goal year and freshness view is the business calendar (the 5 PM refresh was computing "tomorrow" in winter) |
+| `20260901190100_rollup_restore.sql` | `refresh_territory_rollups()` restated from the live tables with every window (`first_invoice_date`, cancelled-order exclusion and the `agg_sku_month` block had been lost); `backlog_amount` now means past-promise, `open_order_value` all still-owed. Guarded by `tests/20260901_rollup_restore.sql` |
+| `20260901190200_view_as_trigger_sweep.sql` | Re-attaches the view-as read-only trigger to tables created after 20260816140000 (orders, price lists). Guarded by `tests/20260901_view_as_trigger_sweep.sql` |
+| `20260901190300_erp_column_grants.sql` | Column-level SELECT on `dim_part`, `dim_sales_rep`, `fact_shipment_line`, `fact_invoice_line`, `fact_inventory_on_hand` — cost, margin, commission and rep-contact columns are no longer readable by reps; `anon` loses its default grants in `public` |
+| `20260901190400_etl_run_ledger.sql` | `etl_stage` schema for the loader's stage-and-swap; `v_data_freshness` reads the `etl:run` job row (a partial night no longer shows as fresh) and ignores future-dated ERP rows |
 
 ## Applying
 
@@ -48,10 +55,11 @@ python ../etl/deploy_migrations.py             # apply pending, in order
 On a database that was previously migrated by hand, baseline first — see
 `etl/README.md → Deploying migrations`.
 
-Alternatively: the Supabase CLI (`supabase link` + `supabase db push` —
-note the CLI keys history on the numeric prefix, which the duplicate `032`
-filenames break), or paste each file in order into the Dashboard SQL editor,
-or apply via MCP `apply_migration` (one call per file, keep the order).
+Use the deployer and only the deployer. Applying a file through the CLI,
+the Dashboard SQL editor or MCP `apply_migration` leaves no row in
+`public.deployed_migrations`, and the next deployer run replays it (see
+`etl/README.md → Deploying migrations` for what that did on 2026-09-01 and
+how to record a hand-applied file with `--baseline-through`).
 
 ## Post-migration checklist (Dashboard)
 
