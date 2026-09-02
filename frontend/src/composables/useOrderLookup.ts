@@ -2,7 +2,9 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import { isViewMissing } from '@/composables/useAccountMetrics'
+// useOverview's variant, not useAccountMetrics': this is an RPC, and a
+// missing function is PGRST202, which only that one recognizes.
+import { isViewMissing } from '@/composables/useOverview'
 
 /**
  * Cross-account order lookup — public.lookup_orders(text, int), migration 035.

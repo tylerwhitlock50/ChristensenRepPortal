@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '@/lib/supabase'
+import { queryClient } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import AppButton from '@/components/ui/AppButton.vue'
 
@@ -43,40 +44,49 @@ function clearCredentialFromUrl() {
 }
 
 onMounted(async () => {
-  // An admin who is already signed in can land here too; that session is fine
-  // to change a password on, so don't fight it.
-  const existing = await supabase.auth.getSession()
-  if (existing.data.session) {
-    phase.value = 'ready'
-    return
-  }
-
   const url = new URL(window.location.href)
   const code = url.searchParams.get('code')
   // The hash arrives as "#access_token=…&refresh_token=…&type=recovery".
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
   const accessToken = hash.get('access_token')
   const refreshToken = hash.get('refresh_token')
+  const hasCredential = !!code || !!(accessToken && refreshToken)
+
+  // No credential in the URL: an admin who is already signed in can navigate
+  // here on purpose, and that session is theirs to change a password on.
+  // Only in that case — a recovery link must never be ignored in favour of
+  // whoever happens to be signed in on this device, or the form below would
+  // silently change the WRONG account's password.
+  if (!hasCredential) {
+    const existing = await supabase.auth.getSession()
+    clearCredentialFromUrl()
+    phase.value = existing.data.session ? 'ready' : 'invalid'
+    return
+  }
 
   try {
+    // The recovery token always wins. Shared truck iPad, rep A still signed
+    // in, rep B opens their reset email: without this the exchange below is
+    // skipped and rep B types a new password onto rep A's session. Local
+    // scope — the lingering session's refresh token is not ours to revoke.
+    await supabase.auth.signOut({ scope: 'local' })
+    queryClient.clear()
+
     if (code) {
       const { error: e } = await supabase.auth.exchangeCodeForSession(code)
       if (e) throw e
-    } else if (accessToken && refreshToken) {
+    } else {
       const { error: e } = await supabase.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken,
+        access_token: accessToken!,
+        refresh_token: refreshToken!,
       })
       if (e) throw e
-    } else {
-      phase.value = 'invalid'
-      return
     }
-    clearCredentialFromUrl()
     phase.value = 'ready'
   } catch {
-    clearCredentialFromUrl()
     phase.value = 'invalid'
+  } finally {
+    clearCredentialFromUrl()
   }
 })
 

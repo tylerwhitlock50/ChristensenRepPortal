@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 
 /**
@@ -78,13 +79,19 @@ export function usePriceListItems(listId: MaybeRef<number | null>) {
     queryKey: computed(() => qk.priceLists.items(unref(listId) ?? 0)),
     enabled: computed(() => unref(listId) != null),
     queryFn: async (): Promise<PriceListItemRow[]> => {
-      const { data, error } = await db
-        .from('v_price_list_items')
-        .select('*')
-        .eq('price_list_id', unref(listId))
-        .order('part_id')
-      if (error) throw error
-      return (data ?? []) as PriceListItemRow[]
+      // A full catalog sheet runs past PostgREST's 1,000-row cap, and the
+      // picker would silently offer the first thousand SKUs. id is the
+      // tiebreak that makes the page order total.
+      const data = await fetchAllRows<PriceListItemRow>((from, to) =>
+        db
+          .from('v_price_list_items')
+          .select('*', { count: 'exact' })
+          .eq('price_list_id', unref(listId))
+          .order('part_id')
+          .order('id')
+          .range(from, to),
+      )
+      return data
     },
   })
 }

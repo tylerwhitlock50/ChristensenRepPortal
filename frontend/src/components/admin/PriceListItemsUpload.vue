@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import { parseCsv } from '@/lib/csv'
-import { money } from '@/lib/format'
+import { moneyCents } from '@/lib/format'
 import { erp } from '@/lib/supabase'
 import {
   useReplacePriceListItems,
@@ -186,7 +186,7 @@ async function confirm() {
             <tr v-for="item in preview" :key="item.part_id" class="border-line border-t">
               <td class="text-ink px-3 py-1.5 font-medium">{{ item.part_id }}</td>
               <td class="text-ink-2 px-3 py-1.5">{{ item.description || '—' }}</td>
-              <td class="text-ink px-3 py-1.5 text-right">{{ money(item.unit_price) }}</td>
+              <td class="text-ink px-3 py-1.5 text-right">{{ moneyCents(item.unit_price) }}</td>
             </tr>
           </tbody>
         </table>

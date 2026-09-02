@@ -3,8 +3,12 @@
  * Module scope on purpose — this block runs once per page load, while
  * `<script setup>` below re-runs on every mount. See the Sales Brief note
  * there for why the auto-generate guard has to outlive the component.
+ *
+ * Keyed by user id: on a shared truck iPad rep B signs in after rep A in
+ * the same tab, and a single "done today" flag would hand B a stale brief
+ * all day.
  */
-let lastAutoBrief: string | null = null
+const lastAutoBrief = new Map<string, string>()
 </script>
 
 <script setup lang="ts">
@@ -20,6 +24,7 @@ import {
 } from '@/composables/useOverview'
 import { useTerritorySignals } from '@/composables/useAccountSignals'
 import { useAiBrief, useGenerateAiBrief } from '@/composables/useAiBrief'
+import { useGoalRollup } from '@/composables/useAccountGoals'
 import { deltaLabel } from '@/composables/useAccountMetrics'
 import SalesBriefCard from '@/components/SalesBriefCard.vue'
 import FreshnessStamp from '@/components/FreshnessStamp.vue'
@@ -111,15 +116,17 @@ watch(
     // Generating caches a row, so it is a write. Viewing as a rep shows the
     // rep's existing brief and stops there.
     if (!session.canWrite) return
+    const userId = session.user?.id
+    if (!userId) return
     const today = format(new Date(), 'yyyy-MM-dd')
-    if (lastAutoBrief === today) return
+    if (lastAutoBrief.get(userId) === today) return
     const generatedAt = briefQuery.brief.value?.generated_at
     const staleBrief =
       !generatedAt || isBefore(new Date(generatedAt), startOfDay(new Date()))
     if (!staleBrief) return
     // Claimed before the await, not after: a generation that fails must not
     // re-fire on the next navigation. Regenerate is one tap away.
-    lastAutoBrief = today
+    lastAutoBrief.set(userId, today)
     void runBrief()
   },
   { immediate: true },
@@ -134,10 +141,41 @@ const greeting = computed(() => {
   return 'Evening'
 })
 
+/* ---- Goal tile ------------------------------------------------------------
+   Driven by v_my_goal_rollup, like every other goal surface (BookGoalCard,
+   the account page): the rep's own goal beats the ERP figure per account,
+   and pace is seasonal rather than a straight line. The ERP sum over the
+   territory rows is only the fallback for when the rollup has nothing —
+   otherwise this tile and the Today page could disagree about the same
+   book. */
+const goalRollup = useGoalRollup()
+const rollup = computed(() => {
+  const r = goalRollup.data.value
+  return r && r.accounts_with_goal > 0 ? r : null
+})
+
+const goalValue = computed(() => {
+  if (rollup.value) return money(rollup.value.target_total)
+  return totals.value.goal > 0 ? money(totals.value.goal) : '—'
+})
+
 const goalSub = computed(() => {
+  const r = rollup.value
+  if (r) {
+    const attainment = Math.round(r.attainment_pct ?? 0)
+    if (r.expected_pct == null) return `${attainment}% of goal`
+    const points = attainment - Math.round(r.expected_pct)
+    const pace =
+      points === 0
+        ? 'on pace'
+        : points > 0
+          ? `${points}% ahead of pace`
+          : `${Math.abs(points)}% behind pace`
+    return `${attainment}% of goal · ${pace}`
+  }
   const t = totals.value
   if (t.goalPct == null) return undefined
-  return `${Math.round(t.goalPct)}% of ${money(t.goal)}`
+  return `${Math.round(t.goalPct)}% of goal · ERP goals`
 })
 </script>
 
@@ -170,15 +208,18 @@ const goalSub = computed(() => {
             :value="money(totals.revenueYtd)"
             :sub="`${deltaLabel(totals.deltaPct)} vs last year (${money(totals.revenuePriorYtd)})`"
           />
+          <StatTile label="Goal" :value="goalValue" :sub="goalSub" />
+          <!-- Two views of the same open orders: everything still owed, and
+               the slice of it that is already late. -->
           <StatTile
-            label="Goal"
-            :value="totals.goal > 0 ? money(totals.goal) : '—'"
-            :sub="goalSub"
+            label="Open Orders"
+            :value="money(totals.openOrderValue)"
+            sub="All still-owed order value"
           />
-          <StatTile label="Open Orders" :value="money(totals.openOrderValue)" />
           <StatTile
-            label="Backorders"
+            label="Past promise"
             :value="money(totals.backlogAmount)"
+            sub="Open order value past its promise date"
             :tone="totals.backlogAmount > 0 ? 'alert' : 'default'"
           />
         </div>
@@ -191,6 +232,7 @@ const goalSub = computed(() => {
         :generating="generate.isPending.value"
         :notice="briefNotice"
         :error="briefError"
+        :read-only="!session.canWrite"
         @regenerate="runBrief"
       />
 
@@ -246,7 +288,8 @@ const goalSub = computed(() => {
           <div v-if="observations.length === 0" class="p-4">
             <p class="text-muted text-[15px]">
               Nothing stands out right now — nobody overdue against their usual
-              ordering rhythm, no sharp declines, no large backorder positions.
+              ordering rhythm, no sharp declines, nothing large past its
+              promise date.
             </p>
           </div>
           <ul v-else class="divide-line divide-y">

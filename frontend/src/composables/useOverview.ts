@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
 import { supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
+import { money } from '@/lib/format'
 import { qk } from '@/lib/queryClient'
 import {
   cadenceSentence,
@@ -37,8 +38,10 @@ export interface TerritoryAccountRow {
   revenue_prior_ytd: number
   revenue_trailing_12m: number
   last_invoice_date: string | null
+  /** Everything still owed on open orders. */
   open_order_value: number
   backlog_qty: number
+  /** The subset of open_order_value whose promise date has passed. */
   backlog_amount: number
 }
 
@@ -180,6 +183,7 @@ export interface TerritoryTotals {
   /** revenueYtd / goal, percent. Null when there is no goal data. */
   goalPct: number | null
   openOrderValue: number
+  /** Open order value already past its promise date — the "Past promise" tile. */
   backlogAmount: number
   backlogQty: number
 }
@@ -319,13 +323,14 @@ export function worthInvestigating(
       continue
     }
 
-    // Large backorder position.
+    // A lot of money already past its promise date — the dealer is waiting
+    // on us, and probably about to ring.
     if (r.backlog_amount >= 10_000) {
       out.push({
         kind: 'backlog',
         customer_key: r.customer_key,
         customer_name: name,
-        note: `Has a large backorder position`,
+        note: `Has ${money(r.backlog_amount)} of orders past their promise date`,
         weight: r.backlog_amount,
       })
     }

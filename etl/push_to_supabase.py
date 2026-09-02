@@ -1,8 +1,10 @@
 """
 SQL Server bi.vw_* -> Supabase Postgres erp.* push.
 
-Truncate-and-load, one transaction per table, so readers never see a
-half-loaded table. Runs the recommendation generator after the last load.
+Stage-and-swap, one short swap transaction per table, so readers never see a
+half-loaded table and never wait on one either. Runs the rollup refresh,
+scoring and QC steps after the last load, then logs one 'etl:run' row that
+the portal's freshness stamp reads.
 
 Usage:
     python push_to_supabase.py            # all tables in views.yml
@@ -12,6 +14,10 @@ Environment (see .env.example):
     MSSQL_CONN   ODBC connection string to the SQL Server instance (VECA)
     PG_CONN      Postgres connection string to Supabase
                  (use the direct/session pooler connection, role: postgres)
+    ETL_MIN_ROW_RATIO
+                 Refuse a load that returns fewer than this fraction of the
+                 rows the previous successful load of the same table had
+                 (default 0.5). 0 disables the floor — for a known shrink.
 """
 
 from __future__ import annotations
@@ -33,6 +39,14 @@ load_dotenv()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BATCH_ROWS = 50_000
+
+# Where a table lands before it is swapped into erp.* — a schema PostgREST
+# does not expose and no app role can read (migration 20260901190400).
+STAGE_SCHEMA = "etl_stage"
+
+
+class LoadRefused(Exception):
+    """A load that would have replaced good data with bad. Nothing was swapped."""
 
 
 def load_config() -> dict:
@@ -113,7 +127,44 @@ def log_job_run(pg, job_name, started_at, status, rows=None, error=None):
         print(f"job_runs logging failed for {job_name}: {exc}", file=sys.stderr)
 
 
-def push_table(ms, pg, source_view: str, target_table: str, overrides: dict) -> int:
+def last_good_rows(pg, job_name: str) -> int | None:
+    row = pg.execute(
+        """
+        select rows_affected from public.job_runs
+        where job_name = %s and status = 'success' and rows_affected is not null
+        order by finished_at desc limit 1
+        """,
+        (job_name,),
+    ).fetchone()
+    pg.commit()
+    return int(row[0]) if row else None
+
+
+def min_row_ratio() -> float:
+    try:
+        return float(os.environ.get("ETL_MIN_ROW_RATIO", "0.5"))
+    except ValueError:
+        return 0.5
+
+
+def push_table(ms, pg, source_view: str, target_table: str, overrides: dict,
+               floor_rows: int | None) -> int:
+    """Stream one view into a staging table, then swap it into the live one.
+
+    Two transactions on purpose. The first holds only the staging table
+    while it waits on SQL Server (tens of seconds for the big facts); the
+    live table is untouched and readers are unaffected. The second is
+    DELETE + INSERT … SELECT from the staging table — no ACCESS EXCLUSIVE
+    lock, so a rep's query at 5 PM Mountain blocks on nothing and sees
+    either yesterday's rows or tonight's, never a mix and never a lock
+    timeout. (TRUNCATE would be faster, but it takes the exclusive lock
+    for the whole local copy, and the authenticator role gives up after
+    8 s.) Autovacuum reclaims the dead tuples nightly.
+    """
+    schema, name = target_table.split(".", 1)
+    stage = f'{STAGE_SCHEMA}."{name}"'
+    live = f'"{schema}"."{name}"'
+
     cur = ms.cursor()
     cur.execute(f"SELECT * FROM {source_view}")
     src_cols = [to_snake(d[0], overrides) for d in cur.description]
@@ -122,9 +173,14 @@ def push_table(ms, pg, source_view: str, target_table: str, overrides: dict) -> 
     total = 0
     with pg.transaction():
         pcur = pg.cursor()
-        pcur.execute(f"TRUNCATE TABLE {target_table}")
+        # Fresh each run so a column added to the live table by a migration
+        # is picked up, not a stale staging shape from last night.
+        pcur.execute(f"DROP TABLE IF EXISTS {stage}")
+        pcur.execute(
+            f"CREATE UNLOGGED TABLE {stage} (LIKE {live} INCLUDING DEFAULTS)"
+        )
         copy_sql = (
-            f"COPY {target_table} ({col_list}) "
+            f"COPY {stage} ({col_list}) "
             f"FROM STDIN WITH (FORMAT csv, NULL '')"
         )
         with pcur.copy(copy_sql) as copy:
@@ -137,6 +193,25 @@ def push_table(ms, pg, source_view: str, target_table: str, overrides: dict) -> 
                     buf.write(",".join(csv_field(v) for v in row) + "\n")
                 copy.write(buf.getvalue())
                 total += len(rows)
+
+    # A source view that comes back empty (or nearly) is a broken feed, not
+    # a business event: committing it would zero every rollup and delete
+    # every account signal downstream. Refuse before the swap.
+    ratio = min_row_ratio()
+    if floor_rows and ratio > 0 and total < floor_rows * ratio:
+        raise LoadRefused(
+            f"{target_table}: source returned {total} rows, last good load had "
+            f"{floor_rows} (floor {ratio:.0%}). Live table left untouched. "
+            f"Set ETL_MIN_ROW_RATIO=0 to force."
+        )
+
+    with pg.transaction():
+        pcur = pg.cursor()
+        pcur.execute(f"DELETE FROM {live}")
+        # Generated columns (order_date, ship_date, …) are computed by
+        # Postgres on insert — copy only the columns the source supplied.
+        pcur.execute(f"INSERT INTO {live} ({col_list}) SELECT {col_list} FROM {stage}")
+        pcur.execute(f"DROP TABLE {stage}")
     return total
 
 
@@ -148,6 +223,7 @@ def fmt_elapsed(seconds: float) -> str:
 
 def main() -> int:
     run_started = time.monotonic()
+    run_started_at = datetime.now(timezone.utc)
     print(f"push started at {datetime.now():%Y-%m-%d %H:%M:%S}")
 
     cfg = load_config()
@@ -165,38 +241,66 @@ def main() -> int:
     ms = pyodbc.connect(os.environ["MSSQL_CONN"])
     pg = psycopg.connect(os.environ["PG_CONN"])
 
-    failed = False
+    failures: list[str] = []
+    total_rows = 0
     for t in tables:
         started = time.monotonic()
         started_at = datetime.now(timezone.utc)
         job_name = f"etl:{t['target_table']}"
         try:
-            n = push_table(ms, pg, t["source_view"], t["target_table"], overrides)
+            floor_rows = last_good_rows(pg, job_name)
+            n = push_table(ms, pg, t["source_view"], t["target_table"], overrides,
+                           floor_rows)
+            total_rows += n
             log_job_run(pg, job_name, started_at, "success", n)
             print(f"{t['target_table']}: {n} rows in {time.monotonic() - started:.1f}s")
         except Exception as exc:  # keep loading the rest; report at the end
-            failed = True
+            failures.append(f"{t['target_table']}: {exc}")
             log_job_run(pg, job_name, started_at, "error", None, str(exc))
             print(f"{t['target_table']}: FAILED — {exc}", file=sys.stderr)
 
-    if not failed and not only:
+    # Post-load only when every table landed and this was a full run. A
+    # partial load must not refresh rollups over a mix of old and new facts.
+    if not failures and not only:
         for sql in cfg.get("post_load_sql") or []:
             step_started = time.monotonic()
-            with pg.transaction():
-                res = pg.execute(sql).fetchall()
-            print(f"post_load: {sql} -> {res} "
-                  f"({time.monotonic() - step_started:.1f}s)")
+            step_started_at = datetime.now(timezone.utc)
+            try:
+                with pg.transaction():
+                    res = pg.execute(sql).fetchall()
+                print(f"post_load: {sql} -> {res} "
+                      f"({time.monotonic() - step_started:.1f}s)")
+            except Exception as exc:
+                # Stop here: later steps read what this one should have
+                # produced (views.yml explains the ordering).
+                failures.append(f"post_load: {sql}: {exc}")
+                log_job_run(pg, "etl:post_load", step_started_at, "error", None,
+                            f"{sql}: {exc}")
+                print(f"post_load: {sql} FAILED — {exc}", file=sys.stderr)
+                break
 
-        for call in cfg.get("post_load_http") or []:
-            post_load_http(call)
+        if not failures:
+            for call in cfg.get("post_load_http") or []:
+                post_load_http(call)
+
+    # The one row the freshness stamp reads (20260901190400): success means
+    # every table loaded AND every post-load step ran. A subset run is
+    # never a full refresh, so it is logged but never as 'etl:run' success.
+    if not only:
+        log_job_run(
+            pg, "etl:run", run_started_at,
+            "success" if not failures else "error",
+            total_rows if not failures else None,
+            "; ".join(failures) if failures else None,
+        )
 
     ms.close()
     pg.close()
 
     print(f"push finished at {datetime.now():%Y-%m-%d %H:%M:%S} "
           f"— elapsed {fmt_elapsed(time.monotonic() - run_started)}"
-          + (" (with failures)" if failed else ""))
-    return 1 if failed else 0
+          + (f" (with {len(failures)} failure(s))" if failures else ""))
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

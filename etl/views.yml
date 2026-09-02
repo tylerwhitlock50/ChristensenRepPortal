@@ -1,7 +1,8 @@
 # Source view → Supabase landing table mapping.
 # Columns are pushed positionally-by-name: the SQL Server view's PascalCase
 # column FooBarID lands in snake_case foo_bar_id (see column_map exceptions).
-# Load pattern: TRUNCATE + COPY inside one transaction per table.
+# Load pattern: COPY into etl_stage.<table>, then DELETE + INSERT…SELECT into
+# erp.<table> in one short transaction (no exclusive lock on the live table).
 
 tables:
   - source_view: bi.vw_DimCustomer

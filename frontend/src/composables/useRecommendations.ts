@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
+import { today } from '@/composables/useTasks'
 import type { Tables } from '@/types/database.types'
 import type { ActionType, RecOutcome, RecPriority } from '@/types/domain'
 
@@ -42,7 +43,7 @@ function effectiveScore(r: Recommendation): number {
 }
 
 function isOverdue(dueDate: string | null): boolean {
-  return !!dueDate && dueDate < new Date().toISOString().slice(0, 10)
+  return !!dueDate && dueDate < today()
 }
 
 /**
@@ -96,7 +97,11 @@ export function useNeedsAttention(options?: { enabled?: MaybeRef<boolean> }) {
         .in('status', ['open', 'acted'])
         // Ordered server-side so the cap below takes the TOP rows rather than
         // an arbitrary 200. The client re-sorts (missions and overdue work
-        // outrank a score), but it can only re-sort what it was sent.
+        // outrank a score), but it can only re-sort what it was sent — and
+        // missions carry no score, so score-first put every one of them at
+        // the tail where the cap cut them off. source is 'admin' | 'system',
+        // so ascending is missions first.
+        .order('source', { ascending: true })
         .order('score', { ascending: false, nullsFirst: false })
         .limit(200)
       if (error) throw error

@@ -83,11 +83,25 @@ const EXT_BY_MIME: Record<string, string> = {
   'application/pdf': 'pdf',
 }
 
+const MIME_BY_EXT: Record<string, string> = Object.fromEntries(
+  Object.entries(EXT_BY_MIME).map(([mime, ext]) => [ext, mime]),
+)
+
 function extensionFor(file: File): string {
   const byMime = EXT_BY_MIME[file.type.toLowerCase()]
   if (byMime) return byMime
   const match = /\.([a-z0-9]{1,5})$/i.exec(file.name)
   return match ? match[1].toLowerCase() : 'xlsx'
+}
+
+/**
+ * What to tell Storage the object is. Browsers hand over an empty `type` for
+ * .xlsx on some Windows builds (no registry association), and the bucket's
+ * allowed-MIME list rejects a blank — so fall back to the extension.
+ */
+function contentTypeFor(file: File): string | undefined {
+  if (file.type) return file.type
+  return MIME_BY_EXT[extensionFor(file)]
 }
 
 export interface UploadPriceListFileInput {
@@ -113,7 +127,7 @@ export function useUploadPriceListFile() {
       const { error: uploadError } = await supabase.storage
         .from(PRICE_LIST_BUCKET)
         .upload(path, input.file, {
-          contentType: input.file.type || undefined,
+          contentType: contentTypeFor(input.file),
           upsert: false,
           cacheControl: '3600',
         })

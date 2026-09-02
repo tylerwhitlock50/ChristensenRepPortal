@@ -3,8 +3,10 @@ import { onErrorCaptured, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '@/components/AppShell.vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import { useSessionStore } from '@/stores/session'
 
 const route = useRoute()
+const session = useSessionStore()
 
 /**
  * Last-resort error boundary.
@@ -71,6 +73,10 @@ function reload() {
        chrome-wrapped. -->
   <RouterView v-else-if="route.meta.public" />
   <AppShell v-else>
-    <RouterView />
+    <!-- Keyed on the acting identity so a page that stays mounted across a
+         view-as switch (Overview, mid-banner) remounts with fresh local
+         state — setViewAs() resets the query cache, but a component's own
+         refs (module-scoped brief guard, open panels) it cannot reach. -->
+    <RouterView :key="session.acting?.target_user_id ?? 'self'" />
   </AppShell>
 </template>

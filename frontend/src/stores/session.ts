@@ -116,10 +116,16 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * Switch to seeing the portal as `userId`, or (null) stop.
    *
-   * The cache clear is the whole client-side implementation. Query keys are
+   * The cache reset is the whole client-side implementation. Query keys are
    * scoped by account and by page, never by user — the same reasoning that
    * made signOut() clear it — so without this the admin would be handed
    * their own territory totals out of cache with no network request at all.
+   *
+   * resetQueries(), not clear(): clear() drops the cache entries but never
+   * tells a mounted observer, so a page that stays up across the switch
+   * (Overview while changing rep in the banner, or on Exit) kept rendering
+   * the previous identity's rows. Reset puts every query back to its initial
+   * state AND refetches the ones something is still watching.
    */
   async function setViewAs(userId: string | null) {
     if (userId) {
@@ -132,7 +138,7 @@ export const useSessionStore = defineStore('session', () => {
       if (error) throw error
     }
     await loadActingContext()
-    queryClient.clear()
+    await queryClient.resetQueries()
   }
 
   /**
@@ -149,6 +155,12 @@ export const useSessionStore = defineStore('session', () => {
         // A profile read failure shouldn't wedge the app at a blank screen —
         // the router guard will bounce to /login and the user can retry.
         profile.value = null
+      }
+      // signIn() refuses a deactivated profile, but a rep deactivated while
+      // their refresh token was still good lands here on the next reload
+      // and would otherwise be treated as signed in until it expired.
+      if (profile.value && !profile.value.active) {
+        await signOut()
       }
       // Before ready, not after: the router guard reads isAdmin, and an admin
       // who reloads the page mid-view-as must not be waved through to /admin
@@ -257,7 +269,13 @@ export const useSessionStore = defineStore('session', () => {
         /* expiry will catch it */
       }
     }
-    await supabase.auth.signOut()
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      // The server-side revoke failed (dead cell, expired token). Drop the
+      // persisted session locally anyway — otherwise the button reads as
+      // signed out while the next reload restores the rep's session.
+      await supabase.auth.signOut({ scope: 'local' })
+    }
     session.value = null
     profile.value = null
     acting.value = null

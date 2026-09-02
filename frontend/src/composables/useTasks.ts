@@ -22,8 +22,12 @@ export const taskKeys = {
     ['tasks', 'account', userId, customerKey] as const,
 } as const
 
-/** 'YYYY-MM-DD' in the rep's own timezone — due_date is a bare date, not an instant. */
-function today(): string {
+/**
+ * 'YYYY-MM-DD' in the rep's own timezone — due_date is a bare date, not an
+ * instant. Shared with useRecommendations: toISOString() is UTC, which on a
+ * Mountain-time evening is already tomorrow and marks today's work overdue.
+ */
+export function today(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }

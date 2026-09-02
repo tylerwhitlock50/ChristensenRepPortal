@@ -19,6 +19,12 @@ const props = defineProps<{
   notice?: string
   /** Generation failed; the cached brief (if any) still renders below. */
   error?: string
+  /**
+   * Hide Regenerate. Generating writes a cached row, so an admin viewing as
+   * a rep gets the rep's existing brief and no button — the same gate the
+   * account page's Summarize chip sits behind.
+   */
+  readOnly?: boolean
 }>()
 
 defineEmits<{ regenerate: [] }>()
@@ -36,6 +42,7 @@ const paragraphs = computed(() =>
     <template #header>
       <h2 class="u-label text-ink">Sales Brief</h2>
       <AppButton
+        v-if="!readOnly"
         variant="ghost"
         :loading="generating"
         @click="$emit('regenerate')"
@@ -80,8 +87,9 @@ const paragraphs = computed(() =>
     </template>
 
     <p v-else class="text-muted text-[15px]">
-      No brief yet — it generates automatically each morning, or press
-      Generate.
+      No brief yet — it generates automatically each morning<template
+        v-if="!readOnly"
+      >, or press Generate</template>.
     </p>
 
     <template v-if="brief" #footer>

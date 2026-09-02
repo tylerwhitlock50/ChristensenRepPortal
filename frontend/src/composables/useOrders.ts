@@ -2,6 +2,7 @@ import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, supabase } from '@/lib/supabase'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import type { OrderStatus, QcResult } from '@/types/domain'
@@ -86,12 +87,18 @@ export function useMyOrders() {
     queryKey: computed(() => qk.orders.list(session.user?.id ?? '')),
     enabled: computed(() => !!session.user),
     queryFn: async (): Promise<OrderRow[]> => {
-      const { data, error } = await db
-        .from('orders')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (error) throw error
-      return (data ?? []) as OrderRow[]
+      // An admin's read is every order ever written, which outgrows
+      // PostgREST's 1,000-row cap within a season — and the views split by
+      // status client-side, so a silently truncated list loses old drafts
+      // first. id breaks created_at ties so pages never overlap.
+      return fetchAllRows<OrderRow>((from, to) =>
+        db
+          .from('orders')
+          .select('*', { count: 'exact' })
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      )
     },
   })
 }
