@@ -22,7 +22,9 @@ function Log-Line { process { $_; Add-Content -Path $log -Value $_ -Encoding UTF
 
 & .\venv\Scripts\Activate.ps1
 
-& python push_to_supabase.py 2>&1 | ForEach-Object { "$_" } | Log-Line
+# -u: stdout is a pipe here, not a console, so Python would block-buffer and
+# print nothing until exit — a 9-minute run that looks stalled.
+& python -u push_to_supabase.py 2>&1 | ForEach-Object { "$_" } | Log-Line
 $code = $LASTEXITCODE
 
 deactivate
