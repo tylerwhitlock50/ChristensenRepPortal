@@ -82,56 +82,152 @@ const ACTIONS: Record<string, ActionDef> = {
 /*----------------------------------------------------------------------------
   territory.brief context — the caller's whole book, compact.
 
-  Everything is top-N sliced and rounded: an admin's "territory" is the whole
-  company, and the context must stay bounded (and cheap) even then.
+  Ranking and totals happen IN POSTGRES, the same way the mcp function's
+  get_territory_summary does it (see mcp/tools.ts):
+
+    - totals come from report_territory_summary(), a true whole-book
+      aggregate over v_territory_account_yoy (20260817120000);
+    - each highlight list is its own ORDER BY … LIMIT on the view's SQL
+      columns (yoy_change_amount is a column precisely so this can be an
+      indexed ORDER BY rather than a JS sort);
+    - the goal is v_my_goal_rollup — the row the Overview goal tile reads —
+      so the brief and the tile can never disagree about pace.
+
+  The previous shape read the view with no LIMIT, ordered by customer_key,
+  and sorted in TypeScript. PostgREST caps every response at max-rows
+  (1,000 on a default project) whatever the query asks for, so an admin's
+  book — every active account — came back as an alphabetical prefix: the
+  totals were short, "top accounts" were the biggest names among A–L, and
+  the brief confidently described a territory that does not exist. A rep's
+  few hundred accounts fit under the cap, which is why it only showed up on
+  big books.
+
+  Everything stays top-N sliced and rounded so the context is bounded (and
+  cheap) even when the territory is the whole company. Every list carries
+  its total match count so the model knows it is looking at an excerpt.
 ----------------------------------------------------------------------------*/
 
 // deno-lint-ignore no-explicit-any
 type Row = Record<string, any>
+
+/** How many accounts each highlight list names. */
+const TOP_ACCOUNTS = 10
+const MOVERS = 5
+const DORMANT = 5
+/** "Dormant": nothing invoiced in this many days, with real recent history. */
+const DORMANT_DAYS = 90
+const DORMANT_MIN_TRAILING_12M = 5_000
+
+const ACCOUNT_COLUMNS =
+  'customer_key, customer_name, sold_to_city, sold_to_state, revenue_ytd, ' +
+  'revenue_prior_ytd, revenue_trailing_12m, last_invoice_date, backlog_amount, ' +
+  'yoy_change_amount'
+
+/**
+ * One ranked slice of the book. `customer_key` is the final ORDER BY term
+ * so ties (whole pages of $0 accounts) rank deterministically — a boundary
+ * row that reshuffles on identical data flips the context hash, which turns
+ * a free cached return into a paid regeneration. `count: 'exact'` makes the
+ * response carry the total number of matching rows, not just the slice.
+ */
+function accountSlice(client: SupabaseClient, sort: string, ascending: boolean) {
+  return client
+    .from('v_territory_account_yoy')
+    .select(ACCOUNT_COLUMNS, { count: 'exact' })
+    .order(sort, { ascending, nullsFirst: false })
+    .order('customer_key', { ascending: true })
+}
+
+/**
+ * Single-row unwrap with the same tolerance rule as rows(): only a relation
+ * that is not migrated yet may be absent; anything else throws rather than
+ * blanking a slice out of the hash.
+ */
+// deno-lint-ignore no-explicit-any
+function rowOrNull(result: { data: any; error: any }, label: string): Row | null {
+  return (rows(result, label) as Row[])[0] ?? null
+}
 
 async function buildTerritoryContext(
   client: SupabaseClient,
   _subjectKey: string,
 ): Promise<BuiltContext> {
   const yearNow = new Date().getUTCFullYear()
+  const cutoff90 = isoDaysAgo(DORMANT_DAYS)
 
-  const [accountsRes, recentRes, skuNowRes, skuPriorRes, freshRes] =
-    await Promise.all([
-      // Unfiltered on purpose — RLS is the territory filter (025). Ordered
-      // by key because the top-N lists below use STABLE JS sorts: ties fall
-      // back to input order, and Postgres input order is otherwise
-      // arbitrary — another way the hash could flip on identical data.
-      client.from('v_territory_account_yoy').select('*').order('customer_key'),
-      // Secondary sort keys everywhere a LIMIT can split a tie: without
-      // them the boundary rows are nondeterministic, and a context that
-      // reshuffles on identical data flips the hash — which turns a free
-      // cached return into a paid regeneration.
-      client
-        .from('v_territory_recent_orders')
-        .select('*')
-        .order('order_date', { ascending: false })
-        .order('order_id', { ascending: true })
-        .limit(15),
-      client
-        .from('v_territory_sku_sales')
-        .select('part_id, part_description, product_family, chambering, revenue, qty')
-        .eq('sales_year', yearNow)
-        .order('revenue', { ascending: false })
-        .order('part_id', { ascending: true })
-        .limit(15),
-      client
-        .from('v_territory_sku_sales')
-        .select('part_id, part_description, product_family, chambering, revenue, qty')
-        .eq('sales_year', yearNow - 1)
-        .order('revenue', { ascending: false })
-        .order('part_id', { ascending: true })
-        .limit(15),
-      client.from('v_data_freshness').select('*').maybeSingle(),
-    ])
+  const [
+    totalsRes,
+    goalRes,
+    topRes,
+    upRes,
+    downRes,
+    dormantRes,
+    recentRes,
+    skuNowRes,
+    skuPriorRes,
+    freshRes,
+  ] = await Promise.all([
+    // Unfiltered on purpose, here and below — RLS is the territory filter
+    // (025); report_territory_summary() is security invoker for that reason.
+    client.rpc('report_territory_summary').maybeSingle(),
+    client
+      .from('v_my_goal_rollup')
+      .select('accounts_with_goal, accounts_behind, target_total, attainment_pct, expected_pct')
+      .eq('period_year', yearNow)
+      .maybeSingle(),
+    accountSlice(client, 'revenue_ytd', false).gt('revenue_ytd', 0).limit(TOP_ACCOUNTS),
+    accountSlice(client, 'yoy_change_amount', false)
+      .gt('yoy_change_amount', 0)
+      .limit(MOVERS),
+    accountSlice(client, 'yoy_change_amount', true)
+      .lt('yoy_change_amount', 0)
+      .limit(MOVERS),
+    // Gone quiet: meaningful trailing-12-month business, but the last
+    // invoice is older than the cutoff. Biggest recent history first.
+    accountSlice(client, 'revenue_trailing_12m', false)
+      .lt('last_invoice_date', cutoff90)
+      .gte('revenue_trailing_12m', DORMANT_MIN_TRAILING_12M)
+      .limit(DORMANT),
+    // Secondary sort keys everywhere a LIMIT can split a tie — same hash
+    // stability reason as accountSlice().
+    client
+      .from('v_territory_recent_orders')
+      .select('*')
+      .order('order_date', { ascending: false })
+      .order('order_id', { ascending: true })
+      .limit(15),
+    client
+      .from('v_territory_sku_sales')
+      .select('part_id, part_description, product_family, chambering, revenue, qty')
+      .eq('sales_year', yearNow)
+      .order('revenue', { ascending: false })
+      .order('part_id', { ascending: true })
+      .limit(15),
+    client
+      .from('v_territory_sku_sales')
+      .select('part_id, part_description, product_family, chambering, revenue, qty')
+      .eq('sales_year', yearNow - 1)
+      .order('revenue', { ascending: false })
+      .order('part_id', { ascending: true })
+      .limit(15),
+    client.from('v_data_freshness').select('*').maybeSingle(),
+  ])
 
-  const accounts = rows(accountsRes, 'v_territory_account_yoy') as Row[]
+  // The totals are the spine of the brief: without them there is nothing
+  // honest to write, so a missing RPC is an outage, not a tolerated absence
+  // (an empty context would read as "no accounts" — a lie, cached).
+  if (totalsRes.error) {
+    console.error('context query failed: report_territory_summary', totalsRes.error)
+    throw new HttpError(
+      503,
+      'context_unavailable',
+      'Could not read the data behind this brief. Try again in a moment.',
+    )
+  }
+  const totals = (totalsRes.data ?? null) as Row | null
+  const accountCount = Math.round(num(totals?.accounts))
 
-  if (accounts.length === 0) {
+  if (!totals || accountCount === 0) {
     return {
       context: {},
       insufficient: {
@@ -139,26 +235,6 @@ async function buildTerritoryContext(
         reason: 'empty_book',
       },
     }
-  }
-
-  const num = (v: unknown) => {
-    const n = Number(v ?? 0)
-    return Number.isFinite(n) ? n : 0
-  }
-
-  const totals = {
-    revenue_ytd: 0,
-    revenue_prior_ytd: 0,
-    goal: 0,
-    open_order_value: 0,
-    backlog_amount: 0,
-  }
-  for (const a of accounts) {
-    totals.revenue_ytd += num(a.revenue_ytd)
-    totals.revenue_prior_ytd += num(a.revenue_prior_ytd)
-    totals.goal += num(a.yearly_sales_goal)
-    totals.open_order_value += num(a.open_order_value)
-    totals.backlog_amount += num(a.backlog_amount)
   }
 
   const slim = (a: Row) => ({
@@ -171,44 +247,16 @@ async function buildTerritoryContext(
     last_invoice_date: a.last_invoice_date ?? null,
   })
 
-  const byDelta = [...accounts].sort(
-    (a, b) =>
-      num(b.revenue_ytd) - num(b.revenue_prior_ytd) -
-      (num(a.revenue_ytd) - num(a.revenue_prior_ytd)),
-  )
-  const moversUp = byDelta
-    .filter((a) => num(a.revenue_ytd) > num(a.revenue_prior_ytd))
-    .slice(0, 5)
-    .map(slim)
-  const moversDown = byDelta
-    .filter((a) => num(a.revenue_ytd) < num(a.revenue_prior_ytd))
-    .reverse()
-    .slice(0, 5)
-    .map(slim)
-
-  const cutoff90 = isoDaysAgo(90)
   const today = new Date()
-  const dormant = accounts
-    .filter(
-      (a) =>
-        a.last_invoice_date &&
-        String(a.last_invoice_date) < cutoff90 &&
-        num(a.revenue_trailing_12m) >= 5_000,
-    )
-    .sort((a, b) => num(b.revenue_trailing_12m) - num(a.revenue_trailing_12m))
-    .slice(0, 5)
-    .map((a) => ({
+  const dormant = (rows(dormantRes, 'v_territory_account_yoy/dormant') as Row[]).map(
+    (a) => ({
       ...slim(a),
       days_since_invoice: Math.floor(
         (today.getTime() - new Date(String(a.last_invoice_date)).getTime()) /
           86_400_000,
       ),
-    }))
-
-  const topAccounts = [...accounts]
-    .sort((a, b) => num(b.revenue_ytd) - num(a.revenue_ytd))
-    .slice(0, 10)
-    .map(slim)
+    }),
+  )
 
   const slimSku = (s: Row) => ({
     part_id: s.part_id ?? null,
@@ -231,19 +279,48 @@ async function buildTerritoryContext(
   }
   const fresh = (freshRes.data ?? null) as Row | null
 
+  // The goal tile's own row. Null when no account in the book carries a
+  // goal (CRM or ERP) — then `goal` is omitted rather than reported as $0.
+  const goalRow = rowOrNull(goalRes, 'v_my_goal_rollup')
+  const goal =
+    goalRow && num(goalRow.accounts_with_goal) > 0
+      ? {
+          target: round(goalRow.target_total),
+          attainment_pct: pctOrNull(goalRow.attainment_pct),
+          expected_pct: pctOrNull(goalRow.expected_pct),
+          accounts_with_goal: Math.round(num(goalRow.accounts_with_goal)),
+          accounts_behind_pace: Math.round(num(goalRow.accounts_behind)),
+        }
+      : null
+
+  // A slice's `count` is the number of rows that matched before the LIMIT.
+  const countOf = (res: { count?: number | null }, fallback: number) =>
+    typeof res.count === 'number' ? res.count : fallback
+
+  const topAccounts = (rows(topRes, 'v_territory_account_yoy/top') as Row[]).map(slim)
+  const moversUp = (rows(upRes, 'v_territory_account_yoy/up') as Row[]).map(slim)
+  const moversDown = (rows(downRes, 'v_territory_account_yoy/down') as Row[]).map(slim)
+
   const context = {
-    account_count: accounts.length,
+    account_count: accountCount,
+    accounts_with_revenue_ytd: Math.round(num(totals.accounts_with_ytd_revenue)),
     totals: {
       revenue_ytd: round(totals.revenue_ytd),
       revenue_prior_ytd: round(totals.revenue_prior_ytd),
-      goal: round(totals.goal),
+      revenue_trailing_12m: round(totals.revenue_trailing_12m),
+      goal: goal ? goal.target : 0,
       open_order_value: round(totals.open_order_value),
       backlog_amount: round(totals.backlog_amount),
     },
+    goal,
     top_accounts: topAccounts,
     movers_up: moversUp,
+    movers_up_count: countOf(upRes, moversUp.length),
     movers_down: moversDown,
+    movers_down_count: countOf(downRes, moversDown.length),
     dormant,
+    dormant_count: countOf(dormantRes, dormant.length),
+    dormant_after_days: DORMANT_DAYS,
     top_skus: (rows(skuNowRes, 'v_territory_sku_sales/now') as Row[]).map(slimSku),
     top_skus_last_year: (rows(skuPriorRes, 'v_territory_sku_sales/prior') as Row[]).map(slimSku),
     recent_orders: (rows(recentRes, 'v_territory_recent_orders') as Row[]).map((o) => ({
@@ -256,6 +333,18 @@ async function buildTerritoryContext(
   }
 
   return { context }
+}
+
+function num(v: unknown): number {
+  const n = Number(v ?? 0)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** A percentage as the view reports it (one decimal), or null when unknown. */
+function pctOrNull(v: unknown): number | null {
+  if (v == null) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.round(n * 10) / 10 : null
 }
 
 /*----------------------------------------------------------------------------
