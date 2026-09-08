@@ -139,3 +139,53 @@ select.field {
   background-position: right 0.75rem center;
   background-size: 1.15rem;
 }
+
+/* Help-article typography (lib/markdown.ts output). Global because the body
+   arrives through v-html, which carries no scoped attributes; used by the rep
+   Help page and the admin guide preview. */
+.prose-help {
+  color: var(--color-ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.prose-help > * + * {
+  margin-top: 0.75rem;
+}
+.prose-help h3 {
+  color: var(--color-ink);
+  font-size: 17px;
+  font-weight: 600;
+  margin-top: 1.25rem;
+}
+.prose-help h4 {
+  color: var(--color-ink);
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 1rem;
+}
+.prose-help ul,
+.prose-help ol {
+  padding-left: 1.25rem;
+}
+.prose-help ul {
+  list-style: disc;
+}
+.prose-help ol {
+  list-style: decimal;
+}
+.prose-help li + li {
+  margin-top: 0.25rem;
+}
+.prose-help strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.prose-help a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-help code {
+  font-size: 0.9em;
+  padding: 0 0.25em;
+  background: #e6e3dc;
+}

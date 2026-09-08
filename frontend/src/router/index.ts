@@ -162,6 +162,14 @@ const router = createRouter({
       ],
     },
     {
+      // Help & support: the guides, the question box, and the rep's own
+      // threads. Reached from the "?" in the header on every screen.
+      path: '/help',
+      name: 'help',
+      component: () => import('@/pages/HelpView.vue'),
+      meta: { title: 'Help' },
+    },
+    {
       // Reached from the account menu, not the nav bar: a rep sets this up
       // once and never comes back, so it does not earn a tab.
       path: '/connect',
@@ -218,6 +226,12 @@ const router = createRouter({
           name: 'admin-activity',
           component: () => import('@/pages/admin/AdminActivityView.vue'),
           meta: { title: 'Activity' },
+        },
+        {
+          path: 'support',
+          name: 'admin-support',
+          component: () => import('@/pages/admin/AdminSupportView.vue'),
+          meta: { title: 'Support' },
         },
         {
           path: 'settings',
