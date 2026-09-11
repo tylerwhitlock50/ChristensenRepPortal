@@ -6,6 +6,7 @@ import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useMyDueTasks } from '@/composables/useTasks'
+import { useOpenSupportCount } from '@/composables/useSupport'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
@@ -45,6 +46,11 @@ const missionsLate = computed(() =>
 const dueTasks = useMyDueTasks()
 const tasksDue = computed(() => dueTasks.data.value?.due ?? 0)
 const tasksOverdue = computed(() => dueTasks.data.value?.overdue ?? 0)
+
+/* Questions waiting in the support inbox — the badge on the Admin tab. The
+   composable gates itself on isAdmin, so a rep's shell never issues it. */
+const openSupport = useOpenSupportCount()
+const supportWaiting = computed(() => openSupport.data.value ?? 0)
 
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
@@ -112,7 +118,16 @@ const nav = computed<NavItem[]>(() => {
     })
   }
   if (session.isAdmin) {
-    items.push({ to: '/admin', label: 'Admin', icon: 'admin' })
+    items.push({
+      to: '/admin',
+      label: 'Admin',
+      icon: 'admin',
+      badge: {
+        count: supportWaiting.value,
+        late: false,
+        label: `${supportWaiting.value} support questions waiting`,
+      },
+    })
   }
   return items
 })
@@ -188,6 +203,31 @@ async function signOut() {
                is actually waiting, and then it is visible on every screen. -->
           <SyncStatusBadge compact />
 
+          <!-- Help on every screen, one tap. Carries the current path so a
+               question asked from here says which page it was about. -->
+          <RouterLink
+            v-if="route.name !== 'help'"
+            :to="{ name: 'help', query: { from: route.fullPath } }"
+            class="tap-target grid min-w-11 place-items-center text-[#C9C5BB] hover:text-canvas"
+            aria-label="Help and support"
+            title="Help and support"
+          >
+            <svg
+              class="size-6"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7" />
+              <path d="M12 17h.01" />
+            </svg>
+          </RouterLink>
+
           <div ref="menuRef" class="relative">
             <!-- The initials chip is aria-hidden and the name span is
                  display:none below sm, so on a phone this button would compute
@@ -232,9 +272,17 @@ async function signOut() {
                 </p>
               </div>
               <RouterLink
-                :to="{ name: 'connect' }"
+                :to="{ name: 'help' }"
                 role="menuitem"
                 class="tap-target font-label hover:bg-canvas flex w-full items-center px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase"
+                @click="menuOpen = false"
+              >
+                Help &amp; support
+              </RouterLink>
+              <RouterLink
+                :to="{ name: 'connect' }"
+                role="menuitem"
+                class="tap-target font-label border-line hover:bg-canvas flex w-full items-center border-t px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase"
                 @click="menuOpen = false"
               >
                 Connect Claude

@@ -39,6 +39,7 @@ Postgres schema for the Sales Execution Portal, as ordered Supabase migrations.
 | `20260901190200_view_as_trigger_sweep.sql` | Re-attaches the view-as read-only trigger to tables created after 20260816140000 (orders, price lists). Guarded by `tests/20260901_view_as_trigger_sweep.sql` |
 | `20260901190300_erp_column_grants.sql` | Column-level SELECT on `dim_part`, `dim_sales_rep`, `fact_shipment_line`, `fact_invoice_line`, `fact_inventory_on_hand` — cost, margin, commission and rep-contact columns are no longer readable by reps; `anon` loses its default grants in `public` |
 | `20260901190400_etl_run_ledger.sql` | `etl_stage` schema for the loader's stage-and-swap; `v_data_freshness` reads the `etl:run` job row (a partial night no longer shows as fresh) and ignores future-dated ERP rows |
+| `20260908120000_help_and_support.sql` | `help_articles` (admin-authored guides, light Markdown, published flag), `support_requests` + `support_messages` (the in-app question box and its threads; a trigger stamps `from_admin` and moves open → answered → open), view-as trigger re-swept |
 
 ## Applying
 

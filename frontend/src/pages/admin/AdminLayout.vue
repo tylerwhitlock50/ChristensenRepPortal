@@ -25,6 +25,7 @@ const tabs = computed(() => {
     // half serves the always-on Intel page either way.
     { to: { name: 'admin-price-lists' }, label: 'Price Lists' },
     { to: { name: 'admin-activity' }, label: 'Activity' },
+    { to: { name: 'admin-support' }, label: 'Support' },
     { to: { name: 'admin-settings' }, label: 'Settings' },
   )
   return items
