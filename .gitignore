@@ -40,3 +40,6 @@ desktop.ini
 *.log
 tmp/
 scratch/
+
+# Rep onboarding contact lists fed to frontend/scripts/bulk-create-users.mjs
+frontend/scripts/*.csv
