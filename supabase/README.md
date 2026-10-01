@@ -74,6 +74,11 @@ how to record a hand-applied file with `--baseline-through`).
    `select public.generate_recommendations();` as the last step of the ETL
    (recommended), or enable the `pg_cron` extension and use the schedule in
    the header of `008_recommendation_engine.sql`.
+6. **Auth → URL Configuration**: Site URL `https://carms.app`; Redirect URLs
+   `https://carms.app/reset-password` and `http://localhost:5231/reset-password`.
+7. **Auth → Email Templates → Reset Password**: paste `templates/recovery.html`
+   (token-hash link; the default `/verify` link is consumed by Outlook's link
+   scanner before the rep can tap it — see `templates/README.md`).
 
 ## Design rules
 
