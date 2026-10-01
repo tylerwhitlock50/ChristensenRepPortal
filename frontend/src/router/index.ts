@@ -178,6 +178,14 @@ const router = createRouter({
       meta: { title: 'Connect Claude' },
     },
     {
+      // Also from the account menu. The signed-out half of this (the link in
+      // the reset email) lives at /reset-password above.
+      path: '/change-password',
+      name: 'change-password',
+      component: () => import('@/pages/ChangePasswordView.vue'),
+      meta: { title: 'Change password' },
+    },
+    {
       path: '/admin',
       component: () => import('@/pages/admin/AdminLayout.vue'),
       // adminOnly on the parent covers every child — vue-router merges parent

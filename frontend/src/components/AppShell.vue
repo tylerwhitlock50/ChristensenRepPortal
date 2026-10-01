@@ -287,6 +287,14 @@ async function signOut() {
               >
                 Connect Claude
               </RouterLink>
+              <RouterLink
+                :to="{ name: 'change-password' }"
+                role="menuitem"
+                class="tap-target font-label border-line hover:bg-canvas flex w-full items-center border-t px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase"
+                @click="menuOpen = false"
+              >
+                Change password
+              </RouterLink>
               <button
                 type="button"
                 role="menuitem"

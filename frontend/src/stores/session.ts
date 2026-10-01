@@ -256,6 +256,39 @@ export const useSessionStore = defineStore('session', () => {
     if (error) throw error
   }
 
+  /**
+   * Change the password of the signed-in user, from inside the app.
+   *
+   * The current password is re-checked first, even though updateUser() would
+   * accept the change without it. A signed-in session on a shared truck iPad
+   * is not proof that the person holding it is the account owner, and "type
+   * your old password" is the one thing a passer-by cannot do. The check is
+   * a real sign-in, so it also refreshes the session it is about to update.
+   *
+   * Other devices are signed out afterwards, best-effort: the usual reason a
+   * rep changes a password deliberately is that they are no longer sure who
+   * else has it.
+   */
+  async function changePassword(currentPassword: string, newPassword: string) {
+    const email = user.value?.email
+    if (!email) throw new Error('Not signed in.')
+
+    const check = await supabase.auth.signInWithPassword({ email, password: currentPassword })
+    if (check.error) {
+      if (/rate|too many/i.test(check.error.message)) throw check.error
+      throw new Error('That current password is not right.')
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    if (error) throw error
+
+    try {
+      await supabase.auth.signOut({ scope: 'others' })
+    } catch {
+      /* this device is updated either way */
+    }
+  }
+
   async function signOut() {
     // Before the sign-out, because the RPC needs the JWT. View-as state is
     // server-side and outlives the browser session, so without this an admin
@@ -311,5 +344,6 @@ export const useSessionStore = defineStore('session', () => {
     signOut,
     requestPasswordReset,
     updatePassword,
+    changePassword,
   }
 })
