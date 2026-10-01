@@ -14,15 +14,32 @@ import AppButton from '@/components/ui/AppButton.vue'
  * keeping, because it means no other route in the app will ever silently
  * adopt a session out of a URL. This one route opts in explicitly.
  *
- * Both link shapes are handled, because which one arrives depends on the
- * project's auth settings rather than on anything in this repo:
+ * Three link shapes are handled, because which one arrives depends on the
+ * project's email template and auth settings rather than on anything in
+ * this repo:
  *
- *   PKCE     …/reset-password?code=<uuid>        → exchangeCodeForSession
- *   implicit …/reset-password#access_token=…&type=recovery → setSession
+ *   token hash …/reset-password?token_hash=…&type=recovery → verifyOtp
+ *   PKCE       …/reset-password?code=<uuid>                → exchangeCodeForSession
+ *   implicit   …/reset-password#access_token=…&type=recovery → setSession
  *
- * The credential is scrubbed from the address bar either way once consumed —
- * a recovery token sitting in browser history on a shared truck iPad is the
- * same problem as the cached-revenue leak signOut() already guards against.
+ * The token-hash shape (supabase/templates/recovery.html) is the one the
+ * project should be sending, and it is verified on SUBMIT rather than on
+ * mount. The other two are consumed the moment the link is fetched, and the
+ * auth logs show Outlook's link scanner fetching every reset link seconds
+ * after it is sent — so by the time the rep tapped it, the one-time token
+ * was already gone and they got "invalid or expired". A scanner can load
+ * this page all it likes; nothing is spent until a person types a password
+ * and presses Save.
+ *
+ * Supabase reports a link it could not honour as #error_code=otp_expired on
+ * the same redirect; that lands here too (the router forwards it) and shows
+ * the expired message instead of bouncing through /login.
+ *
+ * The credential is scrubbed from the address bar once consumed — a recovery
+ * token sitting in browser history on a shared truck iPad is the same
+ * problem as the cached-revenue leak signOut() already guards against. The
+ * unconsumed token hash stays in the URL until then, so "open in Safari"
+ * from a mail app's in-app browser still works.
  */
 
 const router = useRouter()
@@ -30,6 +47,9 @@ const session = useSessionStore()
 
 type Phase = 'checking' | 'ready' | 'invalid' | 'done'
 const phase = ref<Phase>('checking')
+
+/** Held from mount to submit; null for the two consumed-on-arrival shapes. */
+const tokenHash = ref<string | null>(null)
 
 const password = ref('')
 const confirm = ref('')
@@ -46,10 +66,27 @@ function clearCredentialFromUrl() {
 onMounted(async () => {
   const url = new URL(window.location.href)
   const code = url.searchParams.get('code')
-  // The hash arrives as "#access_token=…&refresh_token=…&type=recovery".
+  const hashedToken = url.searchParams.get('token_hash')
+  const linkType = url.searchParams.get('type')
+  // The hash arrives as "#access_token=…&refresh_token=…&type=recovery", or
+  // as "#error=access_denied&error_code=otp_expired&error_description=…".
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
   const accessToken = hash.get('access_token')
   const refreshToken = hash.get('refresh_token')
+  const authError = hash.get('error_code') ?? hash.get('error')
+
+  if (authError) {
+    clearCredentialFromUrl()
+    phase.value = 'invalid'
+    return
+  }
+
+  if (hashedToken && linkType === 'recovery') {
+    tokenHash.value = hashedToken
+    phase.value = 'ready'
+    return
+  }
+
   const hasCredential = !!code || !!(accessToken && refreshToken)
 
   // No credential in the URL: an admin who is already signed in can navigate
@@ -102,6 +139,22 @@ async function submit() {
   }
   busy.value = true
   try {
+    if (tokenHash.value) {
+      // Same rule as the on-mount exchange: the recovery token always wins
+      // over whoever is still signed in on this device.
+      await supabase.auth.signOut({ scope: 'local' })
+      queryClient.clear()
+      const { error: e } = await supabase.auth.verifyOtp({
+        token_hash: tokenHash.value,
+        type: 'recovery',
+      })
+      tokenHash.value = null
+      clearCredentialFromUrl()
+      if (e) {
+        phase.value = 'invalid'
+        return
+      }
+    }
     await session.updatePassword(password.value)
     // Sign out rather than dropping them straight in: the recovery link is a
     // credential in an inbox, and ending its session here means a forwarded

@@ -1,4 +1,8 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import {
+  createRouter,
+  createWebHistory,
+  type RouteLocationNormalized,
+} from 'vue-router'
 import { until } from '@vueuse/core'
 import { useSessionStore } from '@/stores/session'
 import {
@@ -258,7 +262,49 @@ const router = createRouter({
   ],
 })
 
+/**
+ * True when the navigation is carrying a password-recovery credential.
+ *
+ * Supabase sends the rep wherever the project's auth settings say: the
+ * `redirectTo` we asked for when it is on the allow-list, otherwise the Site
+ * URL, which is the root of this app. The recovery credential rides along
+ * either way, so the rep must reach /reset-password with it no matter where
+ * the email dropped them. Recovery is the only email-link flow this app has
+ * (admin-create-user sets credentials directly, with no invite), so any auth
+ * credential or auth error in the URL can only be a reset.
+ *
+ * Four shapes, because which arrives depends on the email template and the
+ * flow type rather than on anything in this repo:
+ *
+ *   token hash  ?token_hash=…&type=recovery        (templates/recovery.html)
+ *   PKCE        ?code=<uuid>
+ *   implicit    #access_token=…&type=recovery
+ *   failure     #error=access_denied&error_code=otp_expired&…
+ *
+ * The failure shape is what a rep sees when a mail scanner opened the link
+ * first and consumed the one-time token; without this it bounced through
+ * /login with the error silently dropped.
+ */
+function carriesRecoveryCredential(to: RouteLocationNormalized): boolean {
+  const q = to.query
+  if (typeof q.token_hash === 'string' && q.type === 'recovery') return true
+  if (typeof q.code === 'string') return true
+  const h = new URLSearchParams(to.hash.replace(/^#/, ''))
+  if (h.get('type') === 'recovery' && h.has('access_token')) return true
+  if (h.has('error_code') || h.has('error')) return true
+  return false
+}
+
 router.beforeEach(async (to) => {
+  if (to.name !== 'reset-password' && carriesRecoveryCredential(to)) {
+    return {
+      name: 'reset-password',
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    }
+  }
+
   const session = useSessionStore()
 
   // main.ts awaits init() before mounting, but a deep link that arrives during
