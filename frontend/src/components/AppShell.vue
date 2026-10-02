@@ -319,6 +319,17 @@ async function signOut() {
       class="mx-auto px-4 pt-5 pb-28 md:pb-10"
       :class="wide ? 'max-w-7xl' : 'max-w-5xl'"
     >
+      <div
+        v-if="!session.isOrderEntry && route.name !== 'account' && route.name !== 'accounts'"
+        class="mb-4 flex justify-end"
+      >
+        <RouterLink
+          :to="{ name: 'accounts' }"
+          class="tap-target text-ink flex items-center text-sm font-semibold underline underline-offset-2"
+        >
+          Shipment history →
+        </RouterLink>
+      </div>
       <slot />
     </main>
 
