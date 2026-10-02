@@ -221,6 +221,10 @@ function goalAmounts(g: AccountGoalProgress): string {
         {{ fmtCount(total) }} in book
       </span>
     </header>
+    <p class="text-muted text-sm">
+      Looking for shipment history? Select an account, then choose Shipment history
+      to see packlists and tracking.
+    </p>
 
     <div class="space-y-2.5">
       <label class="block">

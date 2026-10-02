@@ -584,6 +584,13 @@ watch(key, () => {
         >
           ← All accounts
         </RouterLink>
+        <button
+          type="button"
+          class="tap-target flex items-center text-sm font-semibold text-canvas underline underline-offset-2"
+          @click="showLastInvoice"
+        >
+          Shipment history ↓
+        </button>
         <div class="sm:flex sm:items-start sm:justify-between sm:gap-6">
           <div class="min-w-0">
             <h1 class="u-display mt-3 text-[32px]">{{ title }}</h1>
