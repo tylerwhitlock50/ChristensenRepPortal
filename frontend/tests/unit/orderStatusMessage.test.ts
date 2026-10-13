@@ -9,6 +9,7 @@
  * have, and never lists a parcel twice.
  */
 import {
+  isPastDate,
   MAX_TRACKING_LINKS,
   orderStatusMessage,
   senderName,
@@ -128,6 +129,49 @@ t('header only: open count, next promise, last shipment, tracking',
     'Track it:',
     'https://www.ups.com/track?tracknum=1Z999AA10123456784',
   ])
+
+/* ---- dates already behind us ------------------------------------------- */
+
+t('a line past its promise says so, and the text promises a new date',
+  orderStatusMessage(order, {
+    lines: [
+      line({ line_num: 1, part_description: 'Modern Precision Rifle', backlog_qty: 3, is_backlog_line: true, promise_date: '2026-10-09' }),
+      line({ line_num: 2, part_description: 'Mesa 6.5 CM', backlog_qty: 1, is_backlog_line: true, promise_date: '2026-10-20' }),
+    ],
+    today,
+  }).split('\n').slice(2, 6),
+  [
+    'Still open:',
+    '- Modern Precision Rifle x 3, was promised Oct 9, running late',
+    '- Mesa 6.5 CM x 1, promised Oct 20',
+    "I'll confirm a new date.",
+  ])
+
+t('a past est. production date (no promise) is late too',
+  orderStatusMessage(order, {
+    lines: [line({ part_description: 'Mesa 6.5 CM', backlog_qty: 1, is_backlog_line: true, desired_ship_date: '2026-10-01' })],
+    today,
+  }).split('\n')[3],
+  '- Mesa 6.5 CM x 1, was expected Oct 1, running late')
+
+t('a promise dated today is not late yet',
+  orderStatusMessage(order, {
+    lines: [line({ part_description: 'Mesa 6.5 CM', backlog_qty: 1, is_backlog_line: true, promise_date: '2026-10-13' })],
+    today,
+  }).split('\n').slice(3),
+  ['- Mesa 6.5 CM x 1, promised Oct 13', '', 'Track it:', 'https://www.ups.com/track?tracknum=1Z999AA10123456784'])
+
+t('header only, earliest promise passed: never "next promised" a past date',
+  orderStatusMessage({ ...order, next_promise_date: '2026-10-09' }, { today }).split('\n')[1],
+  "2 of 3 lines still open; the earliest was promised Oct 9 and is running late. I'll confirm a new date.")
+
+t('header only, one line, past promise',
+  orderStatusMessage({ ...order, next_promise_date: '2026-10-09', line_count: 1, open_line_count: 1 }, { today }).split('\n')[1],
+  "1 line still open; it was promised Oct 9 and is running late. I'll confirm a new date.")
+
+t('isPastDate: yesterday yes, today and tomorrow no, nothing no',
+  [isPastDate('2026-10-12', today), isPastDate('2026-10-13', today), isPastDate('2026-10-14', today), isPastDate(null, today)],
+  [true, false, false, false])
 
 t('header only, no promise: the est. production date',
   orderStatusMessage({ ...order, next_promise_date: null }, { today }).split('\n')[1],

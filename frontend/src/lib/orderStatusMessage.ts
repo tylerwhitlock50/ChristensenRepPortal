@@ -1,4 +1,4 @@
-import { format, isSameYear, parseISO } from 'date-fns'
+import { format, isBefore, isSameYear, parseISO, startOfDay } from 'date-fns'
 import { trackingList, upsTrackUrl } from '@/lib/tracking'
 
 /**
@@ -73,6 +73,19 @@ function day(value: string | null | undefined, today: Date): string | null {
   return format(d, isSameYear(d, today) ? 'MMM d' : 'MMM d, yyyy')
 }
 
+/**
+ * True when a yyyy-mm-dd date is before `today` (calendar days, local).
+ * A promise date that has passed is still on the ERP line until someone
+ * moves it, and a text that quotes it as if it were current tells the
+ * dealer something false.
+ */
+export function isPastDate(value: string | null | undefined, today: Date = new Date()): boolean {
+  if (!value) return false
+  const d = parseISO(value)
+  if (Number.isNaN(d.getTime())) return false
+  return isBefore(d, startOfDay(today))
+}
+
 function qty(value: number | null | undefined): number {
   const n = Number(value ?? 0)
   return Number.isFinite(n) ? n : 0
@@ -94,18 +107,33 @@ function orderPhrase(o: StatusOrder, today: Date): string {
     : `${ours.charAt(0).toUpperCase()}${ours.slice(1)}`
 }
 
-/** When an open line is expected, in the order a dealer trusts it. */
+/**
+ * When an open line is expected, in the order a dealer trusts it. A date
+ * already behind us is said as one ("was promised Oct 9, running late"),
+ * never handed over as if it still stood.
+ */
 function whenLine(
   promise: string | null | undefined,
   desired: string | null | undefined,
   today: Date,
-): string {
+): { text: string; late: boolean; was: string } {
   const p = day(promise, today)
-  if (p) return `promised ${p}`
+  if (p) {
+    return isPastDate(promise, today)
+      ? { text: `was promised ${p}, running late`, late: true, was: `was promised ${p}` }
+      : { text: `promised ${p}`, late: false, was: '' }
+  }
   const d = day(desired, today)
-  if (d) return `est. production ${d}`
-  return 'no date yet'
+  if (d) {
+    return isPastDate(desired, today)
+      ? { text: `was expected ${d}, running late`, late: true, was: `was expected ${d}` }
+      : { text: `est. production ${d}`, late: false, was: '' }
+  }
+  return { text: 'no date yet', late: false, was: '' }
 }
+
+/** What the rep promises back when anything is late. */
+const NEW_DATE_LINE = "I'll confirm a new date."
 
 function isCancelled(o: StatusOrder): boolean {
   return /cancel/i.test(o.order_status_desc ?? '')
@@ -150,11 +178,13 @@ export function orderStatusMessage(
     }
     if (open.length > 0) {
       out.push('', 'Still open:')
+      let anyLate = false
       for (const l of open) {
-        out.push(
-          `- ${partLabel(l)} x ${qty(l.backlog_qty)}, ${whenLine(l.promise_date, l.desired_ship_date, today)}`,
-        )
+        const when = whenLine(l.promise_date, l.desired_ship_date, today)
+        anyLate ||= when.late
+        out.push(`- ${partLabel(l)} x ${qty(l.backlog_qty)}, ${when.text}`)
       }
+      if (anyLate) out.push(NEW_DATE_LINE)
     }
     if (shipped.length === 0 && open.length === 0) out.push('Nothing open on this order.')
   } else if (order.open_line_count > 0) {
@@ -162,10 +192,18 @@ export function orderStatusMessage(
     const of = order.line_count > n ? ` of ${order.line_count}` : ''
     const when = whenLine(order.next_promise_date, order.next_desired_ship_date, today)
     const plural = of || n !== 1 ? 's' : ''
-    out.push(
-      `${n}${of} line${plural} still open, ` +
-        (when === 'no date yet' ? 'no ship date yet.' : `next ${when}.`),
-    )
+    if (when.late) {
+      // The earliest open date has passed (it is a min over the open lines).
+      const which = of || n !== 1 ? 'the earliest' : 'it'
+      out.push(
+        `${n}${of} line${plural} still open; ${which} ${when.was} and is running late. ${NEW_DATE_LINE}`,
+      )
+    } else {
+      out.push(
+        `${n}${of} line${plural} still open, ` +
+          (when.text === 'no date yet' ? 'no ship date yet.' : `next ${when.text}.`),
+      )
+    }
     const last = day(order.last_ship_date, today)
     if (last) out.push(`Last shipment went out ${last}.`)
   } else {

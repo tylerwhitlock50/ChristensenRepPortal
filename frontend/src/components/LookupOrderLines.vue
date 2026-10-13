@@ -8,6 +8,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { count, humanize, shortDate } from '@/lib/format'
 import {
+  isPastDate,
   orderStatusMessage,
   senderName,
   smsHref,
@@ -118,12 +119,22 @@ function qtySentence(l: (typeof lines.value)[number]): string {
           <p class="text-ink-2 mt-1 text-[13px] tabular-nums">
             {{ qtySentence(l) }}
           </p>
-          <p v-if="l.is_backlog_line" class="text-ink-2 text-[13px]">
+          <!-- A date already behind us is late, and says so in ember (the
+               late colour) — the rep reads this line to the dealer. -->
+          <p
+            v-if="l.is_backlog_line"
+            class="text-[13px]"
+            :class="
+              isPastDate(l.promise_date ?? l.desired_ship_date) ? 'text-accent' : 'text-ink-2'
+            "
+          >
             <template v-if="l.promise_date">
               Promised {{ shortDate(l.promise_date) }}
+              <template v-if="isPastDate(l.promise_date)"> · past promise</template>
             </template>
             <template v-else-if="l.desired_ship_date">
               Est. production {{ shortDate(l.desired_ship_date) }}
+              <template v-if="isPastDate(l.desired_ship_date)"> · running late</template>
             </template>
             <template v-else>No date yet</template>
           </p>

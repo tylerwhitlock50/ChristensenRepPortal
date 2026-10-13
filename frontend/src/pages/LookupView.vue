@@ -17,6 +17,7 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import LookupOrderLines from '@/components/LookupOrderLines.vue'
 import { count, money, shortDate } from '@/lib/format'
 import {
+  isPastDate,
   orderStatusMessage,
   senderName,
   shareOrCopy,
@@ -168,8 +169,13 @@ async function sendStatus(row: OrderLookupRow) {
             </AppBadge>
             <AppBadge v-else tone="good">{{ statusSentence(row) }}</AppBadge>
 
-            <span v-if="row.next_promise_date" class="text-ink-2 text-sm">
+            <span
+              v-if="row.next_promise_date"
+              class="text-sm"
+              :class="isPastDate(row.next_promise_date) ? 'text-accent' : 'text-ink-2'"
+            >
               Promised {{ shortDate(row.next_promise_date) }}
+              <template v-if="isPastDate(row.next_promise_date)"> · past promise</template>
             </span>
             <span
               v-else-if="row.next_desired_ship_date"
