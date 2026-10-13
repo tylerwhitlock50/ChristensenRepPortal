@@ -87,10 +87,15 @@ export interface BestContact<T extends RankableContact = RankableContact> {
 
 const lc = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
 
-/** "INVOICE", "A/P", "Accounts-Payable" → tokens; '/' kept so "a/p" survives. */
+/**
+ * "INVOICE", "A/P", "Accounts-Payable" → tokens. "A/P" and "A/R" are folded
+ * to "ap" / "ar" first; every other '/' separates, so "AP/AR" and
+ * "Owner/Accounting" are two tokens each, not one glued word.
+ */
 function tokens(s: string | null | undefined): string[] {
   return lc(s)
-    .split(/[^a-z0-9/]+/)
+    .replace(/\ba\s*\/\s*([pr])\b/g, 'a$1')
+    .split(/[^a-z0-9]+/)
     .filter(Boolean)
 }
 
@@ -108,9 +113,10 @@ function isBareId(s: string | null | undefined): boolean {
 
 /* ------------------------------------------------------------ billing */
 
-// Whole tokens only, so "AP" matches and "Apex" does not.
+// Whole tokens only, so "AP" matches and "Apex" / "April" do not, and
+// "Billings" (the Montana city, a surname) is not "billing".
 const BILLING_TOKENS = new Set([
-  'ap', 'a/p', 'ar', 'a/r', 'billing', 'statement', 'statements',
+  'ap', 'ar', 'billing', 'statement', 'statements',
   'accounting', 'payable', 'payables', 'receivable', 'receivables',
 ])
 const BILLING_PHRASE = /invoic|accounts?\s*-?\s*(payable|receivable)|acct\.?\s*(payable|receivable)/i
@@ -126,7 +132,9 @@ function textIsBilling(s: string | null | undefined): boolean {
 
 // Email local parts: substrings for the long words (importinvoice@,
 // accountspayable@), whole tokens for the short codes (ap@, ap.team@).
-const BILLING_LOCAL_SUBSTR = /invoic|payable|receivable|billing|statement|accounting/
+// "billing" but not "billings": tbillings@, billingsguns@ are a surname and
+// a town, not a billing desk.
+const BILLING_LOCAL_SUBSTR = /invoic|payable|receivable|billing(?!s)|statement|accounting/
 const BILLING_LOCAL_TOKENS = new Set(['ap', 'ar', 'acctg', 'accts'])
 
 function localIsBilling(local: string): boolean {
@@ -142,14 +150,29 @@ function addressList(s: string | null | undefined): string[] {
     .filter((x) => x.includes('@'))
 }
 
+// A field that also names a buying role ("Purchasing / AP", "Owner /
+// Accounting", "Buyer & A/P") is the small-shop person who does both, and
+// the buyer half is the one the rep calls. Narrower than BUYER_TITLE below:
+// "manag" would rescue "AP Manager" and "Accounting Manager", and a BUYING
+// GROUP is the co-op that pays the invoices, not a buyer.
+const BUYING_ROLE = /\bbuy(?:er|ers|ing)?\b(?!\s*group)|purchas|owner|president|proprietor|\bgm\b|general\s+manager/i
+// "Invoice" is never rescued: it is the INVOICE / IMPORTINVOICE@ primaries
+// this file exists for.
+const INVOICE_WORD = /invoic/i
+
+const namesBuyingRole = (s: string | null | undefined) => BUYING_ROLE.test(s ?? '')
+
 /**
  * An invoice / accounts-payable / AR / statements contact: not who places
  * orders.
  *
  * Name or title naming the function (INVOICE, INVOICES, AP, A/P, ACCOUNTS
- * PAYABLE, AR, BILLING, STATEMENTS), or an email local part that does
- * (invoices@, ap@, payable@, billing@, statements@, accounting@), always
- * counts.
+ * PAYABLE, AR, BILLING, STATEMENTS) counts, unless that same field also
+ * names a buying role (BUYING_ROLE). An email local part that names it
+ * (invoices@, ap@, payable@, billing@, statements@, accounting@) counts
+ * unless the name or title names a buying role — the owner of a two-person
+ * shop reading the ap@ inbox is still the buyer. Anything saying "invoice"
+ * counts whatever else it says.
  *
  * An email equal to the account's invoice_email / statement_email counts
  * too, with one exception: a NAMED person WITH a phone. Small shops send
@@ -159,11 +182,16 @@ function addressList(s: string | null | undefined): string[] {
  * phoneless — the name rules above catch the rest.
  */
 export function isBillingContact(c: RankableContact, opts: BillingContext = {}): boolean {
-  if (textIsBilling(c.name) || textIsBilling(c.display_name) || textIsBilling(c.title)) {
-    return true
+  const fields = [c.name, c.display_name, c.title]
+  // Per field: "Purchasing / AP" rescues itself; an INVOICES name with a
+  // Purchasing title does not.
+  for (const s of fields) {
+    if (textIsBilling(s) && (INVOICE_WORD.test(s ?? '') || !namesBuyingRole(s))) return true
   }
   const { local } = emailParts(c.email)
-  if (localIsBilling(local)) return true
+  if (localIsBilling(local) && (INVOICE_WORD.test(local) || !fields.some(namesBuyingRole))) {
+    return true
+  }
 
   const email = lc(c.email)
   if (!email) return false
@@ -197,7 +225,7 @@ const ORDERS_NAME = /^(the\s+)?(orders?|purchasing|purchase\s+orders?|buying|po|
  * A named person who happens to use orders@ stays a person.
  */
 export function isOrdersMailbox(c: RankableContact): boolean {
-  const name = (c.display_name ?? c.name ?? '').trim()
+  const name = (c.display_name ?? '').trim() || (c.name ?? '').trim()
   if (ORDERS_NAME.test(name)) return true
   const { local } = emailParts(c.email)
   const shared = local.split(/[^a-z0-9]+/).some((t) => ORDERS_LOCAL.has(t))
@@ -218,7 +246,7 @@ export function contactDisplayName(c: RankableContact): string {
   }
   const email = (c.email ?? '').trim()
   if (email) return email
-  const id = (c.display_name ?? c.name ?? '').trim()
+  const id = (c.display_name ?? '').trim() || (c.name ?? '').trim()
   return id || 'Unnamed contact'
 }
 

@@ -118,6 +118,60 @@ t('accounting@', isBillingContact(erp('a', { email: 'accounting@d.com' })), true
 t('"Apex" is not AP', isBillingContact(erp('a', { name: 'Apex Outdoors' })), false)
 t('"AR-15 buyer" is not AR', isBillingContact(erp('a', { title: 'AR-15 buyer' })), false)
 t('"Bill Smith" is not billing', isBillingContact(erp('a', { name: 'Bill Smith' })), false)
+t('AP/AR is two billing tokens, not one glued word', isBillingContact(erp('a', { title: 'AP/AR' })), true)
+t('Accounting/AP', isBillingContact(erp('a', { name: 'Kim', title: 'Accounting/AP' })), true)
+t('a/r spelled with spaces', isBillingContact(erp('a', { title: 'A / R clerk' })), true)
+t('AP Manager stays billing ("manag" is not a buying role)', isBillingContact(erp('a', { name: 'Kim', title: 'AP Manager' })), true)
+t('Accounting Manager stays billing', isBillingContact(erp('a', { name: 'Kim', title: 'Accounting Manager' })), true)
+
+/* --- real buyers the patterns must not catch ----------------------------- */
+t('"APRIL" is not AP', isBillingContact(erp('a', { name: 'APRIL', phone: '555-555-0140' })), false)
+t('"April Jones" is not AP', isBillingContact(erp('a', { name: 'April Jones' })), false)
+t('"Snap" is not AP', isBillingContact(erp('a', { name: 'Snap' })), false)
+t('"Billings Sporting Goods" is not billing', isBillingContact(erp('a', { name: 'Billings Sporting Goods' })), false)
+t(
+  'a surname Billings in the email is not billing',
+  isBillingContact(erp('a', { name: 'Tom Billings', email: 'tbillings@shop.com' })),
+  false,
+)
+t('a Billings, MT shop address is not billing', isBillingContact(erp('a', { email: 'billingsguns@gmail.com' })), false)
+t('but billing@ still is', isBillingContact(erp('a', { email: 'billing@shop.com' })), true)
+t('and billingdept@ still is', isBillingContact(erp('a', { email: 'billingdept@shop.com' })), true)
+
+/* --- one person, both jobs: the buying half wins ------------------------- */
+t(
+  '"Purchasing / AP" is the buyer, not billing',
+  contactKind(erp('a', { name: 'Kim Lee', title: 'Purchasing / AP', phone: '555-555-0150' })),
+  'buyer',
+)
+t('"Owner/Accounting" is the buyer', contactKind(erp('a', { name: 'Kim Lee', title: 'Owner/Accounting', phone: '555-555-0151' })), 'buyer')
+t('"Buyer & A/P" is the buyer', contactKind(erp('a', { name: 'Kim Lee', title: 'Buyer & A/P', phone: '555-555-0152' })), 'buyer')
+t(
+  'an owner reading the ap@ inbox is still the buyer',
+  contactKind(erp('a', { name: 'Pat Lee', title: 'Owner', email: 'ap@shop.com', phone: '555-555-0153' })),
+  'buyer',
+)
+t(
+  'a buying title on another field does not rescue an INVOICES name',
+  isBillingContact(erp('a', { name: 'INVOICES', title: 'Purchasing' })),
+  true,
+)
+t(
+  '"invoice" is never rescued by a buying role',
+  isBillingContact(erp('a', { name: 'Kim Lee', title: 'Purchasing / Invoices', phone: '555-555-0154' })),
+  true,
+)
+t(
+  'nor is an invoices@ inbox',
+  isBillingContact(erp('a', { name: 'Pat Lee', title: 'Owner', email: 'invoices@shop.com' })),
+  true,
+)
+t('a BUYING GROUP AP row is billing (the co-op pays, it does not buy)', isBillingContact(erp('a', { name: 'BUYING GROUP AP' })), true)
+t(
+  'a PURCHASING / AP mailbox is not billing (it reaches the buyer too)',
+  isBillingContact(erp('a', { name: 'PURCHASING / AP', email: 'purchasing@shop.com' })),
+  false,
+)
 t(
   'email equal to invoice_email is billing',
   isBillingContact(erp('a', { name: '0018901', email: 'payments@dealer.com' }), {
@@ -219,6 +273,16 @@ t(
 )
 t('bare id is the last resort', contactDisplayName(erp('n', { name: '0027284' })), '0027284')
 t('nothing at all', contactDisplayName(erp('n', {})), 'Unnamed contact')
+t(
+  'an empty display_name falls through to name',
+  contactDisplayName(erp('n', { name: '0027284', display_name: '' })),
+  '0027284',
+)
+t(
+  'an empty display_name does not hide an ORDERS name',
+  isOrdersMailbox(erp('n', { name: 'ORDERS', display_name: '' })),
+  true,
+)
 t(
   'a named contact outranks an id-only one at the same kind',
   keys(
