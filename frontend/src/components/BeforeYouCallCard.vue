@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { format } from 'date-fns'
+import AppBadge from '@/components/ui/AppBadge.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { daysAgo, humanize, shortDate } from '@/lib/format'
-import { boughtLine, lastOrderLine, owedLines } from '@/lib/precallBrief'
+import {
+  boughtLine,
+  lastOrderLine,
+  owedLines,
+  PRECALL_REORDERS_SHOWN,
+} from '@/lib/precallBrief'
 import {
   useAccountOrderHeaders,
   useAccountSummary,
@@ -96,9 +102,9 @@ const owed = computed(() =>
 /* Three rows shown, but read with the Ready to ship card's limit (10): one
    query key, so opening that card further down is a cache hit rather than
    a second call of the same function. */
-const REORDER_SHOWN = 3
 const reorders = useReorderCandidates(key, 10)
-const reorderRows = computed(() => reorders.rows.value.slice(0, REORDER_SHOWN))
+// Due first (the function's order), so a due part is never pushed out.
+const reorderRows = computed(() => reorders.rows.value.slice(0, PRECALL_REORDERS_SHOWN))
 /* Hidden outright when the function is missing (a preview database without
    20261013100000) or there is nothing to say; a real failure still shows. */
 const showReorders = computed(
@@ -245,8 +251,9 @@ const nothingToSay = computed(
                 class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2"
               >
                 <span class="min-w-0 flex-1 basis-56">
-                  <span class="text-ink block text-[15px] font-semibold">
+                  <span class="text-ink flex items-center gap-2 text-[15px] font-semibold">
                     {{ r.part_id ?? r.part_key }}
+                    <AppBadge v-if="r.is_due" tone="good">Due</AppBadge>
                   </span>
                   <span
                     v-if="r.part_description"

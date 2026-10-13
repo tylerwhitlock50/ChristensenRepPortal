@@ -147,5 +147,21 @@ t(
   'Bought 1,200 in Oct 2025 · 2,500 available',
 )
 
+t(
+  'due: the rhythm that makes it due',
+  boughtLine({ last_qty: 6, last_bought_month: '2026-06-01', ats_qty: 40, is_due: true, median_months_between_buys: 3 }),
+  'Bought 6 in Jun 2026 · 40 available · buys about every 3 months',
+)
+t(
+  'due monthly',
+  boughtLine({ last_qty: 2, last_bought_month: '2026-09-01', ats_qty: 5, is_due: true, median_months_between_buys: 1.2 }),
+  'Bought 2 in Sep 2026 · 5 available · buys about monthly',
+)
+t(
+  'not due: no rhythm line',
+  boughtLine({ last_qty: 6, last_bought_month: '2026-06-01', ats_qty: 40, is_due: false, median_months_between_buys: 3 }),
+  'Bought 6 in Jun 2026 · 40 available',
+)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

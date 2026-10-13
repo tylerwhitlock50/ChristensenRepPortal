@@ -99,12 +99,32 @@ export function lastOrderLine(o: LastOrderRow | null | undefined, shownDate?: st
   return parts.join(' · ')
 }
 
-/** "Bought 6 in Jul 2026 · 40 available" — one reorder candidate. */
+/**
+ * How many reorder candidates Before you call lists. Ready to ship, further
+ * down the same page, lists only the ones after these, so no part is shown
+ * twice.
+ */
+export const PRECALL_REORDERS_SHOWN = 3
+
+/**
+ * "Bought 6 in Jul 2026 · 40 available" — one reorder candidate, plus their
+ * rhythm when it is due ("· buys about every 3 months"): the reason it is
+ * due, in the dealer's own terms.
+ */
 export function boughtLine(r: {
   last_qty: number
   last_bought_month: string
   ats_qty: number
+  is_due?: boolean | null
+  median_months_between_buys?: number | null
 }): string {
-  const month = format(parseISO(r.last_bought_month), 'MMM yyyy')
-  return `Bought ${count(r.last_qty)} in ${month} · ${count(r.ats_qty)} available`
+  const d = parseISO(r.last_bought_month)
+  const month = Number.isNaN(d.getTime()) ? r.last_bought_month : format(d, 'MMM yyyy')
+  const parts = [`Bought ${count(r.last_qty)} in ${month}`, `${count(r.ats_qty)} available`]
+  const gap = r.median_months_between_buys
+  if (r.is_due && gap != null && gap >= 1) {
+    const months = Math.round(gap)
+    parts.push(months === 1 ? 'buys about monthly' : `buys about every ${months} months`)
+  }
+  return parts.join(' · ')
 }
