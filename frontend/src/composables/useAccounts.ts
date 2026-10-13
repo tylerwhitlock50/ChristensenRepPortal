@@ -283,3 +283,91 @@ export function useAccountNames(keys: MaybeRef<string[]>) {
     },
   })
 }
+
+/* ---- phone sort chips ---------------------------------------------------
+   The cards' Biggest / Slipping / Longest-since-order modes rank the WHOLE
+   book, so they read the table's whole-book rows (useAccountTable, one
+   cache with table mode) and sort here. Server paging stays where it was:
+   A–Z and search over v_account_list.
+------------------------------------------------------------------------- */
+
+export const ACCOUNT_SORTS = ['az', 'biggest', 'slipping', 'quiet', 'behind'] as const
+export type AccountSort = (typeof ACCOUNT_SORTS)[number]
+/** The modes ranked client-side over useAccountTable rows. */
+export type RankedSort = Extract<AccountSort, 'biggest' | 'slipping' | 'quiet'>
+
+export function isRankedSort(sort: AccountSort): sort is RankedSort {
+  return sort === 'biggest' || sort === 'slipping' || sort === 'quiet'
+}
+
+/** "Longest since order" looks back this far: older is the lapsed tail. */
+export const QUIET_LOOKBACK_DAYS = 730
+
+const byName = (a: AccountTableRow, b: AccountTableRow) =>
+  (a.customer_name ?? a.customer_key).localeCompare(b.customer_name ?? b.customer_key) ||
+  a.customer_key.localeCompare(b.customer_key)
+
+/**
+ * The phone list's ranked modes. Pure; `today` for tests.
+ *   biggest  — most invoiced this year first; every account, it is a sort.
+ *   slipping — only accounts behind the same days of last year, by the
+ *              dollar gap. An account that grew is not slipping.
+ *   quiet    — accounts that ordered in the last two years, longest since
+ *              their last order first. Older than that is a lapsed account,
+ *              not a quiet one, and would bury the list.
+ */
+export function rankAccountRows(
+  rows: readonly AccountTableRow[],
+  sort: RankedSort,
+  today: Date = new Date(),
+): AccountTableRow[] {
+  if (sort === 'biggest') {
+    return [...rows].sort((a, b) => b.revenue_ytd - a.revenue_ytd || byName(a, b))
+  }
+  if (sort === 'slipping') {
+    return rows
+      .filter((r) => r.revenue_ytd < r.revenue_prior_ytd)
+      .sort(
+        (a, b) =>
+          a.revenue_ytd - a.revenue_prior_ytd - (b.revenue_ytd - b.revenue_prior_ytd) ||
+          byName(a, b),
+      )
+  }
+  const cutoff = new Date(today.getTime() - QUIET_LOOKBACK_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10)
+  return rows
+    .filter((r) => !!r.last_order_date && r.last_order_date.slice(0, 10) >= cutoff)
+    .sort(
+      (a, b) =>
+        (a.last_order_date ?? '').localeCompare(b.last_order_date ?? '') || byName(a, b),
+    )
+}
+
+/**
+ * Named accounts, in one `.in()` — the "My plan" list. Same view and the
+ * same 015 fallback as the paged search. RLS still scopes it: a starred key
+ * that has since left the rep's book simply does not come back.
+ */
+export function useAccountsByKeys(keys: MaybeRef<string[]>) {
+  const list = computed(() => [...new Set(unref(keys))].filter(Boolean).sort())
+  return useQuery({
+    queryKey: computed(() => [...qk.me.accounts(), 'by-keys', list.value] as const),
+    enabled: computed(() => list.value.length > 0),
+    staleTime: 10 * 60_000,
+    queryFn: async (): Promise<AccountListRow[]> => {
+      const run = (relation: 'v_account_list' | 'dim_customer') => {
+        const isView = relation === 'v_account_list'
+        const client = isView ? db : (erp as unknown as SupabaseClient)
+        return client
+          .from(relation)
+          .select(isView ? VIEW_COLUMNS : LIST_COLUMNS)
+          .in('customer_key', list.value)
+      }
+      let { data, error } = await run('v_account_list')
+      if (error && isViewMissing(error)) ({ data, error } = await run('dim_customer'))
+      if (error) throw error
+      return (data ?? []) as unknown as AccountListRow[]
+    },
+  })
+}
