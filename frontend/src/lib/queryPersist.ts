@@ -18,7 +18,8 @@
  *     name. Never while viewing-as, either, belt and braces.
  *   - Keyed to the user and the build (the buster). Another user, or a new
  *     deploy whose data shapes may differ, finds nothing to restore.
- *   - At most 24 hours old (MAX_AGE).
+ *   - At most 24 hours old (MAX_AGE): the copy, and every read in it,
+ *     counted from when that read was fetched.
  *   - Deleted on sign-out, on a sign-out from another tab or a revoked
  *     refresh token, on a user switch, and when a boot finds nobody signed
  *     in. The session store calls in here beside each queryClient.clear().
@@ -137,12 +138,28 @@ const persister = createAsyncStoragePersister({
 
 const PERSISTED_ROOTS = new Set<unknown>([qk.settings()[0], qk.freshness()[0]])
 
-/** Successful ERP reads, the feature flags and the freshness stamp. Nothing else. */
+/**
+ * Whether one query's data was fetched within MAX_AGE. The copy's own
+ * timestamp is the time of the last save, not of the data in it: restored
+ * queries live in memory for ERP_GC_TIME and are saved again with the next
+ * save, so without this an account opened once last week would ride along
+ * from copy to copy for as long as the rep opens the app every day — and
+ * open offline long after it was reassigned.
+ */
+function fetchedWithinMaxAge(state: { dataUpdatedAt?: number }): boolean {
+  const at = state.dataUpdatedAt
+  return typeof at === 'number' && at > 0 && Date.now() - at <= MAX_AGE_MS
+}
+
+/**
+ * Successful ERP reads, the feature flags and the freshness stamp, each
+ * fetched within the last 24 hours. Nothing else.
+ */
 export function shouldPersistQuery(query: {
   queryKey: readonly unknown[]
-  state: { status: string }
+  state: { status: string; dataUpdatedAt?: number }
 }): boolean {
-  if (query.state.status !== 'success') return false
+  if (query.state.status !== 'success' || !fetchedWithinMaxAge(query.state)) return false
   return isErpQueryKey(query.queryKey) || PERSISTED_ROOTS.has(query.queryKey[0])
 }
 
@@ -188,7 +205,13 @@ function apply(userId: string, saved: PersistedClient | null): boolean {
   try {
     // hydrate() only overwrites a query whose cached data is older than the
     // saved copy, so a late restore never clobbers a fresh network answer.
-    hydrate(queryClient, saved.clientState)
+    // Each query is held to MAX_AGE again here, not just the copy (see
+    // fetchedWithinMaxAge): a read that was 23 hours old when a copy was
+    // saved 23 hours ago is two days old now.
+    hydrate(queryClient, {
+      ...saved.clientState,
+      queries: (saved.clientState.queries ?? []).filter((q) => fetchedWithinMaxAge(q.state)),
+    })
     return true
   } catch (error) {
     warnOnce('the saved data could not be restored', error)

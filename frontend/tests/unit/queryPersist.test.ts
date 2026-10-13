@@ -57,14 +57,20 @@ const summaryKey = accountMetricsKeys.summary('FIX-1')
 const goalKey = [...qk.account.goal('FIX-1'), 2026]
 
 /* --- what is eligible ---------------------------------------------------- */
-t('ERP success is saved', shouldPersistQuery({ queryKey: summaryKey, state: { status: 'success' } }), true)
-t('ERP error is not', shouldPersistQuery({ queryKey: summaryKey, state: { status: 'error' } }), false)
-t('ERP pending is not', shouldPersistQuery({ queryKey: summaryKey, state: { status: 'pending' } }), false)
-t('flags are saved', shouldPersistQuery({ queryKey: qk.settings(), state: { status: 'success' } }), true)
-t('freshness is saved', shouldPersistQuery({ queryKey: qk.freshness(), state: { status: 'success' } }), true)
-t('a goal is not', shouldPersistQuery({ queryKey: goalKey, state: { status: 'success' } }), false)
-t('contacts are not', shouldPersistQuery({ queryKey: qk.account.contacts('FIX-1'), state: { status: 'success' } }), false)
-t('tasks are not', shouldPersistQuery({ queryKey: ['tasks', 'due', 'u1'], state: { status: 'success' } }), false)
+const now = Date.now()
+const ok = (status: string, dataUpdatedAt = now) => ({ status, dataUpdatedAt })
+t('ERP success is saved', shouldPersistQuery({ queryKey: summaryKey, state: ok('success') }), true)
+t('ERP error is not', shouldPersistQuery({ queryKey: summaryKey, state: ok('error') }), false)
+t('ERP pending is not', shouldPersistQuery({ queryKey: summaryKey, state: ok('pending', 0) }), false)
+t('flags are saved', shouldPersistQuery({ queryKey: qk.settings(), state: ok('success') }), true)
+t('freshness is saved', shouldPersistQuery({ queryKey: qk.freshness(), state: ok('success') }), true)
+t('a goal is not', shouldPersistQuery({ queryKey: goalKey, state: ok('success') }), false)
+t('contacts are not', shouldPersistQuery({ queryKey: qk.account.contacts('FIX-1'), state: ok('success') }), false)
+t('tasks are not', shouldPersistQuery({ queryKey: ['tasks', 'due', 'u1'], state: ok('success') }), false)
+t('an ERP read fetched more than 24h ago is not',
+  shouldPersistQuery({ queryKey: summaryKey, state: ok('success', now - MAX_AGE_MS - 60_000) }), false)
+t('…nor one with no fetch time',
+  shouldPersistQuery({ queryKey: summaryKey, state: { status: 'success' } }), false)
 
 /* --- save for rep A ------------------------------------------------------ */
 startPersisting('rep-a')
@@ -107,6 +113,34 @@ stopPersisting()
 queryClient.clear()
 readPersistedCache('rep-a-again') // a different pending read than before
 t('a copy older than 24h is not restored', await restorePersistedCache('rep-a'), false)
+
+/* --- an old read inside a fresh copy --------------------------------------- */
+// The copy's timestamp is the last save; a read restored from an earlier
+// copy rides along in memory and would be saved again. Neither the save
+// nor the restore may carry it past 24 hours from its own fetch.
+{
+  const staleKey = accountMetricsKeys.summary('FIX-OLD')
+  startPersisting('rep-a')
+  queryClient.setQueryData(summaryKey, { revenue_ytd: 5 })
+  queryClient.setQueryData(staleKey, { revenue_ytd: 6 }, { updatedAt: Date.now() - MAX_AGE_MS - 60_000 })
+  await sleep(2_300)
+  stopPersisting()
+  const s = await saved()
+  t('a read older than 24h is left out of the save',
+    s.clientState.queries.map((q: { queryKey: unknown[] }) => q.queryKey[1]).includes('FIX-OLD'), false)
+  // A copy written with one anyway (saved when it was still under 24h).
+  s.clientState.queries.push({ ...s.clientState.queries.find((q: { queryKey: unknown[] }) => q.queryKey[1] === 'FIX-1'),
+    queryKey: staleKey, queryHash: JSON.stringify(staleKey),
+    state: { ...s.clientState.queries[0].state, data: { revenue_ytd: 6 }, dataUpdatedAt: Date.now() - MAX_AGE_MS - 60_000 } })
+  const { set } = await import('idb-keyval')
+  await set('query-cache', JSON.stringify(s), cacheStore()!)
+  queryClient.clear()
+  readPersistedCache('rep-a-old-read')
+  t('the copy itself is restored', await restorePersistedCache('rep-a'), true)
+  t('…with the fresh read', queryClient.getQueryData(summaryKey), { revenue_ytd: 5 })
+  t('…but not the read older than 24h', queryClient.getQueryData(staleKey), undefined)
+  queryClient.clear()
+}
 
 /* --- wipe, and the queued-save race --------------------------------------- */
 startPersisting('rep-a')
