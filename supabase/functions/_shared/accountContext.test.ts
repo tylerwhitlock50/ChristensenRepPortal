@@ -68,7 +68,7 @@ function inputs(): ContextInputs {
         { month: '2026-03', revenue: 8_000 },
         { month: '2026-09', revenue: 15_500 },
       ],
-      source: 'view',
+      source: 'rollup',
     },
     orders: [
       { order_id: 'O3', order_date: '2026-09-20', bookings: 9_000 },
@@ -261,7 +261,7 @@ Deno.test('revenue_summary compares whole months only', () => {
   }, 'a flat dealer reads flat on the 13th, not down 8%')
 
   const fixtureInputs = inputs()
-  fixtureInputs.revenue = { series, source: 'view' }
+  fixtureInputs.revenue = { series, source: 'rollup' }
   const { context } = assembleContext(fixtureInputs, OCT_13)
   assertEquals(context.revenue_by_month.length, 24, 'the model is still shown 24 months')
   assertEquals(context.revenue_by_month[0].month, '2024-11', 'the extra month only feeds the summary')
@@ -274,8 +274,8 @@ Deno.test('a family bought since the mix window closed is not "stopped"', () => 
   assertEquals(summariseMix(rows)!.stopped_families, [], 'Ridgeline was bought this month')
 })
 
-Deno.test('the revenue series falls back to fact lines only when the view is missing', async () => {
-  const stub = (viewError: unknown) => {
+Deno.test('the revenue series falls back to fact lines only when the rollup is missing', async () => {
+  const stub = (rollupError: unknown) => {
     const calls: string[] = []
     const chain = (label: string, result: unknown): unknown =>
       new Proxy({}, {
@@ -288,20 +288,22 @@ Deno.test('the revenue series falls back to fact lines only when the view is mis
         },
       })
     const client = {
-      from: (name: string) => chain(name, { data: null, error: viewError }),
       schema: () => ({
-        from: (name: string) => chain(`erp.${name}`, { data: [{ invoice_date: '2026-09-02', revenue: 500 }], error: null }),
+        from: (name: string) =>
+          name === 'agg_customer_month'
+            ? chain(`erp.${name}`, { data: null, error: rollupError })
+            : chain(`erp.${name}`, { data: [{ invoice_date: '2026-09-02', revenue: 500 }], error: null }),
       }),
     }
     return { client: client as unknown as SupabaseClient, calls }
   }
 
-  const missing = stub({ code: 'PGRST205', message: "Could not find the table 'public.v_account_revenue_monthly'" })
+  const missing = stub({ code: 'PGRST205', message: "Could not find the table 'erp.agg_customer_month'" })
   const viaFacts = await fetchRevenueByMonth(missing.client, 'C1001', OCT_13)
-  assertEquals(viaFacts.source, 'fact_lines', 'a view that is not deployed yet falls back')
+  assertEquals(viaFacts.source, 'fact_lines', 'a rollup that is not deployed yet falls back')
   assert(
     missing.calls.some((c) => c === 'erp.fact_invoice_line.not(["is_memo","is",true])'),
-    'the fallback leaves memo lines out, as the view does',
+    'the fallback leaves memo lines out, as the rollup does',
   )
 
   const timedOut = stub({ code: '57014', message: 'canceling statement due to statement timeout' })
@@ -311,7 +313,7 @@ Deno.test('the revenue series falls back to fact lines only when the view is mis
   } catch {
     threw = true
   }
-  assert(threw, 'any other view error throws instead of hashing a different computation')
+  assert(threw, 'any other rollup error throws instead of hashing a different computation')
 })
 
 /*----------------------------------------------------------------------------
@@ -360,8 +362,8 @@ Deno.test('the same queries run on any day of the month (month-anchored windows)
   assert(flat.includes('"2025-10-01"'), 'orders window starts on a month boundary')
   assert(flat.includes('"p_through_month":"2026-09-01"'), 'mix runs through the last complete month')
   assert(
-    flat.includes('["from:v_account_revenue_monthly","gte",["month","2024-10-01"]]'),
-    'revenue reads 24 whole months plus this one',
+    flat.includes('["from:erp.agg_customer_month","gte",["sales_month","2024-10-01"]]'),
+    'revenue reads 24 whole months plus this one, from the rollup (the view stops at 24)',
   )
   assert(
     flat.includes('["from:erp.fact_shipment_line","order",["ship_date",{"ascending":false,"nullsFirst":false}]]'),

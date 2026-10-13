@@ -182,58 +182,59 @@ type Row = Record<string, any>
 export type MonthlyRevenue = { month: string; revenue: number }
 
 /**
- * Prefers the pre-aggregated `public.v_account_revenue_monthly` rollup view.
- * If it does not exist yet (the account-page views are a separate workstream)
- * it falls back to reading this ONE customer's invoice lines and bucketing
- * them here.
+ * Reads the nightly (customer, month) rollup, erp.agg_customer_month
+ * (20260817160000) — the source of public.v_account_revenue_monthly since
+ * 20261013110000, with the same memo filter. Read directly rather than
+ * through that view because the view stops at 24 months (this one and 23
+ * before) and this needs 25: MONTHS_OF_HISTORY whole months plus this one,
+ * so summariseRevenue() can compare the last twelve COMPLETE months with
+ * the twelve before them (the model is shown the newest MONTHS_OF_HISTORY
+ * of them, see assembleContext). RLS on the rollup is "read own
+ * agg_customer_month" (is_admin() or my_customer_keys()); service_role
+ * bypasses it — the same rows for the batch and the rep, as the hash needs.
  *
- * The fallback is acceptable where the browser version would not be: it is a
- * single-customer, index-backed, date-bounded read on the server, not
- * thousands of rows shipped to a phone. When the view lands, this function
- * silently starts using it — nothing to change here.
+ * If the rollup is not there (a database older than 20260817160000) it
+ * falls back to this ONE customer's invoice lines, bucketed here: a
+ * single-customer, index-backed, date-bounded read on the server. Only a
+ * missing relation falls back; any other error (a timeout, a permission
+ * problem) throws like every other context read — the fallback is a
+ * different computation, and a hash built on it for one request would look
+ * "changed" and pay for a regeneration.
  *
  * The window starts on a month boundary, so it does not shift under an
- * unchanged account from one day to the next: MONTHS_OF_HISTORY whole
- * months plus this one, so summariseRevenue() can compare the last twelve
- * COMPLETE months with the twelve before them (the model is shown the
- * newest MONTHS_OF_HISTORY of them, see assembleContext).
- *
- * Only a view that is not deployed yet falls back to the fact lines. Any
- * other error (a timeout, a permission problem) throws like every other
- * context read: the fallback is a different computation, and a hash built
- * on it for one request would look "changed" and pay for a regeneration.
+ * unchanged account from one day to the next.
  */
 export async function fetchRevenueByMonth(
   client: SupabaseClient,
   customerKey: string,
   today = new Date(),
-): Promise<{ series: MonthlyRevenue[]; source: 'view' | 'fact_lines' }> {
+): Promise<{ series: MonthlyRevenue[]; source: 'rollup' | 'fact_lines' }> {
   const since = monthStart(today, MONTHS_OF_HISTORY)
 
-  const viaView = await client
-    .from('v_account_revenue_monthly')
-    .select('month, revenue')
+  const viaRollup = await erp(client)
+    .from('agg_customer_month')
+    .select('sales_month, revenue')
     .eq('customer_key', customerKey)
-    .gte('month', since)
-    .order('month', { ascending: true })
+    .gte('sales_month', since)
+    .order('sales_month', { ascending: true })
     .limit(MONTHS_OF_HISTORY + 1)
 
-  if (viaView.error && !isMissingRelation(viaView.error)) {
-    console.error('context query failed: v_account_revenue_monthly', viaView.error)
+  if (viaRollup.error && !isMissingRelation(viaRollup.error)) {
+    console.error('context query failed: agg_customer_month', viaRollup.error)
     throw contextUnavailable()
   }
 
-  if (!viaView.error && viaView.data) {
+  if (!viaRollup.error && viaRollup.data) {
     return {
-      series: (viaView.data as Array<Record<string, unknown>>).map((r) => ({
-        month: String(r.month ?? '').slice(0, 7),
+      series: (viaRollup.data as Array<Record<string, unknown>>).map((r) => ({
+        month: String(r.sales_month ?? '').slice(0, 7),
         revenue: round(r.revenue),
       })),
-      source: 'view',
+      source: 'rollup',
     }
   }
 
-  // Memo lines out, as agg_customer_month (the view's source) leaves them.
+  // Memo lines out, as the rollup leaves them.
   const viaFacts = await erp(client)
     .from('fact_invoice_line')
     .select('invoice_date, revenue')
@@ -262,8 +263,8 @@ export async function fetchRevenueByMonth(
 /**
  * Align by CALENDAR month, never by array position.
  *
- * v_account_revenue_monthly omits months with no invoices ("Months with no
- * invoices are simply absent"), so the series is sparse. Slicing it by index
+ * The monthly rollup (like v_account_revenue_monthly over it) omits months
+ * with no invoices, so the series is sparse. Slicing it by index
  * silently redefines the windows: a seasonal dealer invoicing in 8 of the last
  * 24 months has all 8 rows counted as "trailing 12 months" and an empty prior
  * window, so prior_12m_revenue is 0 and change_pct is null. With 18 present
@@ -430,7 +431,7 @@ export function summariseMix(mixRows: Row[]) {
 export type ContextInputs = {
   customer: Row
   invoiceLineCount: number
-  revenue: { series: MonthlyRevenue[]; source: 'view' | 'fact_lines' }
+  revenue: { series: MonthlyRevenue[]; source: 'rollup' | 'fact_lines' }
   /** One row per order, newest first: order_id, order_date, bookings. */
   orders: Row[]
   /** First day of the orders window. */
