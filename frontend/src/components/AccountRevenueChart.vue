@@ -266,36 +266,42 @@ const deltaTone = computed(() => {
         numbers exist as a real table. Visually hidden rather than hidden
         behind a toggle: it costs nothing and cannot drift out of sync with
         the chart.
+
+        sr-only goes on a wrapper, not on the table: a <table> box cannot
+        be narrower than its columns and ignores overflow, so a 1px
+        sr-only table still pushed the phone page out to 590px.
       -->
-      <table class="sr-only">
-        <caption>
-          Monthly invoiced revenue, January through December,
-          {{ series.currentYear }} versus {{ series.priorYear }}
-        </caption>
-        <thead>
-          <tr>
-            <th scope="col">Month</th>
-            <th scope="col">{{ currentLabel }}</th>
-            <th scope="col">{{ priorLabel }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(label, i) in series.labels" :key="label">
-            <th scope="row">{{ label }}</th>
-            <td>
-              {{ series.current[i] == null ? 'not yet' : money(series.current[i]) }}
-            </td>
-            <td>{{ money(series.prior[i]) }}</td>
-          </tr>
-        </tbody>
-        <tfoot>
-          <tr>
-            <th scope="row">Total</th>
-            <td>{{ money(series.currentTotal) }} (year to date)</td>
-            <td>{{ money(series.priorTotalFull) }}</td>
-          </tr>
-        </tfoot>
-      </table>
+      <div class="sr-only">
+        <table>
+          <caption>
+            Monthly invoiced revenue, January through December,
+            {{ series.currentYear }} versus {{ series.priorYear }}
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Month</th>
+              <th scope="col">{{ currentLabel }}</th>
+              <th scope="col">{{ priorLabel }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(label, i) in series.labels" :key="label">
+              <th scope="row">{{ label }}</th>
+              <td>
+                {{ series.current[i] == null ? 'not yet' : money(series.current[i]) }}
+              </td>
+              <td>{{ money(series.prior[i]) }}</td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <th scope="row">Total</th>
+              <td>{{ money(series.currentTotal) }} (year to date)</td>
+              <td>{{ money(series.priorTotalFull) }}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </AsyncState>
   </AppCard>
 </template>

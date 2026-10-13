@@ -138,3 +138,47 @@ export function useCanDeleteContacts() {
   const session = useSessionStore()
   return computed(() => session.isAdmin)
 }
+
+/**
+ * "Make go-to contact": the rep's answer to "who do I ask for", which the
+ * account header puts at the top (lib/contacts.ts ranks a rep-entered
+ * primary above everything). Rep-entered rows only — an ERP contact has no
+ * row here to flag, and copying it would show the same person twice.
+ *
+ * Two writes: set this row, then clear every other rep-entered primary on
+ * the account so there is exactly one answer. In that order on purpose — if
+ * the second write fails, ranking already prefers the most recently updated
+ * primary, which is this one. The update policy is account access, not
+ * authorship (010_access_performance.sql), so a rep can clear a colleague's
+ * flag on a shared account; while viewing as a rep, the view-as trigger
+ * refuses both.
+ */
+export function useSetGoToContact() {
+  const invalidate = useInvalidateContacts()
+  return useMutation({
+    mutationFn: async (input: { id: number; customerKey: string }) => {
+      const { data, error } = await supabase
+        .from('contacts')
+        .update({ is_primary: true })
+        .eq('id', input.id)
+        .select()
+      if (error) throw error
+      if (!data?.length) {
+        throw new Error(
+          "That contact couldn't be updated. It may have been removed, or it belongs to an account outside your book.",
+        )
+      }
+      const { error: clearError } = await supabase
+        .from('contacts')
+        .update({ is_primary: false })
+        .eq('customer_key', input.customerKey)
+        .eq('is_primary', true)
+        .neq('id', input.id)
+      if (clearError) throw clearError
+      return data[0]
+    },
+    // Settled, not success: the first write may have landed even when the
+    // second failed, and the page should show whichever is true now.
+    onSettled: (_data, _error, vars) => invalidate(vars.customerKey),
+  })
+}

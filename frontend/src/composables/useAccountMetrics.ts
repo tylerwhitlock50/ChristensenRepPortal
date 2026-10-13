@@ -132,6 +132,12 @@ export interface AccountOrderLineRow {
   customer_key: string
   order_id: string
   line_num: number
+  /**
+   * The order's date, repeated on each line (035). Lets the drill-in title
+   * an order that is not among the loaded headers — a deep link to an old
+   * one (?order=) opens by id alone.
+   */
+  order_date: string | null
   promise_date: string | null
   line_status_desc: string | null
   part_key: string | null
@@ -296,15 +302,24 @@ export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
  *
  * The consequence to respect: an unbounded select now returns EVERY order for
  * the account. Both queries below must keep sending .range().
+ *
+ * Both take `enabled`. The cards that list them start collapsed, so the
+ * account page runs them only once a card is opened — or, for orders, once
+ * the "Before you call" card wants the newest one. Every observer of a key
+ * sees the cache: a disabled card still shows rows another observer
+ * fetched.
  */
 export const ORDERS_PAGE_SIZE = 20
 
 /** Recent ORDERS (header grain), newest first, paged. */
-export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
+export function useAccountOrderHeaders(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useInfiniteQuery({
     queryKey: computed(() => accountMetricsKeys.orderHeaders(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     initialPageParam: 0,
@@ -346,11 +361,14 @@ export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
 }
 
 /** Recent PACKLISTS (header grain), newest first, paged. */
-export function useAccountShipmentHeaders(customerKey: MaybeRef<string>) {
+export function useAccountShipmentHeaders(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useInfiniteQuery({
     queryKey: computed(() => accountMetricsKeys.shipmentHeaders(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     initialPageParam: 0,
@@ -415,6 +433,7 @@ export function useAccountOrderLines(
         customer_key: String(r.customer_key),
         order_id: String(r.order_id),
         line_num: num(r.line_num),
+        order_date: (r.order_date as string | null) ?? null,
         promise_date: (r.promise_date as string | null) ?? null,
         line_status_desc: (r.line_status_desc as string | null) ?? null,
         part_key: (r.part_key as string | null) ?? null,
