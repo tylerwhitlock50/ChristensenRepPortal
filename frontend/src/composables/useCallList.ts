@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
@@ -370,9 +370,6 @@ export function useCallList() {
   const signals = useCallListSignals()
   const feedback = useCallListFeedback()
 
-  /** Bumped after a reaction so the hide windows are measured from now. */
-  const now = ref(Date.now())
-
   const usingFallback = computed(() => {
     const s = signals.data.value
     return s === null || (Array.isArray(s) && s.length === 0)
@@ -385,28 +382,27 @@ export function useCallList() {
     const rows = territory.data.value
     return rows ? new Map(rows.map((r) => [r.customer_key, r])) : null
   })
-  const hidden = computed(() => hiddenByReaction(feedback.data.value ?? [], now.value))
+  // Windows are measured from the last time the reactions were read (or
+  // written: a reaction updates the cache), so a tab left open for days
+  // lets "On it" lapse on its next refetch rather than never.
+  const hidden = computed(() =>
+    hiddenByReaction(feedback.data.value ?? [], feedback.dataUpdatedAt.value || Date.now()),
+  )
 
-  const rows = computed<CallListRow[]>(() => {
+  function listFor(hide: ReadonlySet<string>, limit: number): CallListRow[] {
     if (usingFallback.value) {
       return fallbackCallList(
         territory.data.value ?? [],
-        hidden.value,
+        hide,
         new Set(deactivations.data.value ?? []),
+        new Date(),
+        limit,
       )
     }
-    return buildCallList(signals.data.value ?? [], territoryMap.value, hidden.value)
-  })
+    return buildCallList(signals.data.value ?? [], territoryMap.value, hide, new Date(), limit)
+  }
 
-  // One request for every row's contacts and address, not one per row —
-  // and the same key whether ten or twenty-five rows are showing.
-  const keys = computed(() => rows.value.map((r) => r.customer_key))
-  const reach = useBestContacts(keys)
-
-  /** False on a database without call_list_feedback: no menu at all. */
-  const reactionsAvailable = computed(
-    () => feedback.isSuccess.value && feedback.data.value !== null,
-  )
+  const rows = computed<CallListRow[]>(() => listFor(hidden.value, MAX_ROWS))
 
   /** The list is ready once its source is: signals, or the fallback's inputs. */
   const isPending = computed(
@@ -418,6 +414,24 @@ export function useCallList() {
       (usingFallback.value && deactivations.isPending.value),
   )
 
+  // One request for every row's contacts and address, not one per row. The
+  // keys are the list BEFORE reactions, with room to backfill: the same set
+  // whether ten or twenty-five rows show, and a reaction (which hides one
+  // row and pulls the next one up) does not change it and cost a refetch.
+  // Held back until the list has settled, or it would fetch twice on load.
+  const EMPTY = new Set<string>()
+  const keys = computed(() =>
+    isPending.value
+      ? []
+      : listFor(EMPTY, FETCH_ROWS).map((r) => r.customer_key),
+  )
+  const reach = useBestContacts(keys)
+
+  /** False on a database without call_list_feedback: no menu at all. */
+  const reactionsAvailable = computed(
+    () => feedback.isSuccess.value && feedback.data.value !== null,
+  )
+
   return {
     rows,
     reach,
@@ -427,7 +441,6 @@ export function useCallList() {
     usingFallback,
     reactionsAvailable,
     isPending,
-    refreshWindows: () => (now.value = Date.now()),
   }
 }
 
