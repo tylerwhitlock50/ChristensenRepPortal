@@ -39,7 +39,7 @@ function stubClient(resolver: (relation: string, calls: Call[]) => unknown): Sup
     )
   return {
     from: (name: string) => builder(name, []),
-    rpc: (name: string) => builder(`rpc:${name}`, []),
+    rpc: (name: string, params?: unknown) => builder(`rpc:${name}`, [['rpc', [params]]]),
   } as unknown as SupabaseClient
 }
 
@@ -52,6 +52,7 @@ const account = (key: string, name: string, extra: Record<string, unknown> = {})
   revenue_prior_ytd: 40_000,
   revenue_trailing_12m: 60_000,
   last_invoice_date: '2026-09-30',
+  open_order_value: 8_000,
   backlog_amount: 1_000,
   yoy_change_amount: 10_000,
   ...extra,
@@ -60,7 +61,41 @@ const account = (key: string, name: string, extra: Record<string, unknown> = {})
 const GOAL_ROLLUP = { accounts_with_goal: 10, accounts_behind: 4, target_total: 1_200_000,
                       attainment_pct: 75, expected_pct: 78.2 }
 
-function territory(goalRollup: Record<string, unknown> = GOAL_ROLLUP): SupabaseClient {
+const NOT_DEPLOYED = { data: null, error: { code: 'PGRST202', message: 'Could not find the function' } }
+
+/** The rollups were rebuilt at 5:10 PM Mountain on Oct 12 (23:10Z). */
+const FACTS = {
+  figures_refreshed_at: '2026-10-12T23:10:00+00:00', bookings_ytd: 1_000_000,
+  bookings_prior_ytd: 800_000, new_accounts_ytd: 3, orders_14d_count: 41,
+  orders_14d_amount: 260_000, orders_14d_since: '2026-09-29',
+}
+
+const MIX = [
+  { grain: 'family', product_family: 'Mesa', part_id: null, part_description: null, chambering: null,
+    revenue: 120_000, qty: 80, prior_revenue: 100_000, prior_qty: 70,
+    period_start: '2026-01-01', period_end: '2026-09-01', prior_start: '2025-01-01', prior_end: '2025-09-01' },
+  { grain: 'family', product_family: 'Ridgeline', part_id: null, part_description: null, chambering: null,
+    revenue: 0, qty: 0, prior_revenue: 40_000, prior_qty: 20,
+    period_start: '2026-01-01', period_end: '2026-09-01', prior_start: '2025-01-01', prior_end: '2025-09-01' },
+  { grain: 'sku', product_family: 'Mesa', part_id: 'MPR-308', part_description: 'Mesa 308', chambering: '308 WIN',
+    revenue: 60_000, qty: 40, prior_revenue: 50_000, prior_qty: 35,
+    period_start: '2026-01-01', period_end: '2026-09-01', prior_start: '2025-01-01', prior_end: '2025-09-01' },
+]
+
+type Options = {
+  goalRollup?: Record<string, unknown>
+  facts?: Record<string, unknown> | null
+  mix?: Record<string, unknown>[] | null
+  admin?: boolean
+  dataThrough?: string
+}
+
+function territory(
+  goalRollup: Record<string, unknown> = GOAL_ROLLUP,
+  opts: Omit<Options, 'goalRollup'> = {},
+): SupabaseClient {
+  const facts = opts.facts === undefined ? FACTS : opts.facts
+  const mix = opts.mix === undefined ? MIX : opts.mix
   return stubClient((relation, calls) => {
     const has = (method: string, column?: string) =>
       calls.some(([m, args]) => m === method && (column === undefined || args[0] === column))
@@ -92,12 +127,20 @@ function territory(goalRollup: Record<string, unknown> = GOAL_ROLLUP): SupabaseC
           data: [{ customer_key: 'C7', customer_name: 'Teton Range', order_date: '2026-10-08',
                    order_id: 'O9', order_amount: 4_200, has_backlog: true }],
           error: null,
+          count: 17,
         }
       case 'v_territory_sku_sales':
-        return { data: [], error: null }
+        return { data: [{ part_id: 'OLD-1', part_description: 'Old list', product_family: 'Mesa',
+                          chambering: '308 WIN', revenue: 9_000, qty: 6 }], error: null }
       case 'v_data_freshness':
         // Moves every business day, whatever this book did.
-        return { data: { data_through: '2026-10-09' }, error: null }
+        return { data: { data_through: opts.dataThrough ?? '2026-10-09' }, error: null }
+      case 'rpc:report_territory_brief_facts':
+        return facts === null ? NOT_DEPLOYED : { data: facts, error: null }
+      case 'rpc:report_territory_product_mix':
+        return mix === null ? NOT_DEPLOYED : { data: mix, error: null }
+      case 'rpc:is_admin':
+        return { data: opts.admin === true, error: null }
       default:
         return { data: [], error: null }
     }
@@ -145,7 +188,7 @@ Deno.test('the model still gets day counts, the watermark and today', async () =
 Deno.test('every account in the context carries its key, and is a valid chip target', async () => {
   const built = await buildTerritoryContext(territory(), '', new Date('2026-10-13T13:00:00Z'))
   assertEquals(built.context.top_accounts[0].customer_key, 'C1', 'top accounts keyed')
-  assertEquals(built.context.recent_orders[0].customer_key, 'C7', 'recent orders keyed')
+  assertEquals(built.context.recent_orders.largest[0].customer_key, 'C7', 'recent orders keyed')
   assertEquals(
     Object.keys(built.subjects).sort(),
     ['C1', 'C2', 'C3', 'C7', 'C9'],
@@ -212,4 +255,140 @@ Deno.test('a key that is an Object prototype name is not an account', () => {
     { C1: 'Fixture Outfitters' },
   )
   assertEquals(out.items?.headlines[0].customer_key, null, 'constructor is not in subjects')
+})
+
+/*----------------------------------------------------------------------------
+  v3.0.0 — what the brief was missing
+----------------------------------------------------------------------------*/
+
+const OCT13 = new Date('2026-10-13T13:00:00Z')
+
+Deno.test('figures carry the rollup rebuild date, and say when newer invoices exist', async () => {
+  // Rebuilt Oct 12 (Mountain); the warehouse has invoices through Oct 9 → current.
+  const current = await buildTerritoryContext(territory(), '', OCT13)
+  assertEquals(current.context.figures_as_of, '2026-10-12', 'Mountain date of the rebuild')
+  assertEquals(current.context.figures_behind_newer_invoices, false, 'not behind')
+
+  // The 2026-10-13 incident: rebuilt Oct 3, invoices through Oct 9.
+  const stale = await buildTerritoryContext(
+    territory(GOAL_ROLLUP, {
+      facts: { ...FACTS, figures_refreshed_at: '2026-10-03T23:10:00+00:00' },
+      dataThrough: '2026-10-09',
+    }),
+    '',
+    OCT13,
+  )
+  assertEquals(stale.context.figures_as_of, '2026-10-03', 'figures are from Oct 3')
+  assertEquals(stale.context.figures_behind_newer_invoices, true, 'and the warehouse is ahead')
+
+  // A rebuild just after midnight UTC is still the evening before in Mountain.
+  const lateEvening = await buildTerritoryContext(
+    territory(GOAL_ROLLUP, { facts: { ...FACTS, figures_refreshed_at: '2026-10-13T03:30:00+00:00' } }),
+    '',
+    OCT13,
+  )
+  assertEquals(lateEvening.context.figures_as_of, '2026-10-12', '03:30Z is 9:30 PM Mountain')
+})
+
+Deno.test('windows are anchored on the rebuild date, not the wall clock', async () => {
+  let dormantCutoff: unknown
+  let mixParams: unknown
+  const base = territory(GOAL_ROLLUP, {
+    facts: { ...FACTS, figures_refreshed_at: '2026-10-03T23:10:00+00:00' },
+  })
+  // Wrap the stub to capture the arguments the builder sends.
+  const spy = {
+    from: (name: string) => {
+      const b = base.from(name) as unknown as Record<string, (...a: unknown[]) => unknown>
+      if (name !== 'v_territory_account_yoy') return b
+      return new Proxy(b, {
+        get(t, prop) {
+          const f = (t as Record<string | symbol, unknown>)[prop]
+          if (prop !== 'select' || typeof f !== 'function') return f
+          return (...args: unknown[]) => {
+            const q = (f as (...a: unknown[]) => unknown)(...args)
+            return wrapLt(q)
+          }
+        },
+      })
+    },
+    rpc: (name: string, params?: unknown) => {
+      if (name === 'report_territory_product_mix') mixParams = params
+      return base.rpc(name, params as never)
+    },
+  } as unknown as SupabaseClient
+  // deno-lint-ignore no-explicit-any
+  function wrapLt(q: any): any {
+    return new Proxy(q, {
+      get(t, prop) {
+        const f = t[prop]
+        if (typeof f !== 'function' || prop === 'then') return f
+        return (...args: unknown[]) => {
+          if (prop === 'lt' && args[0] === 'last_invoice_date') dormantCutoff = args[1]
+          return wrapLt(f(...args))
+        }
+      },
+    })
+  }
+  await buildTerritoryContext(spy, '', OCT13)
+  assertEquals(dormantCutoff, '2026-07-05', 'quiet = 90 days before Oct 3, not before today')
+  assertEquals(mixParams, { p_through_month: '2026-09-01', p_sku_limit: 8 },
+    'product mix through the last whole month before the rebuild')
+})
+
+Deno.test('accounts carry open orders and past-promise dollars, named for what they are', async () => {
+  const built = await buildTerritoryContext(territory(), '', OCT13)
+  const a = built.context.top_accounts[0]
+  assertEquals([a.open_order_value, a.past_promise_amount], [8_000, 1_000], 'both on every account')
+  assert(!('backlog_amount' in a), 'the misleading name is gone')
+  assertEquals(built.context.totals.open_order_value, 120_000, 'totals: open orders')
+  assertEquals(built.context.totals.past_promise_amount, 30_000, 'totals: past promise')
+  assertEquals([built.context.totals.bookings_ytd, built.context.totals.bookings_prior_ytd],
+    [1_000_000, 800_000], 'bookings')
+  assertEquals(built.context.new_accounts_this_year, 3, 'new accounts')
+})
+
+Deno.test('recent orders: every order counted and totalled, the list is only the largest', async () => {
+  const today = OCT13
+  const built = await buildTerritoryContext(territory(), '', today)
+  assertEquals(built.context.recent_orders.count, 41, 'all 41 orders, not the excerpt')
+  assertEquals(built.context.recent_orders.total, 260_000, 'their total')
+  assertEquals(built.context.recent_orders.largest.length, 1, 'the excerpt')
+  assert(!JSON.stringify(built.context).includes('2026-09-29'), 'the window start is not hashed')
+  const payload = territoryPromptPayload(built, today)
+  assertEquals(payload.recent_orders.since, '2026-09-29', 'the model is told where the window starts')
+  assertEquals(payload.recent_orders.count, 41, 'and keeps the count')
+})
+
+Deno.test('product mix over the same months, with the change worked out', async () => {
+  const built = await buildTerritoryContext(territory(), '', OCT13)
+  const mix = built.context.product_mix
+  assertEquals(mix.this_period, { from: '2026-01-01', through_month: '2026-09-01' }, 'this period')
+  assertEquals(mix.prior_period, { from: '2025-01-01', through_month: '2025-09-01' }, 'same months last year')
+  assertEquals(mix.families.map((f: { family: string; change_pct: number | null }) => [f.family, f.change_pct]),
+    [['Mesa', 20], ['Ridgeline', -100]], 'change_pct per family')
+  assertEquals(mix.skus[0].part_id, 'MPR-308', 'leading SKUs')
+  assert(!('top_skus' in built.context), 'no unequal-window lists when the mix is there')
+})
+
+Deno.test('scope says company for an admin, territory for everyone else', async () => {
+  const rep = await buildTerritoryContext(territory(), '', OCT13)
+  const admin = await buildTerritoryContext(territory(GOAL_ROLLUP, { admin: true }), '', OCT13)
+  assertEquals([rep.context.scope, admin.context.scope], ['territory', 'company'], 'scope')
+})
+
+Deno.test('on a database without 20261013160000 the brief falls back, and stays stable', async () => {
+  const old = (day: Date) =>
+    buildTerritoryContext(territory(GOAL_ROLLUP, { facts: null, mix: null }), '', day)
+  const oct13 = await old(OCT13)
+  const oct14 = await old(new Date('2026-10-14T13:00:00Z'))
+  assertEquals(await hashOf(oct13.context), await hashOf(oct14.context), 'hash stable across days')
+  assertEquals(oct13.context.figures_as_of, null, 'no rebuild date to give')
+  assertEquals(oct13.context.figures_behind_newer_invoices, false, 'never claims staleness it cannot see')
+  assertEquals(oct13.context.recent_orders.count, 17, 'count from the slice\'s exact count')
+  assertEquals(oct13.context.recent_orders.total, null, 'no total from an excerpt')
+  assert(!('bookings_ytd' in oct13.context.totals), 'no bookings without the facts')
+  assertEquals(oct13.context.top_skus[0].part_id, 'OLD-1', 'the old product lists come back')
+  assert('top_skus_full_last_year' in oct13.context, 'with last year labelled as the full year')
+  assert(!('product_mix' in oct13.context), 'and no mix')
 })
