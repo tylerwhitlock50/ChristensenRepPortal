@@ -6,6 +6,7 @@ import { z } from 'zod'
 import AppButton from '@/components/ui/AppButton.vue'
 import {
   useAddContact,
+  useSetGoToContact,
   useUpdateContact,
   type Contact,
 } from '@/composables/useContacts'
@@ -95,6 +96,7 @@ const [notes, notesAttrs] = defineField('notes')
 /* ---- save ---------------------------------------------------------------- */
 const add = useAddContact()
 const update = useUpdateContact()
+const setGoTo = useSetGoToContact()
 const serverError = ref('')
 
 /** Only offer to dial once there's actually a number worth dialing. */
@@ -114,6 +116,13 @@ const onSubmit = handleSubmit(async (values) => {
           values,
         })
       : await add.mutateAsync({ customerKey: props.customerKey, values })
+    // "Main person to ask for" means the same as ContactsCard's "Make go-to
+    // contact": one per account. Saving a second one clears the first, and
+    // only when the box went from unticked to ticked — re-saving the go-to
+    // contact's phone number costs no extra write.
+    if (values.is_primary && !props.contact?.is_primary) {
+      await setGoTo.mutateAsync({ id: saved.id, customerKey: props.customerKey })
+    }
     emit('saved', saved)
   } catch (e) {
     serverError.value = (e as Error).message || 'Could not save that contact.'
@@ -251,6 +260,9 @@ const inputClass =
         />
         <span class="text-sm font-medium text-ink-2">
           Main person to ask for
+          <span class="block text-xs font-normal text-muted">
+            Shown at the top of the account
+          </span>
         </span>
       </label>
 
