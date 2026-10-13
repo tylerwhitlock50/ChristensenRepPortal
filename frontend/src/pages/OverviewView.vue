@@ -19,7 +19,6 @@ import {
   largestMovers,
   territoryTotals,
   useTerritoryAccounts,
-  useTerritoryRecentOrders,
   worthInvestigating,
 } from '@/composables/useOverview'
 import { useTerritorySignals } from '@/composables/useAccountSignals'
@@ -31,7 +30,8 @@ import FreshnessStamp from '@/components/FreshnessStamp.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import { daysAgo, money } from '@/lib/format'
+import { money } from '@/lib/format'
+import RecentActivityCard from '@/components/RecentActivityCard.vue'
 
 /**
  * The morning briefing (data-first restructure). Canonical flow, top to
@@ -43,7 +43,6 @@ import { daysAgo, money } from '@/lib/format'
 const session = useSessionStore()
 
 const accountsQuery = useTerritoryAccounts()
-const recentQuery = useTerritoryRecentOrders()
 /* The nightly behaviour scores (public.account_signals). Loads alongside the
    territory rows rather than gating them: if it is slow, missing, or 019 was
    never applied, the observations below fall back to the flat dormancy rule
@@ -70,7 +69,6 @@ const moverGroups = computed(() =>
     { key: 'down', label: 'Down the most', rows: movers.value.down },
   ].filter((g) => g.rows.length > 0),
 )
-const recent = computed(() => recentQuery.data.value ?? [])
 
 /* ---- Sales Brief --------------------------------------------------------
    Auto-generates ONCE A DAY when there is no brief or it predates today; the
@@ -316,46 +314,8 @@ const goalSub = computed(() => {
         </AppCard>
       </div>
 
-      <!-- 5 · Recent activity -->
-      <AppCard
-        class="mt-5"
-        title="Recent activity"
-        hint="Orders, last 14 days"
-        :padded="false"
-      >
-        <AsyncState
-          :loading="recentQuery.isPending.value"
-          :error="recentQuery.error.value"
-          :has-data="recentQuery.data.value !== undefined"
-          :updated-at="recentQuery.dataUpdatedAt.value"
-          :empty="!recentQuery.isPending.value && recent.length === 0"
-          empty-title="No orders in the last two weeks"
-          :rows="2"
-          @retry="recentQuery.refetch()"
-        >
-          <ul class="divide-line divide-y">
-            <li v-for="o in recent" :key="`${o.customer_key}-${o.order_id}`">
-              <RouterLink
-                :to="{ name: 'account', params: { customerKey: o.customer_key } }"
-                class="hover:bg-canvas flex items-center justify-between gap-3 px-4 py-3"
-              >
-                <span class="min-w-0">
-                  <span class="text-ink block truncate text-[15px] font-semibold">
-                    {{ o.customer_name || o.customer_key }}
-                  </span>
-                  <span class="text-muted block text-xs">
-                    Order {{ o.order_id }} · {{ daysAgo(o.order_date) }}
-                    <template v-if="o.has_backlog"> · has backorder lines</template>
-                  </span>
-                </span>
-                <span class="text-ink shrink-0 text-[15px] font-semibold tabular-nums">
-                  {{ money(o.order_amount) }}
-                </span>
-              </RouterLink>
-            </li>
-          </ul>
-        </AsyncState>
-      </AppCard>
+      <!-- 5 · Recent activity: shipped, new orders, promise dates that moved -->
+      <RecentActivityCard class="mt-5" />
     </AsyncState>
   </div>
 </template>
