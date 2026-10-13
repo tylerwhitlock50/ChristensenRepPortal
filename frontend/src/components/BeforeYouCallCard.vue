@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { format, parseISO } from 'date-fns'
+import { format } from 'date-fns'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
-import { count, daysAgo, dayMonth, humanize, money, shortDate } from '@/lib/format'
+import { daysAgo, humanize, shortDate } from '@/lib/format'
+import { boughtLine, lastOrderLine, owedLines } from '@/lib/precallBrief'
 import {
   useAccountOrderHeaders,
   useAccountSummary,
@@ -77,30 +78,8 @@ const hasOrdered = computed(() => !!s.value?.last_order_date)
 const orders = useAccountOrderHeaders(key, { enabled: hasOrdered })
 const newest = computed(() => orders.data.value?.pages[0]?.[0] ?? null)
 
-/**
- * "51234 · $4,250 · 3 lines · their PO 7781 · 2 still open". The order's
- * own date joins the line only when it is not the date already shown above
- * it — the ERP's own last-order field can be newer than any order line.
- */
-const newestLine = computed(() => {
-  const o = newest.value
-  if (!o) return ''
-  const parts = [
-    o.order_id,
-    money(o.bookings),
-    `${count(o.line_count)} line${o.line_count === 1 ? '' : 's'}`,
-  ]
-  if (o.order_date && o.order_date !== s.value?.last_order_date) {
-    parts.unshift(shortDate(o.order_date))
-  }
-  if (o.customer_po_number) parts.push(`their PO ${o.customer_po_number}`)
-  parts.push(
-    o.open_line_count > 0
-      ? `${count(o.backlog_qty)} still open`
-      : humanize(o.order_state ?? o.order_status_desc),
-  )
-  return parts.join(' · ')
-})
+/* "51234 · $4,250 · 3 lines · their PO 7781 · 2 still open" — lib/precallBrief. */
+const newestLine = computed(() => lastOrderLine(newest.value, s.value?.last_order_date))
 
 /* ---- what's owed -------------------------------------------------------- */
 const hasOpen = computed(() => (s.value?.open_order_count ?? 0) > 0)
@@ -108,37 +87,10 @@ const hasOpen = computed(() => (s.value?.open_order_count ?? 0) > 0)
    key) — an account with nothing open costs no request here. */
 const backlog = useAccountBacklog(computed(() => (hasOpen.value ? props.customerKey : '')))
 
-/**
- * The promise dates come per SKU (v_backlog_by_sku's earliest open-line
- * promise), so "past its promise" counts SKUs whose earliest open line is
- * late — the same rows the On backorder card lists, so the two agree.
- */
-const owed = computed(() => {
-  const sum = s.value
-  if (!sum || sum.open_order_count <= 0) return null
-  const n = sum.open_order_count
-  const units = sum.backlog_qty ? ` · ${count(Math.round(sum.backlog_qty))} units` : ''
-  const headline = `${n} open order${n === 1 ? '' : 's'} · ${money(sum.open_order_value)}${units}`
-
-  const rows = backlog.data.value
-  if (!rows) return { headline, detail: '' }
-  const today = format(new Date(), 'yyyy-MM-dd')
-  const late = rows.filter((r) => r.earliest_promise_date && r.earliest_promise_date < today)
-  const next = rows
-    .map((r) => r.earliest_promise_date)
-    .filter((d): d is string => !!d && d >= today)
-    .sort()[0]
-  const lateAmount = late.reduce((a, r) => a + r.backlog_amount, 0)
-  const detail = [
-    next ? `Next promise ${dayMonth(next)}` : '',
-    late.length
-      ? `${late.length} item${late.length === 1 ? '' : 's'} past promise (${money(lateAmount)})`
-      : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
-  return { headline, detail }
-})
+/* Headline from the summary at once; the promise detail once the rows land. */
+const owed = computed(() =>
+  owedLines(s.value, backlog.data.value, format(new Date(), 'yyyy-MM-dd')),
+)
 
 /* ---- bought before, in stock now --------------------------------------- */
 const REORDER_LIMIT = 3
@@ -151,11 +103,6 @@ const showReorders = computed(
     (reorders.isPending.value || !!reorders.error.value || reorders.rows.value.length > 0),
 )
 const canOrder = computed(() => props.ordersEnabled && props.canWrite)
-
-function boughtLine(r: { last_qty: number; last_bought_month: string; ats_qty: number }): string {
-  const month = format(parseISO(r.last_bought_month), 'MMM yyyy')
-  return `Bought ${count(r.last_qty)} in ${month} · ${count(r.ats_qty)} available`
-}
 
 /* ---- nothing at all ----------------------------------------------------- */
 const nothingToSay = computed(
