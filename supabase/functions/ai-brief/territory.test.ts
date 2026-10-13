@@ -57,7 +57,10 @@ const account = (key: string, name: string, extra: Record<string, unknown> = {})
   ...extra,
 })
 
-function territory(): SupabaseClient {
+const GOAL_ROLLUP = { accounts_with_goal: 10, accounts_behind: 4, target_total: 1_200_000,
+                      attainment_pct: 75, expected_pct: 78.2 }
+
+function territory(goalRollup: Record<string, unknown> = GOAL_ROLLUP): SupabaseClient {
   return stubClient((relation, calls) => {
     const has = (method: string, column?: string) =>
       calls.some(([m, args]) => m === method && (column === undefined || args[0] === column))
@@ -72,11 +75,7 @@ function territory(): SupabaseClient {
           error: null,
         }
       case 'v_my_goal_rollup':
-        return {
-          data: { accounts_with_goal: 10, accounts_behind: 4, target_total: 1_200_000,
-                  attainment_pct: 75, expected_pct: 78.2 },
-          error: null,
-        }
+        return { data: goalRollup, error: null }
       case 'v_territory_account_yoy':
         if (has('lt', 'last_invoice_date')) {
           return { data: [account('C9', 'Canyon Creek', { last_invoice_date: '2026-06-05' })], error: null, count: 3 }
@@ -114,6 +113,24 @@ Deno.test('the hashed territory context does not move with the calendar', async 
   const hashed = JSON.stringify(oct13.context)
   assert(!hashed.includes('days_since_invoice'), 'no day counts in the hash')
   assert(!hashed.includes('data_through'), 'the warehouse watermark is not in the hash')
+})
+
+Deno.test('goal pace moves with the clock: in the payload, not the hash', async () => {
+  // v_my_goal_rollup.expected_pct and accounts_behind come from current_date
+  // (v_account_goal_progress), so they differ between two days of the same
+  // data. Only target and attainment are data.
+  const paced = (expected: number, behind: number) =>
+    territory({ accounts_with_goal: 10, accounts_behind: behind, target_total: 1_200_000,
+                attainment_pct: 75, expected_pct: expected })
+  const oct13 = await buildTerritoryContext(paced(78.2, 4), '', new Date('2026-10-13T13:00:00Z'))
+  const oct14 = await buildTerritoryContext(paced(78.5, 5), '', new Date('2026-10-14T13:00:00Z'))
+  assertEquals(await hashOf(oct13.context), await hashOf(oct14.context), 'pace moved, data did not')
+  assertEquals(oct13.context.goal, { target: 1_200_000, attainment_pct: 75, accounts_with_goal: 10 }, 'hashed goal is data only')
+  const payload = territoryPromptPayload(oct14, new Date('2026-10-14T13:00:00Z'))
+  assertEquals(payload.goal, {
+    target: 1_200_000, attainment_pct: 75, accounts_with_goal: 10,
+    expected_pct: 78.5, accounts_behind_pace: 5,
+  }, 'the model reads today\'s pace on `goal`, where the prompt describes it')
 })
 
 Deno.test('the model still gets day counts, the watermark and today', async () => {

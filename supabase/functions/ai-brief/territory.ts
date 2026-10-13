@@ -37,7 +37,16 @@
   newest invoice in the WHOLE warehouse, which moves every business day
   whether or not this book changed) are added to the model's input by
   territoryPromptPayload() and never hashed. They used to be, so the brief
-  paid for a regeneration almost every morning.
+  paid for a regeneration almost every morning. Goal pace (expected_pct and
+  how many accounts are behind it) is computed against current_date, so it
+  is as-of-today too.
+
+  What still moves the hash without a new invoice in this book: the
+  "same window last year" figures (revenue_prior_ytd and the movers built
+  on it grow with last year's invoices on today's date), the 90-day dormant
+  cutoff and the 14-day recent-orders window. Those ARE the brief, so a
+  territory brief is still regenerated most business days; the saving is
+  on the days nothing moved.
 
   ── Tappable headlines (v2.0.0) ────────────────────────────────────────────
   Every account in the context carries its customer_key, and the model
@@ -92,7 +101,11 @@ function accountSlice(client: SupabaseClient, sort: string, ascending: boolean) 
  */
 // deno-lint-ignore no-explicit-any
 function rowOrNull(result: { data: any; error: any }, label: string): Row | null {
-  return (rows(result, label) as Row[])[0] ?? null
+  // .maybeSingle() answers with the row itself, not a one-row array —
+  // indexing it with [0] read undefined, and the brief never saw the goal.
+  const data = rows(result, label) as unknown
+  if (Array.isArray(data)) return (data[0] as Row | undefined) ?? null
+  return (data as Row | null) ?? null
 }
 
 function num(v: unknown): number {
@@ -107,11 +120,14 @@ function pctOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n * 10) / 10 : null
 }
 
+/** Where the book stands against goal pace TODAY — moves with the clock. */
+export type GoalPace = { expected_pct: number | null; accounts_behind_pace: number }
+
 export type TerritoryBuilt = {
   /** Hashed. */
   context: Row
-  /** Not hashed: the clock and the warehouse watermark. */
-  asOf: { data_through: string | null }
+  /** Not hashed: the clock, the warehouse watermark and goal pace. */
+  asOf: { data_through: string | null; goal_pace: GoalPace | null }
   /** customer_key → account name, for every account in `context`. */
   subjects: Record<string, string>
   /** When set, respond insufficient_data without spending a token. */
@@ -211,7 +227,7 @@ export async function buildTerritoryContext(
   if (!totals || accountCount === 0) {
     return {
       context: {},
-      asOf: { data_through: null },
+      asOf: { data_through: null, goal_pace: null },
       subjects: {},
       insufficient: {
         message: 'No accounts in this territory yet.',
@@ -265,17 +281,24 @@ export async function buildTerritoryContext(
 
   // The goal tile's own row. Null when no account in the book carries a
   // goal (CRM or ERP) — then `goal` is omitted rather than reported as $0.
+  // Target and attainment are data; expected_pct and the behind-pace count
+  // are computed against current_date in v_account_goal_progress, so they
+  // move on days nothing was invoiced — asOf, never hashed.
   const goalRow = rowOrNull(goalRes, 'v_my_goal_rollup')
-  const goal =
-    goalRow && num(goalRow.accounts_with_goal) > 0
-      ? {
-          target: round(goalRow.target_total),
-          attainment_pct: pctOrNull(goalRow.attainment_pct),
-          expected_pct: pctOrNull(goalRow.expected_pct),
-          accounts_with_goal: Math.round(num(goalRow.accounts_with_goal)),
-          accounts_behind_pace: Math.round(num(goalRow.accounts_behind)),
-        }
-      : null
+  const hasGoal = !!goalRow && num(goalRow.accounts_with_goal) > 0
+  const goal = hasGoal
+    ? {
+        target: round(goalRow!.target_total),
+        attainment_pct: pctOrNull(goalRow!.attainment_pct),
+        accounts_with_goal: Math.round(num(goalRow!.accounts_with_goal)),
+      }
+    : null
+  const goalPace: GoalPace | null = hasGoal
+    ? {
+        expected_pct: pctOrNull(goalRow!.expected_pct),
+        accounts_behind_pace: Math.round(num(goalRow!.accounts_behind)),
+      }
+    : null
 
   // A slice's `count` is the number of rows that matched before the LIMIT.
   const countOf = (res: { count?: number | null }, fallback: number) =>
@@ -322,7 +345,7 @@ export async function buildTerritoryContext(
 
   return {
     context,
-    asOf: { data_through: (fresh?.data_through as string | null) ?? null },
+    asOf: { data_through: (fresh?.data_through as string | null) ?? null, goal_pace: goalPace },
     subjects,
   }
 }
@@ -339,8 +362,11 @@ function daysSince(isoDate: unknown, today: Date): number | null {
 /** What the model reads: the hashed context plus today's figures. */
 export function territoryPromptPayload(built: TerritoryBuilt, today = new Date()): Row {
   const dormant = Array.isArray(built.context.dormant) ? (built.context.dormant as Row[]) : []
+  const goal = built.context.goal as Row | null | undefined
   return {
     ...built.context,
+    // Today's pace goes back where the prompt describes it: on `goal`.
+    goal: goal ? { ...goal, ...(built.asOf.goal_pace ?? {}) } : goal,
     dormant: dormant.map((a) => ({
       ...a,
       days_since_invoice: daysSince(a.last_invoice_date, today),
