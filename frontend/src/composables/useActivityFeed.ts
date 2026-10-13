@@ -210,7 +210,7 @@ export function groupActivity(events: readonly ActivityEvent[]): ActivityGroups 
       customer_key: first.customer_key,
       customer_name: first.customer_name,
       order_id: first.order_id,
-      customer_po_number: null,
+      customer_po_number: first.customer_po_number,
       occurred_on: bo.reduce<string | null>(
         (max, e) => ((e.occurred_on ?? '') > (max ?? '') ? e.occurred_on : max),
         null,

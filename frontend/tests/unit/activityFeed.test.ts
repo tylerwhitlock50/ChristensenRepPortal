@@ -76,7 +76,7 @@ const events: ActivityEvent[] = [
   ev({ kind: 'backorder_shipped', order_id: 'SO-1', line_no: 1, part_description: 'MPR 308', occurred_on: '2026-10-12', tracking_numbers: '1ZA' }),
   ev({ kind: 'backorder_shipped', order_id: 'SO-1', line_no: 2, part_description: 'MPR 308', occurred_on: '2026-10-12' }),
   // A backorder event with no shipment row in the window.
-  ev({ customer_key: 'FIX-2', customer_name: 'Big Sky', kind: 'backorder_shipped', order_id: 'SO-2', line_no: 3, part_id: 'CA-MESA', occurred_on: '2026-10-09', tracking_numbers: '1ZC' }),
+  ev({ customer_key: 'FIX-2', customer_name: 'Big Sky', kind: 'backorder_shipped', order_id: 'SO-2', customer_po_number: 'BSS-77', line_no: 3, part_id: 'CA-MESA', occurred_on: '2026-10-09', tracking_numbers: '1ZC' }),
   // A plain shipment.
   ev({ kind: 'shipped', order_id: 'SO-3', packlist_id: 'PL-3', occurred_on: '2026-10-07', tracking_numbers: null }),
   // Two slips on one order, one on another.
@@ -93,9 +93,9 @@ t('the shipment carries its tracking, de-duplicated',
   g.shipped[0]!.tracking, ['1ZB', '1ZA'])
 t('…and is flagged a backorder, its part named once',
   [g.shipped[0]!.backorder, g.shipped[0]!.backorderParts], [true, ['MPR 308']])
-t('the orphan backorder stands alone with its own tracking and the part id',
-  [g.shipped[1]!.backorder, g.shipped[1]!.tracking, g.shipped[1]!.backorderParts, g.shipped[1]!.amount],
-  [true, ['1ZC'], ['CA-MESA'], null])
+t('the orphan backorder stands alone with its own tracking, the part id and the PO',
+  [g.shipped[1]!.backorder, g.shipped[1]!.tracking, g.shipped[1]!.backorderParts, g.shipped[1]!.amount, g.shipped[1]!.customer_po_number],
+  [true, ['1ZC'], ['CA-MESA'], null, 'BSS-77'])
 t('a plain shipment is not a backorder', g.shipped[2]!.backorder, false)
 t('new orders newest first', g.newOrders.map((o) => o.order_id), ['SO-5', 'SO-4'])
 t('slips grouped per order, newest first', g.headsUp.map((p) => p.order_id), ['SO-6', 'SO-7'])

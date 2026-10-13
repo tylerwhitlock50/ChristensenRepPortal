@@ -26,7 +26,11 @@
   Same territory definition as 029/025: active external accounts only.
   Each branch reads its own fact and nothing is joined fact-to-fact, so no
   measure can fan out: amount is bookings for an order, shipped revenue for
-  a shipment, null for an event.
+  a shipment, null for an event. The one cross-read is the dealer's PO on a
+  shipment or event row — the number the dealer knows the order by, which
+  "Send tracking" leads with. The shipment fact has no PO column, so it is
+  a text-only scalar subquery on the order fact by order_id (its primary
+  key's lead column), the same no-measure rule as 20261013150000.
 
   Columns (one shape for every kind; null where a kind has nothing):
     customer_key, customer_name, kind, occurred_on, order_id,
@@ -83,7 +87,9 @@ select
     'shipped'::text,
     max(s.ship_date),
     s.order_id,
-    null::text,
+    (select nullif(string_agg(distinct nullif(o.customer_po_number, ''), ', '), '')
+       from erp.fact_order_line o
+      where o.order_id = s.order_id),
     s.packlist_id,
     null::int,
     null::text,
@@ -115,7 +121,9 @@ select
     e.kind,
     e.detected_on,
     e.order_id,
-    null::text,
+    (select nullif(string_agg(distinct nullif(o.customer_po_number, ''), ', '), '')
+       from erp.fact_order_line o
+      where o.order_id = e.order_id),
     null::text,
     e.line_no,
     p.part_id,

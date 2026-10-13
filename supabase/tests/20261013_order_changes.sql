@@ -382,6 +382,12 @@ select pg_temp.assert(
     where kind = 'shipped' and order_id = 'OCE-SO1') = '1ZOCE0000000001',
   'T7 a shipment row carries its tracking number');
 select pg_temp.assert(
+  (select customer_po_number from public.v_territory_recent_events
+    where kind = 'shipped' and order_id = 'OCE-SO1') = 'PO-OCE-1'
+  and (select customer_po_number from public.v_territory_recent_events
+    where kind = 'promise_slipped' and order_id = 'OCE-SO1') = 'PO-OCE-1',
+  'T7 shipment and event rows carry the dealer''s PO (what Send tracking leads with)');
+select pg_temp.assert(
   (select part_id = 'OCE-MESA-65' and line_no = 2
           and promise_before = current_date + 14
           and promise_after  = current_date + 21
