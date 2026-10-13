@@ -24,6 +24,10 @@ import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
  *
  * The `footer` slot is for things that hang off the summary shown — rating
  * it, say. It renders only while there is a summary, and gets that row.
+ * It sits in the card body under the summary, not in AppCard's bordered
+ * footer: what goes there (AiFeedbackThumbs) draws its own rule and hides
+ * itself in view-as or without its table, which would leave an empty
+ * bordered strip.
  */
 const props = withDefaults(
   defineProps<{
@@ -96,6 +100,7 @@ watch(key, () => {
             {{ ai.summary.value?.content }}
           </p>
           <p class="text-muted mt-2 text-xs">{{ ai.asOf.value }}</p>
+          <slot v-if="ai.summary.value" name="footer" :summary="ai.summary.value" />
         </template>
         <p v-else-if="canWrite" class="text-muted text-[15px] leading-relaxed">
           No summary yet. Tap Summarize and we'll read this account's numbers,
@@ -116,8 +121,5 @@ watch(key, () => {
       </div>
     </AsyncState>
 
-    <template v-if="$slots.footer && ai.summary.value" #footer>
-      <slot name="footer" :summary="ai.summary.value" />
-    </template>
   </AppCard>
 </template>

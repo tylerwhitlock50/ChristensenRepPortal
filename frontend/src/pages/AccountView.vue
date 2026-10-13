@@ -26,6 +26,7 @@ import RecommendationCard from '@/components/RecommendationCard.vue'
 import AccountSummaryCard from '@/components/AccountSummaryCard.vue'
 import AccountShipReadiness from '@/components/AccountShipReadiness.vue'
 import AccountAiSummaryCard from '@/components/AccountAiSummaryCard.vue'
+import AiFeedbackThumbs from '@/components/AiFeedbackThumbs.vue'
 import BeforeYouCallCard from '@/components/BeforeYouCallCard.vue'
 /**
  * chart.js is roughly two thirds of this route's bundle, and this is the page
@@ -864,7 +865,17 @@ watch(key, () => {
     <!-- The account Sales Brief. The Summary chip scrolls here and never
          generates — that is the card's own button, a paid call. -->
     <section ref="summarySection" class="scroll-mt-16">
-      <AccountAiSummaryCard :customer-key="customerKey" :can-write="session.canWrite" />
+      <AccountAiSummaryCard :customer-key="customerKey" :can-write="session.canWrite">
+        <template #footer="{ summary }">
+          <AiFeedbackThumbs
+            surface="account_summary"
+            :subject-key="customerKey"
+            :generated-at="summary.generated_at"
+            :prompt-version="summary.prompt_version"
+            :read-only="!session.canWrite"
+          />
+        </template>
+      </AccountAiSummaryCard>
     </section>
 
     <!-- Open recommendations -->
