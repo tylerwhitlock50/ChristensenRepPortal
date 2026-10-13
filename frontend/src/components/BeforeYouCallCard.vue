@@ -118,11 +118,16 @@ const nothingToSay = computed(
 
 <template>
   <AppCard title="Before you call" :padded="false">
+    <!-- The error matters here: without the summary row the card cannot
+         tell "nothing owed" from "couldn't ask", and must not say the
+         former when it means the latter. -->
     <AsyncState
       :loading="summary.isPending.value"
+      :error="summary.error.value"
       :has-data="summary.data.value !== undefined"
       :updated-at="summary.dataUpdatedAt.value"
       :rows="2"
+      @retry="summary.refetch()"
     >
       <p v-if="nothingToSay" class="text-muted px-4 py-3 text-[15px]">
         Nothing on file for this account yet — no orders, nothing owed.
@@ -227,12 +232,15 @@ const nothingToSay = computed(
             @retry="reorders.refetch()"
           >
             <ul class="divide-line mt-1 divide-y">
+              <!-- Wraps rather than squeezes: at phone width "Add to order"
+                   drops under its line, so the description and "Bought 6 in
+                   Jul 2026 · 40 available" keep the full row. -->
               <li
                 v-for="r in reorders.rows.value"
                 :key="r.part_key"
-                class="flex items-center justify-between gap-3 py-2"
+                class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2"
               >
-                <span class="min-w-0">
+                <span class="min-w-0 flex-1 basis-56">
                   <span class="text-ink block text-[15px] font-semibold">
                     {{ r.part_id ?? r.part_key }}
                   </span>
