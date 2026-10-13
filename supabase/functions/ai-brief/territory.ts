@@ -48,7 +48,7 @@
   territory brief is still regenerated most business days; the saving is
   on the days nothing moved.
 
-  ── What the brief was missing (v3.0.0) ───────────────────────────────────
+  ── What the brief was missing (v3.1.0) ───────────────────────────────────
   Briefs read wrong for reasons that were all on the input side:
 
     - Their figures had no date. Totals, top accounts, movers and the
@@ -56,27 +56,37 @@
       the ETL's post-load step — the only date the model saw was
       data_through, the newest invoice in the FACT table. When the post-load
       stopped running (2026-10-03 to at least 10-13) the facts kept moving
-      and the brief described Oct 2 numbers as "through Oct 9". Now
-      figures_as_of is the rollup's own rebuild date (Mountain), and when
-      the warehouse already holds newer invoices the brief says so.
-    - "Recent orders" was the 15 newest headers with no count: a fraction
-      of a fortnight on any real book, read as all of it. Now: the count
-      and value of EVERY order in the window, plus the largest few.
+      and the brief described Oct 2 numbers as "through Oct 9", Lipsey's
+      (shipping daily) as "last invoice Oct 1". Now: the rollups' rebuild
+      date, and "behind" decided from the load ledger (facts loaded after
+      the rebuild, outside the run's own grace window) — never from invoice
+      dates, which future-dated rows and quiet weeks get wrong. Behind, the
+      first headline says so, and any "quiet" account that has invoiced
+      since is re-checked against the facts and dropped. Last-invoice
+      dates now ride only on quiet accounts.
+    - "Recent orders" was the 15 newest headers, cancelled ones included,
+      with no count: a fraction of a fortnight, read as all of it. Now: the
+      count and value of EVERY uncancelled order in the window, plus the
+      largest few.
     - backlog_amount has meant "past promise" since 20260901190100, while
       the prompt called it dollars on backorder, and accounts carried no
-      open-order figure at all — a dealer down 99% with $1.5M on order read
-      as simply gone. Accounts now carry open_order_value and
-      past_promise_amount, named for what they are.
+      open-order figure — a dealer down 99% with $1.5M on order read as
+      gone. Accounts and totals now carry open_order_value and
+      past_promise_amount, and open_orders_cover_drop decides "not shipped
+      yet" vs a real drop in code.
     - Products were this year so far beside ALL of last year. Now families
-      and the leading SKUs over the same whole months of both years
-      (report_territory_product_mix), so a product gaining or fading can be
-      named honestly.
-    - Bookings (orders placed) and new accounts were absent; an admin got a
+      and real products over the same whole months of both years (a full
+      prior year in January and February), named by period.
+    - Percentages were the model's own arithmetic; now every one it may
+      cite is computed here, and null on a base too small to mean anything.
+    - Bookings, new accounts and channels were absent, and an admin got a
       "territory" brief about the whole company.
 
-  The two new reads (20261013160000) are optional: on a database without
-  them the brief falls back to the old inputs, minus the claims they made
-  possible.
+  The new reads (20261013160000) are optional: on a database without them
+  the brief falls back to the old inputs, minus the claims they made
+  possible. Hash: the rebuild date is hashed only while the figures are
+  behind, so a healthy rebuild every night does not by itself buy a paid
+  regeneration.
 
   ── Tappable headlines (v2.0.0) ────────────────────────────────────────────
   Every account in the context carries its customer_key, and the model
@@ -101,35 +111,32 @@ const DORMANT = 5
 /** "Dormant": nothing invoiced in this many days, with real recent history. */
 export const DORMANT_DAYS = 90
 const DORMANT_MIN_TRAILING_12M = 5_000
-/** The largest recent orders named; the count and total cover all of them. */
-const LARGEST_RECENT_ORDERS = 8
-/** Product families and SKUs passed to the model. */
+/** Product families and products passed to the model. */
 const MIX_FAMILIES = 12
 const MIX_SKUS = 8
 /** Headlines kept from a reply; the prompt asks for 3 to 5. */
 const MAX_HEADLINES = 5
 /** The business calendar every rollup window is computed in (20260901190000). */
 const BUSINESS_TZ = 'America/Denver'
+/**
+ * Below these, a percentage change is noise ("up 41,493%" on a $2,026
+ * base): the model is given null and told to use dollars.
+ */
+const MIN_PCT_BASE_ACCOUNT = 25_000
+const MIN_PCT_BASE_PRODUCT = 5_000
+/**
+ * A fact load newer than the rollup rebuild by less than this is the
+ * nightly run still in progress (the facts swap first, the rebuild is the
+ * first post-load step) — not a rebuild that failed.
+ */
+const LOAD_GRACE_MS = 3 * 60 * 60_000
 
 const ACCOUNT_COLUMNS =
   'customer_key, customer_name, sold_to_city, sold_to_state, revenue_ytd, ' +
   'revenue_prior_ytd, revenue_trailing_12m, last_invoice_date, open_order_value, ' +
-  'backlog_amount, yoy_change_amount'
-
-/**
- * One ranked slice of the book. `customer_key` is the final ORDER BY term
- * so ties (whole pages of $0 accounts) rank deterministically — a boundary
- * row that reshuffles on identical data flips the context hash, which turns
- * a free cached return into a paid regeneration. `count: 'exact'` makes the
- * response carry the total number of matching rows, not just the slice.
- */
-function accountSlice(client: SupabaseClient, sort: string, ascending: boolean) {
-  return client
-    .from('v_territory_account_yoy')
-    .select(ACCOUNT_COLUMNS, { count: 'exact' })
-    .order(sort, { ascending, nullsFirst: false })
-    .order('customer_key', { ascending: true })
-}
+  'backlog_amount, yoy_change_amount, first_invoice_date'
+/** + channel (20261013160000), when the view has it. */
+const ACCOUNT_COLUMNS_V3 = ACCOUNT_COLUMNS + ', channel'
 
 /**
  * Single-row unwrap with the same tolerance rule as rows(): only a relation
@@ -145,6 +152,16 @@ function rowOrNull(result: { data: any; error: any }, label: string): Row | null
   return (data as Row | null) ?? null
 }
 
+/** A read that may not be migrated yet: null when it is missing. */
+// deno-lint-ignore no-explicit-any
+function optional(result: { data: any; error: any }, label: string): unknown {
+  if (result.error && isMissingRelation(result.error)) {
+    console.warn(`context read not deployed yet: ${label}`, result.error)
+    return null
+  }
+  return rows(result, label)
+}
+
 function num(v: unknown): number {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
@@ -157,10 +174,14 @@ function pctOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n * 10) / 10 : null
 }
 
-/** Whole-number % change, or null when there is no base to compare with. */
-function changePct(now: unknown, prior: unknown): number | null {
+/**
+ * Whole-number % change, or null when there is no base worth a percentage.
+ * Every percentage the model may cite is computed here: a small model
+ * dividing dollars itself is where "up 10%" became "up 9.8%" or worse.
+ */
+export function changePct(now: unknown, prior: unknown, minBase = 1): number | null {
   const base = num(prior)
-  if (base <= 0) return null
+  if (base <= 0 || base < minBase) return null
   return Math.round(((num(now) - base) / base) * 100)
 }
 
@@ -182,11 +203,32 @@ function shiftDays(isoDate: string, days: number): string {
   return d.toISOString().slice(0, 10)
 }
 
-/** The first of the month BEFORE isoDate's month: the last complete month. */
-function lastCompleteMonth(isoDate: string): string {
-  const d = new Date(isoDate.slice(0, 7) + '-01T00:00:00Z')
-  d.setUTCMonth(d.getUTCMonth() - 1)
-  return d.toISOString().slice(0, 10)
+/**
+ * The last month of the product-mix window, as YYYY-MM-01: the last
+ * complete month before `anchor`'s — except when that leaves one month or
+ * none of the current year (an anchor in January or February), where it is
+ * December: last full year against the year before, rather than January
+ * against January.
+ */
+export function productWindowEnd(anchor: string): string {
+  const year = Number(anchor.slice(0, 4))
+  const month = Number(anchor.slice(5, 7)) // 1..12
+  if (month <= 2) return `${year - 1}-12-01`
+  return `${year}-${String(month - 1).padStart(2, '0')}-01`
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December']
+
+/** "January–September 2026" or "2025" for a whole year. */
+function periodLabel(from: unknown, through: unknown): string | null {
+  if (typeof from !== 'string' || typeof through !== 'string') return null
+  const y = through.slice(0, 4)
+  const m = Number(through.slice(5, 7))
+  if (!m) return null
+  if (m === 12) return y
+  if (m === 1) return `January ${y}`
+  return `January–${MONTHS[m - 1]} ${y}`
 }
 
 /** Where the book stands against goal pace TODAY — moves with the clock. */
@@ -197,21 +239,16 @@ export type TerritoryBuilt = {
   context: Row
   /** Not hashed: the clock, the warehouse watermark, goal pace and the
    *  recent-orders window start. */
-  asOf: { data_through: string | null; goal_pace: GoalPace | null; recent_since?: string | null }
+  asOf: {
+    data_through: string | null
+    goal_pace: GoalPace | null
+    recent_since?: string | null
+    figures_as_of?: string | null
+  }
   /** customer_key → account name, for every account in `context`. */
   subjects: Record<string, string>
   /** When set, respond insufficient_data without spending a token. */
   insufficient?: { message: string; reason: string }
-}
-
-/** A brief-facts or product-mix read that may not be migrated yet. */
-// deno-lint-ignore no-explicit-any
-function optional(result: { data: any; error: any }, label: string): any {
-  if (result.error && isMissingRelation(result.error)) {
-    console.warn(`context read not deployed yet: ${label}`, result.error)
-    return null
-  }
-  return rows(result, label)
 }
 
 export async function buildTerritoryContext(
@@ -222,8 +259,8 @@ export async function buildTerritoryContext(
   // ── 1. When the figures are from, and whose book this is ──────────────────
   // Everything below that is a window (the dormant cutoff, the product mix)
   // is anchored on the day the rollups were rebuilt, not on the wall clock:
-  // a rollup that is a week behind compared against today's calendar is
-  // exactly how the brief came to call active dealers quiet.
+  // a rollup a week behind read against today's calendar is exactly how the
+  // brief came to describe Oct 2 numbers as current.
   const [factsRes, freshRes, adminRes] = await Promise.all([
     client.rpc('report_territory_brief_facts').maybeSingle(),
     client.from('v_data_freshness').select('*').maybeSingle(),
@@ -232,7 +269,7 @@ export async function buildTerritoryContext(
     client.rpc('is_admin'),
   ])
 
-  const factsData = optional(factsRes, 'report_territory_brief_facts') as unknown
+  const factsData = optional(factsRes, 'report_territory_brief_facts')
   const facts = (Array.isArray(factsData) ? factsData[0] ?? null : factsData ?? null) as Row | null
 
   // Same rule as rows(): only a not-yet-migrated view may go missing
@@ -248,22 +285,43 @@ export async function buildTerritoryContext(
   const fresh = (freshRes.data ?? null) as Row | null
   const dataThrough = typeof fresh?.data_through === 'string' ? fresh.data_through.slice(0, 10) : null
 
-  const refreshedAt = facts?.figures_refreshed_at ? new Date(String(facts.figures_refreshed_at)) : null
-  const figuresAsOf =
-    refreshedAt && Number.isFinite(refreshedAt.getTime()) ? businessDate(refreshedAt) : null
-  // The warehouse already holds invoices the rollups do not: the post-load
-  // rebuild has not run since figuresAsOf.
-  const figuresBehind = !!(figuresAsOf && dataThrough && dataThrough > figuresAsOf)
+  const refreshedMs = facts?.figures_refreshed_at ? Date.parse(String(facts.figures_refreshed_at)) : NaN
+  const figuresAsOf = Number.isFinite(refreshedMs) ? businessDate(new Date(refreshedMs)) : null
+  // Behind = the fact tables the rollups are built from have loaded since
+  // the rollups were rebuilt, and long enough ago that tonight's run is
+  // not simply still going. From the load ledger, not from invoice dates:
+  // a future-dated invoice or a quiet week must not decide it. Unknown (an
+  // older v_data_freshness) is not behind.
+  const factsLoadedMs = fresh?.facts_loaded_at ? Date.parse(String(fresh.facts_loaded_at)) : NaN
+  const figuresBehind =
+    Number.isFinite(refreshedMs) &&
+    Number.isFinite(factsLoadedMs) &&
+    factsLoadedMs > refreshedMs &&
+    today.getTime() - factsLoadedMs > LOAD_GRACE_MS
   const anchor = figuresAsOf ?? businessDate(today)
 
   // A failed is_admin read is a territory, not an outage.
-  const scope = adminRes.error ? 'territory' : adminRes.data === true ? 'company' : 'territory'
+  const scope = !adminRes.error && adminRes.data === true ? 'company' : 'territory'
 
   const yearNow = Number(anchor.slice(0, 4))
   const cutoff = shiftDays(anchor, -DORMANT_DAYS)
-  const mixThrough = lastCompleteMonth(anchor)
+  const mixThrough = productWindowEnd(anchor)
 
   // ── 2. The book ────────────────────────────────────────────────────────────
+  // `channel` came with 20261013160000 — the same migration as the facts
+  // function, so its presence says whether the view has the column.
+  const columns = facts ? ACCOUNT_COLUMNS_V3 : ACCOUNT_COLUMNS
+  // One ranked slice of the book. customer_key is the final ORDER BY term
+  // so ties (whole pages of $0 accounts) rank deterministically — a
+  // boundary row that reshuffles on identical data flips the context hash.
+  // count: 'exact' carries the total number of matching rows.
+  const slice = (sort: string, ascending: boolean, counted = true) =>
+    client
+      .from('v_territory_account_yoy')
+      .select(columns, counted ? { count: 'exact' } : undefined)
+      .order(sort, { ascending, nullsFirst: false })
+      .order('customer_key', { ascending: true })
+
   const [
     totalsRes,
     goalRes,
@@ -281,41 +339,31 @@ export async function buildTerritoryContext(
     client.rpc('report_territory_summary').maybeSingle(),
     client
       .from('v_my_goal_rollup')
-      .select('accounts_with_goal, accounts_behind, target_total, attainment_pct, expected_pct')
+      .select('accounts_with_goal, accounts_behind, target_total, revenue_total, attainment_pct, expected_pct')
       .eq('period_year', yearNow)
       .maybeSingle(),
-    // The ranking slice only needs its rows; the counts below are on the
-    // three lists whose totals the brief reports.
-    client
-      .from('v_territory_account_yoy')
-      .select(ACCOUNT_COLUMNS)
-      .order('revenue_ytd', { ascending: false, nullsFirst: false })
-      .order('customer_key', { ascending: true })
-      .gt('revenue_ytd', 0)
-      .limit(TOP_ACCOUNTS),
-    accountSlice(client, 'yoy_change_amount', false)
-      .gt('yoy_change_amount', 0)
-      .limit(MOVERS),
-    accountSlice(client, 'yoy_change_amount', true)
-      .lt('yoy_change_amount', 0)
-      .limit(MOVERS),
+    slice('revenue_ytd', false, false).gt('revenue_ytd', 0).limit(TOP_ACCOUNTS),
+    slice('yoy_change_amount', false).gt('yoy_change_amount', 0).limit(MOVERS),
+    slice('yoy_change_amount', true).lt('yoy_change_amount', 0).limit(MOVERS),
     // Gone quiet: meaningful trailing-12-month business, but the last
     // invoice is older than the cutoff. Biggest recent history first.
-    accountSlice(client, 'revenue_trailing_12m', false)
+    slice('revenue_trailing_12m', false)
       .lt('last_invoice_date', cutoff)
       .gte('revenue_trailing_12m', DORMANT_MIN_TRAILING_12M)
       .limit(DORMANT),
-    // The LARGEST orders of the window, not the newest: the count and total
-    // (brief facts) cover all of them. count: 'exact' is the fallback count
-    // on a database without the facts function.
-    client
-      .from('v_territory_recent_orders')
-      .select('customer_key, customer_name, order_id, order_date, order_amount, has_backlog', {
-        count: 'exact',
-      })
-      .order('order_amount', { ascending: false })
-      .order('order_id', { ascending: true })
-      .limit(LARGEST_RECENT_ORDERS),
+    // Only without the facts function (which counts every uncancelled
+    // order and lists the largest): the old excerpt, now the largest rather
+    // than the newest, with the slice's exact count.
+    facts
+      ? Promise.resolve({ data: [], error: null, count: null })
+      : client
+          .from('v_territory_recent_orders')
+          .select('customer_key, customer_name, order_id, order_date, order_amount, has_backlog', {
+            count: 'exact',
+          })
+          .order('order_amount', { ascending: false })
+          .order('order_id', { ascending: true })
+          .limit(8),
     client.rpc('report_territory_product_mix', {
       p_through_month: mixThrough,
       p_sku_limit: MIX_SKUS,
@@ -375,26 +423,37 @@ export async function buildTerritoryContext(
   // (and be checked against this very list); it is not for the prose.
   // backlog_amount is the PAST-PROMISE share of open orders (20260901190100)
   // and is named for that here; open_order_value is everything still owed.
-  const slim = (a: Row) => {
+  // last_invoice_date only on gone-quiet accounts: on any other account it
+  // is a rollup date the model has no reason to quote, and on a stale night
+  // it is wrong ("Lipsey's last invoice Oct 1" while they shipped daily).
+  const slim = (a: Row, withLastInvoice = false) => {
     remember(a.customer_key, a.customer_name)
+    const change = num(a.revenue_ytd) - num(a.revenue_prior_ytd)
     return {
       customer_key: a.customer_key ?? null,
       name: a.customer_name ?? a.customer_key,
+      ...(a.channel ? { channel: a.channel } : {}),
       city: a.sold_to_city ?? null,
       state: a.sold_to_state ?? null,
       revenue_ytd: round(a.revenue_ytd),
       revenue_prior_ytd: round(a.revenue_prior_ytd),
+      change_pct: changePct(a.revenue_ytd, a.revenue_prior_ytd, MIN_PCT_BASE_ACCOUNT),
       open_order_value: round(a.open_order_value),
       past_promise_amount: round(a.backlog_amount),
-      last_invoice_date: a.last_invoice_date ?? null,
+      // A drop at least half covered by orders already placed: not shipped
+      // yet, not gone. Decided here so "large" is never the model's call.
+      open_orders_cover_drop: change < 0 && num(a.open_order_value) >= -change / 2,
+      first_invoice_date: a.first_invoice_date ?? null,
+      ...(withLastInvoice ? { last_invoice_date: a.last_invoice_date ?? null } : {}),
     }
   }
 
   // The goal tile's own row. Null when no account in the book carries a
   // goal (CRM or ERP) — then `goal` is omitted rather than reported as $0.
-  // Target and attainment are data; expected_pct and the behind-pace count
-  // are computed against current_date in v_account_goal_progress, so they
-  // move on days nothing was invoiced — asOf, never hashed.
+  // Target, attainment and the revenue it counts are data; expected_pct and
+  // the behind-pace count are computed against current_date in
+  // v_account_goal_progress, so they move on days nothing was invoiced —
+  // asOf, never hashed.
   const goalRow = rowOrNull(goalRes, 'v_my_goal_rollup')
   const hasGoal = !!goalRow && num(goalRow.accounts_with_goal) > 0
   const goal = hasGoal
@@ -402,6 +461,9 @@ export async function buildTerritoryContext(
         target: round(goalRow!.target_total),
         attainment_pct: pctOrNull(goalRow!.attainment_pct),
         accounts_with_goal: Math.round(num(goalRow!.accounts_with_goal)),
+        // Attainment is THIS over the target — only the accounts with a
+        // goal — not the book's revenue_ytd.
+        revenue_toward_goal: round(goalRow!.revenue_total),
       }
     : null
   const goalPace: GoalPace | null = hasGoal
@@ -415,69 +477,107 @@ export async function buildTerritoryContext(
   const countOf = (res: { count?: number | null }, fallback: number) =>
     typeof res.count === 'number' ? res.count : fallback
 
-  const topAccounts = (rows(topRes, 'v_territory_account_yoy/top') as Row[]).map(slim)
-  const moversUp = (rows(upRes, 'v_territory_account_yoy/up') as Row[]).map(slim)
-  const moversDown = (rows(downRes, 'v_territory_account_yoy/down') as Row[]).map(slim)
-  const dormant = (rows(dormantRes, 'v_territory_account_yoy/dormant') as Row[]).map(slim)
+  const topAccounts = (rows(topRes, 'v_territory_account_yoy/top') as Row[]).map((a) => slim(a))
+  const moversUp = (rows(upRes, 'v_territory_account_yoy/up') as Row[]).map((a) => slim(a))
+  const moversDown = (rows(downRes, 'v_territory_account_yoy/down') as Row[]).map((a) => slim(a))
+  let dormantRows = rows(dormantRes, 'v_territory_account_yoy/dormant') as Row[]
 
-  const largestRecent = (rows(recentRes, 'v_territory_recent_orders') as Row[]).map((o) => {
-    remember(o.customer_key, o.customer_name)
-    return {
-      customer_key: o.customer_key ?? null,
-      account: o.customer_name ?? o.customer_key,
-      order_date: o.order_date ?? null,
-      amount: round(o.order_amount),
-      has_open_lines: o.has_backlog === true,
+  // On a night the rollups are behind, a "gone quiet" account may well have
+  // invoiced since they were rebuilt. Check the facts (current) for the few
+  // listed and drop any that did — never call an active account quiet.
+  if (figuresBehind && figuresAsOf && dormantRows.length) {
+    // deno-lint-ignore no-explicit-any
+    const since = await (client as any)
+      .schema('erp')
+      .from('fact_invoice_line')
+      .select('customer_key')
+      .in('customer_key', dormantRows.map((a) => a.customer_key))
+      .gt('invoice_date', figuresAsOf)
+      .limit(1000)
+    if (since.error) {
+      console.warn('dormant re-check failed; listing none', since.error)
+      dormantRows = []
+    } else {
+      const active = new Set((since.data ?? []).map((r: Row) => r.customer_key))
+      dormantRows = dormantRows.filter((a) => !active.has(a.customer_key))
     }
-  })
+  }
+  const dormant = dormantRows.map((a) => slim(a, true))
+
+  let recentOrders: Row
+  if (facts) {
+    const largest = (Array.isArray(facts.largest_orders) ? facts.largest_orders : []) as Row[]
+    recentOrders = {
+      // Every uncancelled order in the window, not the excerpt below it.
+      count: Math.round(num(facts.orders_14d_count)),
+      total: round(facts.orders_14d_amount),
+      largest: largest.map((o) => {
+        remember(o.customer_key, o.customer_name)
+        return {
+          customer_key: o.customer_key ?? null,
+          account: o.customer_name ?? o.customer_key,
+          order_date: o.order_date ?? null,
+          amount: round(o.amount),
+          has_open_lines: o.has_open_lines === true,
+        }
+      }),
+    }
+  } else {
+    const largest = (rows(recentRes, 'v_territory_recent_orders') as Row[]).map((o) => {
+      remember(o.customer_key, o.customer_name)
+      return {
+        customer_key: o.customer_key ?? null,
+        account: o.customer_name ?? o.customer_key,
+        order_date: o.order_date ?? null,
+        amount: round(o.order_amount),
+        has_open_lines: o.has_backlog === true,
+      }
+    })
+    recentOrders = {
+      count: countOf(recentRes, largest.length),
+      // Unknown without the facts function: omitted rather than summed
+      // from an excerpt.
+      total: null,
+      largest,
+    }
+  }
   // The window's start moves every day, so it rides in asOf, not the hash;
   // the count and total move only when an order enters or leaves it.
   const recentSince =
     (facts?.orders_14d_since as string | undefined) ?? shiftDays(businessDate(today), -14)
-  const recentOrders = {
-    // Every order in the window, not the excerpt below it.
-    count: facts ? Math.round(num(facts.orders_14d_count)) : countOf(recentRes, largestRecent.length),
-    // Unknown without the facts function: omitted rather than summed from
-    // an excerpt.
-    total: facts ? round(facts.orders_14d_amount) : null,
-    largest: largestRecent,
-  }
 
   // Product mix over the same whole months of both years, when migrated.
   const mixRows = optional(mixRes, 'report_territory_product_mix') as Row[] | null
   let products: Row
   if (mixRows && mixRows.length) {
     const first = mixRows[0]
-    const families = mixRows
-      .filter((r) => r.grain === 'family')
-      .slice(0, MIX_FAMILIES)
-      .map((r) => ({
-        family: r.product_family ?? null,
-        revenue: round(r.revenue),
-        prior_revenue: round(r.prior_revenue),
-        units: round(r.qty),
-        prior_units: round(r.prior_qty),
-        change_pct: changePct(r.revenue, r.prior_revenue),
-      }))
-    const skus = mixRows
-      .filter((r) => r.grain === 'sku')
-      .map((r) => ({
-        part_id: r.part_id ?? null,
-        description: r.part_description ?? null,
-        family: r.product_family ?? null,
-        chambering: r.chambering ?? null,
-        revenue: round(r.revenue),
-        prior_revenue: round(r.prior_revenue),
-        units: round(r.qty),
-        prior_units: round(r.prior_qty),
-        change_pct: changePct(r.revenue, r.prior_revenue),
-      }))
+    const mixItem = (r: Row) => ({
+      revenue: round(r.revenue),
+      prior_revenue: round(r.prior_revenue),
+      units: round(r.qty),
+      prior_units: round(r.prior_qty),
+      change_pct: changePct(r.revenue, r.prior_revenue, MIN_PCT_BASE_PRODUCT),
+      revenue_since_period: round(r.revenue_after_period),
+    })
     products = {
       product_mix: {
-        this_period: { from: first.period_start ?? null, through_month: first.period_end ?? null },
-        prior_period: { from: first.prior_start ?? null, through_month: first.prior_end ?? null },
-        families,
-        skus,
+        this_period: periodLabel(first.period_start, first.period_end),
+        prior_period: periodLabel(first.prior_start, first.prior_end),
+        // SQL orders by the larger of the two windows, so a family that
+        // sold last year and nothing this year survives the cut.
+        families: mixRows
+          .filter((r) => r.grain === 'family')
+          .slice(0, MIX_FAMILIES)
+          .map((r) => ({ family: r.product_family ?? null, ...mixItem(r) })),
+        products: mixRows
+          .filter((r) => r.grain === 'sku')
+          .map((r) => ({
+            part_id: r.part_id ?? null,
+            description: r.part_description ?? null,
+            family: r.product_family ?? null,
+            chambering: r.chambering ?? null,
+            ...mixItem(r),
+          })),
       },
     }
   } else {
@@ -500,24 +600,34 @@ export async function buildTerritoryContext(
 
   const context = {
     scope,
-    // When every rollup figure below was computed, and whether the
-    // warehouse already holds invoices it does not include. Hashed: a
-    // brief written on stale figures is regenerated (with the note) when
-    // that changes, and again once the figures catch up.
-    figures_as_of: figuresAsOf,
+    // Hashed only when the figures are behind: a healthy rebuild every
+    // night must not by itself make the brief "changed" (a paid
+    // regeneration); a brief written on behind figures is regenerated, with
+    // the note, when that changes, and again once they catch up.
+    figures_as_of: figuresBehind ? figuresAsOf : null,
     figures_behind_newer_invoices: figuresBehind,
     account_count: accountCount,
     accounts_with_revenue_ytd: Math.round(num(totals.accounts_with_ytd_revenue)),
-    ...(facts ? { new_accounts_this_year: Math.round(num(facts.new_accounts_ytd)) } : {}),
+    ...(facts
+      ? {
+          accounts_with_revenue_prior_ytd: Math.round(num(facts.accounts_with_revenue_prior_ytd)),
+          new_accounts_this_year: Math.round(num(facts.new_accounts_ytd)),
+          new_accounts_revenue_ytd: round(facts.new_accounts_revenue_ytd),
+        }
+      : {}),
     totals: {
       revenue_ytd: round(totals.revenue_ytd),
       revenue_prior_ytd: round(totals.revenue_prior_ytd),
+      revenue_change_pct: changePct(totals.revenue_ytd, totals.revenue_prior_ytd),
       revenue_trailing_12m: round(totals.revenue_trailing_12m),
-      goal: goal ? goal.target : 0,
       open_order_value: round(totals.open_order_value),
       past_promise_amount: round(totals.backlog_amount),
       ...(facts
-        ? { bookings_ytd: round(facts.bookings_ytd), bookings_prior_ytd: round(facts.bookings_prior_ytd) }
+        ? {
+            bookings_ytd: round(facts.bookings_ytd),
+            bookings_prior_ytd: round(facts.bookings_prior_ytd),
+            bookings_change_pct: changePct(facts.bookings_ytd, facts.bookings_prior_ytd),
+          }
         : {}),
     },
     goal,
@@ -535,22 +645,34 @@ export async function buildTerritoryContext(
 
   return {
     context,
-    asOf: { data_through: dataThrough, goal_pace: goalPace, recent_since: recentSince },
+    asOf: {
+      data_through: dataThrough,
+      goal_pace: goalPace,
+      recent_since: recentSince,
+      figures_as_of: figuresAsOf,
+    },
     subjects,
   }
 }
 
-/** Whole days from an ISO date to `today`. */
-function daysSince(isoDate: unknown, today: Date): number | null {
+/** Whole days from an ISO date to `today` (both business-calendar dates). */
+function daysSince(isoDate: unknown, today: string): number | null {
   if (typeof isoDate !== 'string' || !isoDate) return null
   const then = Date.parse(isoDate.slice(0, 10) + 'T00:00:00Z')
-  if (!Number.isFinite(then)) return null
-  const now = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  const now = Date.parse(today + 'T00:00:00Z')
+  if (!Number.isFinite(then) || !Number.isFinite(now)) return null
   return Math.floor((now - then) / 86_400_000)
 }
 
-/** What the model reads: the hashed context plus today's figures. */
+/**
+ * What the model reads: the hashed context plus today's figures. `today`
+ * is the business (Mountain) date, the calendar every window above is in —
+ * the UTC date runs a day ahead every evening, exactly when briefs
+ * regenerate. data_through stays in asOf: the model has no use for the
+ * warehouse watermark now that the figures carry their own date.
+ */
 export function territoryPromptPayload(built: TerritoryBuilt, today = new Date()): Row {
+  const day = businessDate(today)
   const dormant = Array.isArray(built.context.dormant) ? (built.context.dormant as Row[]) : []
   const goal = built.context.goal as Row | null | undefined
   const recent = built.context.recent_orders as Row | undefined
@@ -561,10 +683,9 @@ export function territoryPromptPayload(built: TerritoryBuilt, today = new Date()
     goal: goal ? { ...goal, ...(built.asOf.goal_pace ?? {}) } : goal,
     dormant: dormant.map((a) => ({
       ...a,
-      days_since_invoice: daysSince(a.last_invoice_date, today),
+      days_since_invoice: daysSince(a.last_invoice_date, day),
     })),
-    data_through: built.asOf.data_through,
-    today: today.toISOString().slice(0, 10),
+    today: day,
   }
 }
 

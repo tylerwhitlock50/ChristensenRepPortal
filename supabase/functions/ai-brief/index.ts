@@ -81,7 +81,9 @@ const ACTIONS: Record<string, ActionDef> = {
   'territory.brief': {
     promptVersion: TERRITORY_BRIEF_VERSION,
     systemPrompt: TERRITORY_BRIEF_PROMPT,
-    userIntro: 'Write the morning territory briefing.',
+    // The input's `scope` says whose book it is (a rep's territory, or the
+    // company for an admin) — the intro must not contradict it.
+    userIntro: 'Write the morning briefing.',
     buildContext: buildTerritoryContext,
     promptPayload: territoryPromptPayload,
     responseFormat: TERRITORY_BRIEF_FORMAT,
