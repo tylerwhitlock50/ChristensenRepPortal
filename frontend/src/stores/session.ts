@@ -1,8 +1,18 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { Session, SupabaseClient } from '@supabase/supabase-js'
+import {
+  isAuthRetryableFetchError,
+  type Session,
+  type SupabaseClient,
+} from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { queryClient } from '@/lib/queryClient'
+import {
+  readPersistedCache,
+  restorePersistedCache,
+  startPersisting,
+  wipePersistedCache,
+} from '@/lib/queryPersist'
 import { fetchActingContext, type ActingContext } from '@/composables/useViewAs'
 import type { Tables } from '@/types/database.types'
 import type { Role } from '@/types/domain'
@@ -76,6 +86,42 @@ export const useSessionStore = defineStore('session', () => {
    */
   const canWrite = computed(() => isSignedIn.value && !isViewingAs.value)
 
+  /**
+   * Whether this identity may keep the ERP read cache on the device between
+   * opens (lib/queryPersist.ts). Reps only: an admin's cache is the whole
+   * company, and only admins can view-as — which is how a saved cache could
+   * end up holding somebody else's book under your name.
+   */
+  const keepsSavedCache = computed(
+    () =>
+      !!session.value &&
+      profile.value?.role === 'rep' &&
+      profile.value.active === true &&
+      !isViewingAs.value,
+  )
+
+  /**
+   * Bring the saved cache in line with who is signed in: restore it (boot
+   * only) and keep saving for a rep; delete it for anyone else. Never
+   * throws, never takes longer than the restore budget.
+   */
+  async function syncSavedCache(opts: { restore: boolean }) {
+    const userId = session.value?.user.id
+    if (!userId) {
+      void wipePersistedCache()
+      return
+    }
+    // The profile read failed (no signal, usually): we can't tell yet who
+    // this is, so leave the saved copy exactly as it is.
+    if (!profile.value) return
+    if (keepsSavedCache.value) {
+      if (opts.restore) await restorePersistedCache(userId)
+      startPersisting(userId)
+    } else {
+      void wipePersistedCache()
+    }
+  }
+
   async function loadProfile(): Promise<Profile | null> {
     if (!session.value) {
       profile.value = null
@@ -138,6 +184,7 @@ export const useSessionStore = defineStore('session', () => {
       if (error) throw error
     }
     await loadActingContext()
+    void syncSavedCache({ restore: false })
     await queryClient.resetQueries()
   }
 
@@ -150,9 +197,12 @@ export const useSessionStore = defineStore('session', () => {
    * rep is opening while we wait on the database.
    */
   async function init(opts: { onSession?: () => void } = {}) {
-    const { data } = await supabase.auth.getSession()
+    const { data, error } = await supabase.auth.getSession()
     session.value = data.session
     if (session.value) {
+      // Both start now and overlap the profile round trip below: the page's
+      // code download, and the read of whatever this phone saved last time.
+      readPersistedCache(session.value.user.id)
       opts.onSession?.()
       // Side by side, not one after the other: acting_context needs only the
       // JWT, not the profile, and on a morning open over LTE each of these
@@ -173,7 +223,16 @@ export const useSessionStore = defineStore('session', () => {
       // and would otherwise be treated as signed in until it expired.
       if (profile.value && !profile.value.active) {
         await signOut()
+      } else {
+        // Before ready: restored data must be in the cache before the first
+        // page decides what to fetch. Bounded by the restore budget.
+        await syncSavedCache({ restore: true })
       }
+    } else if (!isAuthRetryableFetchError(error)) {
+      // Nobody is signed in on this device (signed out, or the session is
+      // gone for good): nothing saved for anyone should outlive that. A
+      // refresh that failed only for lack of signal keeps it.
+      void wipePersistedCache()
     }
     ready.value = true
 
@@ -183,19 +242,24 @@ export const useSessionStore = defineStore('session', () => {
       if (!next) {
         profile.value = null
         acting.value = null
-        // Signed out in another tab, or the refresh token was revoked.
+        // Signed out in another tab, or the refresh token was revoked. The
+        // saved copy goes first, so the clear below can't be saved over it.
+        void wipePersistedCache()
         queryClient.clear()
         return
       }
       // A different user signed in without a reload — same leak, same fix.
       if (previousUserId && previousUserId !== next.user.id) {
         acting.value = null
+        void wipePersistedCache()
         queryClient.clear()
       }
       // TOKEN_REFRESHED fires often; the profile hasn't changed.
       if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
-        void loadProfile().catch(() => {})
-        void loadActingContext()
+        void Promise.all([
+          loadProfile().catch(() => {}),
+          loadActingContext(),
+        ]).then(() => syncSavedCache({ restore: false }))
       }
     })
   }
@@ -232,6 +296,7 @@ export const useSessionStore = defineStore('session', () => {
     // the worst version of this feature. Loading it means the banner is up
     // on the first frame.
     await loadActingContext()
+    void syncSavedCache({ restore: false })
 
     return p
   }
@@ -325,8 +390,11 @@ export const useSessionStore = defineStore('session', () => {
     // scoped by user id, so without this the next rep to sign in on a shared
     // truck iPad is served the previous rep's cached revenue from cache with
     // no network request at all. This is PRD acceptance criterion #1 failing
-    // on the client side of the boundary.
+    // on the client side of the boundary. The copy saved on the device for
+    // the next app open goes the same way, and first (see wipePersistedCache).
+    const wiped = wipePersistedCache()
     queryClient.clear()
+    await wiped
   }
 
   return {
