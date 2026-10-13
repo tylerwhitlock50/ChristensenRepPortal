@@ -185,7 +185,10 @@ const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
     accessorKey: 'chambering',
     meta: { filter: 'select' },
   },
-  { id: 'ats_qty', header: 'In stock', accessorKey: 'ats_qty' },
+  // "Available", the word every other screen uses for this number (Before
+  // you call, Ready to ship, the header search) — beside "On hand", "In
+  // stock" read as a second name for the same thing.
+  { id: 'ats_qty', header: 'Available', accessorKey: 'ats_qty' },
   { id: 'on_hand_qty', header: 'On hand', accessorKey: 'on_hand_qty' },
   { id: 'committed_qty', header: 'Committed', accessorKey: 'committed_qty' },
   { id: 'backlog_qty', header: 'Backlog', accessorKey: 'backlog_qty' },
@@ -195,6 +198,13 @@ const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
     : []),
 ])
 
+/** "18 available", "None available", or "Oversold by 3" when below zero. */
+function availableText(qty: number): string {
+  if (qty < 0) return `Oversold by ${count(-qty)}`
+  if (qty === 0) return 'None available'
+  return `${count(qty)} available`
+}
+
 const visible = ref<AtsRow[]>([])
 const csvColumns: CsvColumn<AtsRow>[] = [
   { key: 'part_id', header: 'SKU' },
@@ -203,7 +213,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
   { key: 'chambering', header: 'Chambering' },
   { key: 'barrel_length', header: 'Barrel' },
   { key: 'upc', header: 'UPC' },
-  { key: 'ats_qty', header: 'In stock qty' },
+  { key: 'ats_qty', header: 'Available qty' },
   { key: 'on_hand_qty', header: 'On hand' },
   { key: 'committed_qty', header: 'Committed' },
   { key: 'backlog_qty', header: 'Backlog' },
@@ -364,7 +374,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
               class="btn-ghost text-[13px] whitespace-nowrap"
               @click="whoToCall(row)"
             >
-              Who to call
+              Who should I call?
             </button>
           </template>
           <!-- The grid can be empty because of the in-stock toggle, not the
@@ -392,7 +402,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
               class="font-semibold tabular-nums"
               :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink'"
             >
-              {{ count(row.ats_qty) }}
+              {{ row.ats_qty < 0 ? availableText(row.ats_qty) : count(row.ats_qty) }}
             </span>
           </template>
           <template #cell-on_hand_qty="{ row }">
@@ -416,7 +426,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
                 {{ row.product_family }} · {{ row.chambering }}
               </p>
               <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
-                In stock {{ count(row.ats_qty) }} · on hand {{ count(row.on_hand_qty) }}
+                {{ availableText(row.ats_qty) }} · {{ count(row.on_hand_qty) }} on hand
                 <ProductLink :family="row.product_family" fallback="none">
                   · see it
                 </ProductLink>
