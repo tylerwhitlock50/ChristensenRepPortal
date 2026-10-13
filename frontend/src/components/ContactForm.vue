@@ -119,9 +119,14 @@ const onSubmit = handleSubmit(async (values) => {
     // "Main person to ask for" means the same as ContactsCard's "Make go-to
     // contact": one per account. Saving a second one clears the first, and
     // only when the box went from unticked to ticked — re-saving the go-to
-    // contact's phone number costs no extra write.
+    // contact's phone number costs no extra write. Best effort: the contact
+    // is saved either way, ranking already prefers the newest go-to, and
+    // failing here would leave an add form open whose next Save inserts
+    // the same person twice.
     if (values.is_primary && !props.contact?.is_primary) {
-      await setGoTo.mutateAsync({ id: saved.id, customerKey: props.customerKey })
+      await setGoTo
+        .mutateAsync({ id: saved.id, customerKey: props.customerKey })
+        .catch(() => undefined)
     }
     emit('saved', saved)
   } catch (e) {

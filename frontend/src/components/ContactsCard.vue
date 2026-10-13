@@ -312,7 +312,7 @@ defineExpose({ startAdd })
                 <a
                   v-if="item.contact.email && !item.contact.do_not_email"
                   :href="`mailto:${item.contact.email}`"
-                  class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
+                  class="tap-target inline-flex min-w-11 items-center justify-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                 >
                   Email
                 </a>
@@ -323,7 +323,7 @@ defineExpose({ startAdd })
                     session.canWrite
                   "
                   type="button"
-                  class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2 disabled:opacity-50"
+                  class="tap-target inline-flex min-w-11 items-center justify-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2 disabled:opacity-50"
                   :disabled="goToPendingId !== null"
                   @click="makeGoTo(item.contact)"
                 >
@@ -332,7 +332,7 @@ defineExpose({ startAdd })
                 <button
                   v-if="item.contact.source === 'rep' && session.canWrite"
                   type="button"
-                  class="tap-target inline-flex items-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
+                  class="tap-target inline-flex min-w-11 items-center justify-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                   @click="startEdit(item.contact)"
                 >
                   Edit
@@ -345,7 +345,7 @@ defineExpose({ startAdd })
                     !isConfirmingDelete(item.contact)
                   "
                   type="button"
-                  class="tap-target inline-flex items-center px-1 text-sm font-medium text-danger underline underline-offset-2"
+                  class="tap-target inline-flex min-w-11 items-center justify-center px-1 text-sm font-medium text-danger underline underline-offset-2"
                   @click="askDelete(item.contact)"
                 >
                   Delete
