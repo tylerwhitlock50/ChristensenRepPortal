@@ -1,7 +1,7 @@
 import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
-import { qk } from '@/lib/queryClient'
+import { isErpQueryKey, qk } from '@/lib/queryClient'
 import type { Tables } from '@/types/database.types'
 import type { ActionType } from '@/types/domain'
 
@@ -159,7 +159,15 @@ export function useLogAccountAction() {
       return data
     },
     onSuccess: (_d, vars) => {
-      void qc.invalidateQueries({ queryKey: qk.account.root(vars.customerKey) })
+      // Everything rep-written under the account (its activity, status,
+      // AI summary…), but not its ERP reads: an inserted action changes none
+      // of them (account_signals' touch count moves with tonight's load),
+      // and the quick call log makes this insert after nearly every call —
+      // re-reading ten ERP views each time on LTE undid their nightly cache.
+      void qc.invalidateQueries({
+        queryKey: qk.account.root(vars.customerKey),
+        predicate: (q) => !isErpQueryKey(q.queryKey),
+      })
     },
   })
 }
