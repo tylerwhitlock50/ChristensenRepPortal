@@ -79,6 +79,11 @@ import {
  * sideways (html has overflow-x: hidden in style.css).
  */
 const props = defineProps<{ customerKey: string }>()
+const emit = defineEmits<{
+  /** The rep closed an order's drill-in — the page drops a ?order= that
+      named it. */
+  'order-closed': [orderId: string]
+}>()
 
 const customerKey = toRef(props, 'customerKey')
 
@@ -238,15 +243,18 @@ const openOrderRow = computed(
  * loaded pages; otherwise — a deep link to an older order — from its own
  * lines, which carry the order date (035).
  */
+function lineCount(n: number): string {
+  return `${count(n)} line${n === 1 ? '' : 's'}`
+}
 const openOrderSubtitle = computed(() => {
   const o = openOrderRow.value
   if (o) {
-    return `Ordered ${shortDate(o.order_date)} · ${count(o.line_count)} lines · ${money(o.bookings)}`
+    return `Ordered ${shortDate(o.order_date)} · ${lineCount(o.line_count)} · ${money(o.bookings)}`
   }
   const lines = orderLines.value
   if (!lines.length) return undefined
   const value = lines.reduce((sum, l) => sum + (l.bookings ?? 0), 0)
-  return `Ordered ${shortDate(lines[0].order_date)} · ${count(lines.length)} lines · ${money(value)}`
+  return `Ordered ${shortDate(lines[0].order_date)} · ${lineCount(lines.length)} · ${money(value)}`
 })
 const openShipment = computed(
   () => allShipments.value.find((s) => s.packlist_id === openPacklistId.value) ?? null,
@@ -274,6 +282,11 @@ function expandShipments() {
 function openOrder(orderId: string) {
   expandOrders()
   if (orderId) openOrderId.value = orderId
+}
+function closeOrder() {
+  const id = openOrderId.value
+  openOrderId.value = null
+  if (id) emit('order-closed', id)
 }
 
 /** The shipments card is halfway down this component — "Last invoice →"
@@ -600,7 +613,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
     :open="!!openOrderId"
     :title="`Order ${openOrderId ?? ''}`"
     :subtitle="openOrderSubtitle"
-    @update:open="openOrderId = null"
+    @update:open="closeOrder"
   >
     <!-- flex-wrap, not an inline span: at phone width "next promise" and its
          date were breaking across lines with the badge, so the phrase read as

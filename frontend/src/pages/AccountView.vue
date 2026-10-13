@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useOnline } from '@vueuse/core'
 import { useQueryClient } from '@tanstack/vue-query'
 import { useSessionStore } from '@/stores/session'
@@ -494,8 +494,13 @@ watch(
    still arriving, so a jump lands somewhere arbitrary — and closing the
    sheet should leave the rep at the top of the account they just opened.
    The nextTick lets the orders card mount first. The param stays in the
-   URL: it describes what is on screen, and a reload reopens the same order.
+   URL while the sheet is open (a reload reopens the same order) and goes
+   when it closes: otherwise the same link tapped again — from the search
+   box in the app header, say — would be a navigation to the URL already
+   showing, and nothing would open.
 ------------------------------------------------------------------------- */
+const router = useRouter()
+
 watch(
   () => route.query.order,
   async (raw) => {
@@ -506,6 +511,14 @@ watch(
   },
   { immediate: true },
 )
+
+function onOrderClosed(orderId: string) {
+  const raw = route.query.order
+  if ((Array.isArray(raw) ? raw[0] : raw)?.trim() !== orderId) return
+  const query = { ...route.query }
+  delete query.order
+  void router.replace({ query })
+}
 
 /* ---- deactivation --------------------------------------------------------
    The rep's override of the ERP's active_flag (migration 023). The panel
@@ -994,7 +1007,11 @@ watch(key, () => {
 
     <!-- Orders and shipments, straight off the rollup views. -->
     <section ref="ordersSection" class="scroll-mt-16">
-      <AccountOrdersCard ref="ordersCard" :customer-key="customerKey" />
+      <AccountOrdersCard
+        ref="ordersCard"
+        :customer-key="customerKey"
+        @order-closed="onOrderClosed"
+      />
     </section>
 
     <!-- What they buy and what they're owed, by SKU (data-first additions). -->
