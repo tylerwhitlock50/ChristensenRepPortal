@@ -9,6 +9,11 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
   rows or tonight's, never a mix and never a lock timeout. Facts and dims
   are small enough (single-site rifle manufacturer) that full reloads beat
   incremental logic.
+- **Statement timeout:** the loader sets `statement_timeout` on its own
+  session to `ETL_STATEMENT_TIMEOUT` (default `15min`) right after it
+  connects, because the project default of 120 s is shorter than
+  `refresh_territory_rollups()` takes. It is session-scoped and leaves the
+  app roles' 8 s cap alone.
 - **Row-count floor:** a view that returns fewer than `ETL_MIN_ROW_RATIO`
   (default 0.5) of its previous successful row count is refused before the
   swap — an empty feed must not zero every rollup. Set it to `0` for a
