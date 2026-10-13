@@ -95,6 +95,8 @@ async function main() {
   t('bar says when the data is from', html.includes('Showing data from 7:42 AM'), true)
   t('bar has a Retry button', /<button[^>]*>\s*Retry\s*<\/button>/.test(html), true)
   t('bar is not an alert', html.includes('role="alert"'), false)
+  const live = /role="status"[^>]*>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? ''
+  t('the live region is the sentence, not the button', [live.includes('refresh'), live.includes('Retry')], [true, false])
 
   const noTime = await render({ ...base, error: boom, hasData: true })
   t('no updatedAt: no time', noTime.includes('Showing data from'), false)

@@ -70,13 +70,14 @@ const shownFrom = computed(() => {
 
   <template v-else>
     <!-- A failed refresh over good data: keep the data, say so quietly. No
-         ember rail — nothing on screen is wrong, it is just older. -->
+         ember rail — nothing on screen is wrong, it is just older. The
+         status role sits on the sentence alone, so a screen reader announces
+         the message without reading the button into it. -->
     <div
       v-if="error"
-      role="status"
       class="border-line bg-surface mb-2 flex items-center justify-between gap-3 border pl-3"
     >
-      <p class="text-muted text-[13px] leading-snug">
+      <p role="status" class="text-muted text-[13px] leading-snug">
         Couldn't refresh.<template v-if="shownFrom"> Showing data from {{ shownFrom }}</template>
       </p>
       <button
