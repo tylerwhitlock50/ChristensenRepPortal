@@ -56,7 +56,11 @@ function callTarget(key: string) {
 }
 
 const reachLoading = computed(
-  () => list.rows.value.length > 0 && list.reach.isPending.value,
+  () =>
+    list.rows.value.length > 0 &&
+    list.reach.isPending.value &&
+    // Paused offline: contacts aren't in the saved copy, so no placeholder.
+    list.reach.fetchStatus.value !== 'paused',
 )
 
 /** Everything a row renders, worked out once rather than per binding. */

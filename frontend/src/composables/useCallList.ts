@@ -418,8 +418,13 @@ export function useCallList() {
     () =>
       signals.isPending.value ||
       territory.isPending.value ||
-      // Wait for the reactions too, or hidden rows flash in and drop out.
-      (!!feedback.userId.value && feedback.isPending.value) ||
+      // Wait for the reactions too, or hidden rows flash in and drop out —
+      // unless the read is paused offline (reactions are rep-written, so not
+      // in the phone's saved copy): then the saved ranking shows unfiltered
+      // rather than a skeleton that never resolves.
+      (!!feedback.userId.value &&
+        feedback.isPending.value &&
+        feedback.fetchStatus.value !== 'paused') ||
       (usingFallback.value && deactivations.isPending.value),
   )
 
