@@ -115,7 +115,10 @@ const hint = computed(() => {
   if (state) return state
   const parts: string[] = []
   if (due.value.length) parts.push(`${due.value.length} due`)
-  else if (reorderRows.value.length) parts.push(`${reorderRows.value.length} reorder`)
+  else if (reorderRows.value.length) {
+    const n = reorderRows.value.length
+    parts.push(`${n} reorder${n === 1 ? '' : 's'}`)
+  }
   if (fresh.value.length) parts.push(`${fresh.value.length} new`)
   if (lapsed.value.length) parts.push(`${lapsed.value.length} lapsed`)
   return parts.join(' · ') || `${gapRows.value.length} in stock`

@@ -40,8 +40,16 @@ const fb = useAiFeedback({
   promptVersion: () => props.promptVersion,
 })
 
+// Also hidden until the "did I already vote?" read answers: on a database
+// without the table the row would otherwise flash up and vanish under the
+// brief, and a tap before the answer would add a second vote.
 const hidden = computed(
-  () => props.readOnly || !session.canWrite || !props.generatedAt || fb.unavailable.value,
+  () =>
+    props.readOnly ||
+    !session.canWrite ||
+    !props.generatedAt ||
+    fb.query.isPending.value ||
+    fb.unavailable.value,
 )
 
 const verdict = computed(() => fb.current.value?.verdict ?? null)
