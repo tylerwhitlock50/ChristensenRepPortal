@@ -89,6 +89,11 @@ post_load_sql:
   # fetches a result from every step; ANALYZE (unlike VACUUM) is fine inside
   # the step's transaction.
   - "select * from public.analyze_territory_rollups();"
+  # Last, always: what changed on the order book tonight — new orders,
+  # shipped backorders, slipped promise dates (migration 20261013150003).
+  # It never raises: a failed capture is logged as etl:order_changes and the
+  # night's run still counts as loaded. Needs the migration applied first.
+  - "select public.capture_order_changes();"
 
 # Then pre-generate the briefings for the accounts that just floated to the top
 # of each rep's list. Needs SUPABASE_URL and AI_BATCH_SECRET in the ETL's
