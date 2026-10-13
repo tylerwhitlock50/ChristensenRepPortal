@@ -12,10 +12,10 @@
 
   What is at stake
   ----------------
-  1. capture_order_changes() is the LAST step of the nightly load. If it
-     ever raises, the whole night is recorded as a failed run (freshness
-     stamp frozen, AI batch skipped). T6 forces an internal error and
-     requires a normal return.
+  1. capture_order_changes() is a step of the nightly load. If it ever
+     raised, the night could be recorded as a failed run (freshness stamp
+     frozen, AI batch skipped). T6 forces an internal error and requires a
+     normal return.
   2. The events are per-account facts about a dealer's orders. A rep must
      never read another rep's (T4), and the feed view inherits that (T7).
   3. The first night must not announce every open line as news (T1), and a
@@ -437,6 +437,51 @@ select pg_temp.assert(
   not has_function_privilege('authenticated', 'public.capture_order_changes()', 'execute')
   and not has_function_privilege('anon', 'public.capture_order_changes()', 'execute'),
   'T8 no app role can execute it');
+
+select pg_temp.assert(
+  (select prosrc ~* 'lock\s+table\s+public\.order_line_snapshot\s+in\s+access\s+exclusive\s+mode'
+     from pg_proc where oid = 'public.capture_order_changes()'::regprocedure),
+  'T8 one capture at a time: it locks the snapshot before reading it');
+
+--------------------------------------------------------------------------
+-- T9. Which shipped lines are backorders. Rep B's dealer, four lines that
+--     all ship tonight:
+--       SC1  ordered 20 days ago for a date still ahead (promise and
+--            desired today): a scheduled order going out on time
+--       SC2  ordered 20 days ago, wanted 5 days ago, promise moved out to
+--            3 days from now: it was waiting on us
+--       SC3  ordered 20 days ago with no dates at all: age decides
+--       SC4  ordered 2 days ago with no dates: a fresh order shipping
+--------------------------------------------------------------------------
+insert into erp.fact_order_line
+  (order_id, line_num, customer_key, part_key, customer_po_number, order_status,
+   line_status, order_date_key, promise_date_key, desired_ship_date_key,
+   order_qty, bookings, total_shipped_qty_to_date, backlog_qty, backlog_amount,
+   is_backlog_line)
+values
+  ('OCE-SC1', 1, 'OCE-B', 'OCE-P1', 'PO-SC1', 'R', 'A', pg_temp.dk(-20), pg_temp.dk(0), pg_temp.dk(0),  1, 1900, 0, 1, 1900, true),
+  ('OCE-SC2', 1, 'OCE-B', 'OCE-P1', 'PO-SC2', 'R', 'A', pg_temp.dk(-20), pg_temp.dk(3), pg_temp.dk(-5), 1, 1900, 0, 1, 1900, true),
+  ('OCE-SC3', 1, 'OCE-B', 'OCE-P1', 'PO-SC3', 'R', 'A', pg_temp.dk(-20), null,          null,           1, 1900, 0, 1, 1900, true),
+  ('OCE-SC4', 1, 'OCE-B', 'OCE-P1', 'PO-SC4', 'R', 'A', pg_temp.dk(-2),  null,          null,           1, 1900, 0, 1, 1900, true);
+select public.capture_order_changes();   -- snapshot them (as new orders)
+
+update erp.fact_order_line
+   set total_shipped_qty_to_date = 1, backlog_qty = 0, backlog_amount = 0,
+       is_backlog_line = false, line_status = 'C'
+ where order_id like 'OCE-SC%';
+select public.capture_order_changes();
+
+select pg_temp.assert(
+  (select array_agg(order_id || ':' || kind order by order_id)
+     from public.order_change_events
+    where order_id like 'OCE-SC%' and kind in ('line_shipped', 'backorder_shipped'))
+  = array['OCE-SC1:line_shipped', 'OCE-SC2:backorder_shipped',
+          'OCE-SC3:backorder_shipped', 'OCE-SC4:line_shipped'],
+  'T9 backorder = past its promise or desired date; age only when it has neither');
+select pg_temp.assert(
+  (select (before ->> 'desired_ship_date')::date = current_date - 5
+     from public.order_change_events where order_id = 'OCE-SC2' and kind = 'backorder_shipped'),
+  'T9 the event carries the desired ship date it was judged by');
 
 do $$ begin raise notice 'ALL ORDER CHANGE TESTS PASSED'; end $$;
 

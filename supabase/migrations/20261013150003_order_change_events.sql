@@ -26,9 +26,13 @@
                           order; line_no null)
        line_shipped       a line's shipped quantity went up
        backorder_shipped  the same, on a line that had been waiting: its
-                          promise date had already passed when last seen, or
-                          it had been on order BACKORDER_DAYS (7) or more —
-                          not a ship-from-stock order going out on time
+                          promise date or the dealer's desired ship date had
+                          already passed when last seen, or — only when it
+                          carried neither date — it had been on order
+                          BACKORDER_DAYS (7) or more. Not a ship-from-stock
+                          order, and not a dated or pre-season order going
+                          out on its date: age alone would call every order
+                          placed weeks ahead a backorder.
        promise_slipped    an open line's promise date moved later
        order_cancelled    the order's status became X (one row per order)
 
@@ -37,18 +41,23 @@
      my_customer_keys() (view-as aware, like every account-scoped table);
      admins read all; nobody but the capture writes. Kept 60 days.
 
-  3. public.capture_order_changes() — run by the ETL as the LAST
-     post_load_sql step. Diffs tonight's fact_order_line (and, for shipped
+  3. public.capture_order_changes() — run by the ETL as an optional
+     post_load_sql step after scoring (etl/views.yml). Diffs tonight's fact_order_line (and, for shipped
      lines, the shipment lines' tracking) against the snapshot, inserts the
      events, replaces the snapshot, trims old events. The FIRST run only
      seeds the snapshot: with nothing to compare against, every open line
-     would otherwise be "new".
+     would otherwise be "new". It takes the snapshot's lock first, so a
+     second capture started while one is running (a hand-run push.ps1
+     during the scheduled one) waits, then diffs against the first one's
+     snapshot instead of writing every event twice.
 
   ── Failure isolation ─────────────────────────────────────────────────────
-  An exception in a post_load_sql step stops the step list and marks the
-  whole night's run failed (push_to_supabase.py): the freshness stamp
-  stops advancing and the AI batch is skipped — for a feature that only
-  annotates the data. So the body runs in its own block that catches
+  An exception in a required post_load_sql step stops the step list and
+  marks the whole night's run failed (push_to_supabase.py): the freshness
+  stamp stops advancing and the AI batch is skipped — for a feature that
+  only annotates the data. views.yml marks this step optional (a missing
+  function on a database without this migration is only logged), and the
+  body also runs in its own block that catches
   everything, including a statement timeout (query_canceled is not covered
   by WHEN OTHERS), rolls back its own work as a unit, logs
   'etl:order_changes' / 'error' through log_job_run() and returns
@@ -83,6 +92,9 @@ create table if not exists public.order_line_snapshot (
     order_status    text,
     line_status     text,
     promise_date    date,
+    -- What the dealer asked for. A line past it when last seen was waiting
+    -- on us (backorder_shipped), even when its promise date moved out.
+    desired_ship_date date,
     is_backlog_line boolean,
     backlog_qty     numeric,
     -- fact_order_line.total_shipped_qty_to_date at snapshot time. Cumulative
@@ -92,6 +104,8 @@ create table if not exists public.order_line_snapshot (
     primary key (order_id, line_num)
 );
 alter table public.order_line_snapshot enable row level security;
+-- For a database that ran an earlier draft of this file.
+alter table public.order_line_snapshot add column if not exists desired_ship_date date;
 
 comment on table public.order_line_snapshot is
   'Order lines as they stood after the last nightly load — what '
@@ -175,8 +189,8 @@ declare
   -- What the snapshot keeps: open lines, plus every line of an order placed
   -- this recently (so tomorrow can tell a new order from an old one).
   snapshot_days  constant int := 45;
-  -- A shipped line counts as a backorder when it had been on order at
-  -- least this long (or was past its promise date) when last seen.
+  -- A shipped line with neither a promise nor a desired date counts as a
+  -- backorder when it had been on order at least this long when last seen.
   backorder_days constant int := 7;
   keep_days      constant int := 60;
   prev_day       date;
@@ -187,6 +201,11 @@ declare
   err_message    text;
 begin
   begin
+    -- One capture at a time. Without this, two overlapping runs both read
+    -- the old snapshot and both insert the same events. Nothing else
+    -- reads the snapshot, and the replace below takes this lock anyway.
+    lock table public.order_line_snapshot in access exclusive mode;
+
     select max(s.snapped_on) into prev_day from public.order_line_snapshot s;
 
     -- First run: nothing to compare against. Seed silently.
@@ -233,16 +252,25 @@ begin
           o.line_num,
           o.part_key,
           case
+            -- Late against what we promised, or what they asked for...
             when (p.promise_date is not null and p.promise_date < p.snapped_on)
-              or (p.order_date is not null and p.order_date <= p.snapped_on - backorder_days)
+              or (p.desired_ship_date is not null and p.desired_ship_date < p.snapped_on)
+            then 'backorder_shipped'
+            -- ...or, with no date to judge by, simply waiting a while. A
+            -- line with a date still ahead of it is a scheduled order going
+            -- out on time, however long ago it was placed.
+            when p.promise_date is null and p.desired_ship_date is null
+              and p.order_date is not null
+              and p.order_date <= p.snapped_on - backorder_days
             then 'backorder_shipped'
             else 'line_shipped'
           end,
           jsonb_build_object(
-            'shipped_qty',  p.shipped_qty,
-            'backlog_qty',  p.backlog_qty,
-            'promise_date', p.promise_date,
-            'order_date',   p.order_date
+            'shipped_qty',       p.shipped_qty,
+            'backlog_qty',       p.backlog_qty,
+            'promise_date',      p.promise_date,
+            'desired_ship_date', p.desired_ship_date,
+            'order_date',        p.order_date
           ),
           jsonb_build_object(
             'shipped_qty',       o.total_shipped_qty_to_date,
@@ -330,12 +358,12 @@ begin
 
     insert into public.order_line_snapshot
       (order_id, line_num, customer_key, part_key, order_date, order_status,
-       line_status, promise_date, is_backlog_line, backlog_qty, shipped_qty,
-       snapped_on)
+       line_status, promise_date, desired_ship_date, is_backlog_line,
+       backlog_qty, shipped_qty, snapped_on)
     select
         o.order_id, o.line_num, o.customer_key, o.part_key, o.order_date,
-        o.order_status, o.line_status, o.promise_date, o.is_backlog_line,
-        o.backlog_qty, o.total_shipped_qty_to_date, today
+        o.order_status, o.line_status, o.promise_date, o.desired_ship_date,
+        o.is_backlog_line, o.backlog_qty, o.total_shipped_qty_to_date, today
     from erp.fact_order_line o
     where o.is_backlog_line
        or o.order_date >= today - snapshot_days;
@@ -381,8 +409,9 @@ comment on function public.capture_order_changes() is
   'Nightly: diff erp.fact_order_line against public.order_line_snapshot, '
   'write public.order_change_events, replace the snapshot, keep 60 days. '
   'First run only seeds. Never raises — a failure is logged to job_runs as '
-  'etl:order_changes and the function returns (''error'', 0, 0). Last '
-  'post_load_sql step in etl/views.yml. Job-only (20261013150003).';
+  'etl:order_changes and the function returns (''error'', 0, 0). One run '
+  'at a time (it locks the snapshot first). An optional post_load_sql step '
+  'in etl/views.yml. Job-only (20261013150003).';
 
 -- Mountain time, like refresh_territory_rollups() (20260901190000): the
 -- detected_on dates and the windows must not shift with the session.
