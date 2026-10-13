@@ -8,6 +8,7 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
+import { trackingList } from '@/lib/orderStatusMessage'
 import {
   useAccountOrderHeaders,
   useAccountOrderLines,
@@ -666,6 +667,24 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
               {{ humanize(line.line_status_desc) }}
             </span>
           </p>
+          <!-- This line's own parcels (20261013150000), as on Find. -->
+          <p
+            v-if="trackingList(line.tracking_numbers).length"
+            class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1"
+          >
+            <span class="u-label text-muted">Tracking</span>
+            <a
+              v-for="t in trackingList(line.tracking_numbers)"
+              :key="t"
+              :href="upsTrackUrl(t)"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-ink inline-flex min-h-11 items-center text-sm break-all underline decoration-dotted underline-offset-2"
+              :title="`Track ${t} on ups.com`"
+            >
+              {{ t }}
+            </a>
+          </p>
         </li>
       </ul>
 
@@ -714,6 +733,17 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                 <span v-else class="text-muted">
                   {{ humanize(line.line_status_desc) }}
                 </span>
+                <a
+                  v-for="t in trackingList(line.tracking_numbers)"
+                  :key="t"
+                  :href="upsTrackUrl(t)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-ink block text-xs underline decoration-dotted underline-offset-2"
+                  :title="`Track ${t} on ups.com`"
+                >
+                  {{ t }}
+                </a>
               </td>
             </tr>
           </tbody>

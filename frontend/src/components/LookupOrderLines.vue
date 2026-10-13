@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useAccountOrderLines } from '@/composables/useAccountMetrics'
-import {
-  useOrderLineTracking,
-  withLineTracking,
-  type OrderLookupRow,
-} from '@/composables/useOrderLookup'
+import type { OrderLookupRow } from '@/composables/useOrderLookup'
 import { useAccountReach } from '@/composables/useBestContacts'
 import { useSessionStore } from '@/stores/session'
 import AppBadge from '@/components/ui/AppBadge.vue'
@@ -38,11 +34,8 @@ const customerKey = computed(() => props.order.customer_key)
 const orderId = computed(() => props.order.order_id)
 
 const linesQuery = useAccountOrderLines(customerKey, orderId)
-const trackingQuery = useOrderLineTracking(customerKey, orderId)
-
-const lines = computed(() =>
-  withLineTracking(linesQuery.data.value ?? [], trackingQuery.data.value),
-)
+// Each line carries its own tracking numbers (null without 20261013150000).
+const lines = computed(() => linesQuery.data.value ?? [])
 
 /* ---- "Text the buyer" ----------------------------------------------------
    The account's best contact (lib/contacts ranking: a real buyer over the

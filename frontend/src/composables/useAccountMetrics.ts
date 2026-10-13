@@ -156,6 +156,12 @@ export interface AccountOrderLineRow {
    * it; never sum it across lines (sales_semantic_model.md §1 rule 7).
    */
   total_shipped_qty_to_date: number | null
+  /**
+   * The line's own UPS numbers, comma-joined (20261013150000). Null for an
+   * unshipped line, and on a database without the column: the read is
+   * select('*'), so its absence just leaves this null.
+   */
+  tracking_numbers: string | null
 }
 
 /** One packlist's lines — public.v_account_shipment_lines. */
@@ -446,6 +452,7 @@ export function useAccountOrderLines(
         customer_po_number: (r.customer_po_number as string | null) ?? null,
         desired_ship_date: (r.desired_ship_date as string | null) ?? null,
         total_shipped_qty_to_date: numOrNull(r.total_shipped_qty_to_date),
+        tracking_numbers: (r.tracking_numbers as string | null) ?? null,
       }))
     },
   })

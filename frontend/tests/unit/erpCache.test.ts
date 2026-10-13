@@ -28,7 +28,6 @@ import { taskKeys } from '../../src/composables/useTasks'
 import { useErpHeartbeat } from '../../src/composables/useDataFreshness'
 import { callListKeys } from '../../src/composables/useCallList'
 import { activityKeys } from '../../src/composables/useActivityFeed'
-import { orderLineTrackingKey } from '../../src/composables/useOrderLookup'
 import { skuProspectsKey } from '../../src/composables/useSkuProspects'
 import { aiFeedbackKey } from '../../src/composables/useAiFeedback'
 
@@ -73,7 +72,6 @@ const erp: [string, readonly unknown[]][] = [
   ['call list ranking (account_signals)', callListKeys.signals()],
   ['activity feed', activityKeys.feed()],
   ['activity feed fallback (orders only)', activityKeys.fallback()],
-  ['order line tracking', orderLineTrackingKey(k, 'SO-1')],
 ]
 for (const [label, key] of erp) t(`ERP: ${label}`, isErpQueryKey(key), true)
 

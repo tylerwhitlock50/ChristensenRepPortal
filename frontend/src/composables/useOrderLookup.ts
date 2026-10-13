@@ -1,8 +1,7 @@
-import { computed, toValue, unref, type MaybeRef, type MaybeRefOrGetter } from 'vue'
+import { computed, unref, type MaybeRef } from 'vue'
 import { useQuery, type QueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { isMissingDbObject, supabase } from '@/lib/supabase'
-import { ERP_STALE_TIME } from '@/lib/queryClient'
+import { supabase } from '@/lib/supabase'
 import {
   accountMetricsKeys,
   type AccountOrderLineRow,
@@ -149,64 +148,13 @@ export function statusSentence(row: OrderLookupRow): string {
    The lines themselves come from useAccountMetrics' useAccountOrderLines —
    the same query, key and cache as the account page's drill-in, so a rep
    who opened the lines in Lookup and then the account sees them instantly.
-
-   Per-line tracking is a column that view gained in 20261013150000. That
-   mapper belongs to the account page and drops columns it does not know,
-   so the tracking travels in a second, tiny read (line_num and the numbers
-   only) that hides itself on a database without the column.
+   They carry each line's tracking numbers (20261013150000; null on a
+   database without the column), so per-line links need no second read.
 ------------------------------------------------------------------------- */
 
-/** Under the order-lines key, so invalidating an order's lines sweeps it. */
-export function orderLineTrackingKey(customerKey: string, orderId: string) {
-  return [...accountMetricsKeys.orderLines(customerKey, orderId), 'tracking'] as const
-}
-
-/** line_num → comma-joined tracking numbers; lines with none are absent. */
-export type LineTracking = Record<number, string>
-
-export function useOrderLineTracking(
-  customerKey: MaybeRefOrGetter<string>,
-  orderId: MaybeRefOrGetter<string | null>,
-) {
-  const key = computed(() => toValue(customerKey))
-  const id = computed(() => toValue(orderId))
-  const query = useQuery({
-    queryKey: computed(() => orderLineTrackingKey(key.value, id.value ?? '')),
-    enabled: computed(() => !!key.value && !!id.value),
-    // Nightly ERP data, like the lines it annotates.
-    staleTime: ERP_STALE_TIME,
-    retry: (n, e) => !isMissingDbObject(e) && n < 1,
-    queryFn: async (): Promise<LineTracking> => {
-      const { data, error } = await db
-        .from('v_account_order_lines')
-        .select('line_num, tracking_numbers')
-        .eq('customer_key', key.value) // required — the view's predicate path
-        .eq('order_id', id.value!)
-      if (error) throw error
-      const out: LineTracking = {}
-      for (const r of (data ?? []) as { line_num: unknown; tracking_numbers: unknown }[]) {
-        const t = typeof r.tracking_numbers === 'string' ? r.tracking_numbers.trim() : ''
-        if (t) out[Number(r.line_num)] = t
-      }
-      return out
-    },
-  })
-  /** True on a database without the column: show lines, just no links. */
-  const unavailable = computed(() => isMissingDbObject(query.error.value))
-  return { ...query, unavailable }
-}
-
-/** The lines as the status message wants them, tracking merged in. */
-export function withLineTracking<T extends AccountOrderLineRow>(
-  lines: readonly T[],
-  tracking: LineTracking | undefined,
-): (T & { tracking_numbers: string | null })[] {
-  return lines.map((l) => ({ ...l, tracking_numbers: tracking?.[l.line_num] ?? null }))
-}
-
 /**
- * Whatever is already cached for one order — the lines (and their tracking)
- * if the rep opened them, else null. "Send status" reads this rather than
+ * Whatever is already cached for one order — the lines (with their
+ * tracking) if the rep opened them, else null. "Send status" reads this rather than
  * fetching: the share sheet must open inside the tap, with nothing awaited.
  */
 export function cachedOrderLines(
@@ -218,8 +166,5 @@ export function cachedOrderLines(
     accountMetricsKeys.orderLines(customerKey, orderId),
   )
   if (!lines || lines.length === 0) return null
-  return withLineTracking(
-    lines,
-    client.getQueryData<LineTracking>(orderLineTrackingKey(customerKey, orderId)),
-  )
+  return lines
 }
