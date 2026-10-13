@@ -186,10 +186,13 @@ const ordersSummaryHint = computed(() => {
   const open = s.open_order_count > 0 ? ` · ${count(s.open_order_count)} open` : ''
   return `latest ${hintDate(s.last_order_date)}${open}`
 })
+/* The summary has no ship date, and the last INVOICE date (which the
+   Performance card already shows) read as "nothing shipped since" until the
+   card was opened and said otherwise. Only "None" is safe to say early. */
 const shipmentsSummaryHint = computed(() => {
   const s = summary.data.value
   if (!s) return undefined
-  return s.last_invoice_date ? `invoiced ${hintDate(s.last_invoice_date)}` : 'None'
+  return s.last_invoice_date ? undefined : 'None'
 })
 
 /** Not fetched yet, and not failed: the summary speaks for the list. */
