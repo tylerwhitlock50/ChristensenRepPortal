@@ -16,8 +16,10 @@
  *     cache is the whole company, and only admins can view-as, which is the
  *     one way a cache could end up holding someone else's book under your
  *     name. Never while viewing-as, either, belt and braces.
- *   - Keyed to the user and the build (the buster). Another user, or a new
- *     deploy whose data shapes may differ, finds nothing to restore.
+ *   - Keyed to the user and the code that shapes the data (the buster: a
+ *     hash of src/composables and src/lib, vite.config.ts). Another user,
+ *     or a deploy that may have changed a data shape, finds nothing to
+ *     restore; a deploy that only changed pages keeps the copy.
  *   - At most 24 hours old (MAX_AGE): the copy, and every read in it,
  *     counted from when that read was fetched.
  *   - Deleted on sign-out, on a sign-out from another tab or a revoked
@@ -41,8 +43,8 @@ import {
 import { hydrate, type QueryCacheNotifyEvent } from '@tanstack/vue-query'
 import { isErpQueryKey, qk, queryClient } from '@/lib/queryClient'
 
-/** Replaced at build time (vite.config.ts): the deploy's commit, or a build stamp. */
-declare const __BUILD_ID__: string
+/** Replaced at build time (vite.config.ts): a hash of the data-shaping code. */
+declare const __CACHE_SCHEMA__: string
 
 export const MAX_AGE_MS = 24 * 60 * 60_000
 export const RESTORE_BUDGET_MS = 300
@@ -51,8 +53,8 @@ const IDENTITY_KEY = 'offline-identity'
 /** Coalesce saves: a page load fires dozens of cache events in a second. */
 const SAVE_THROTTLE_MS = 2_000
 
-const buildId = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'
-export const busterFor = (userId: string) => `${userId}:${buildId}`
+const cacheSchema = typeof __CACHE_SCHEMA__ === 'string' ? __CACHE_SCHEMA__ : 'dev'
+export const busterFor = (userId: string) => `${userId}:${cacheSchema}`
 
 /* ------------------------------------------------------------- storage */
 
@@ -363,17 +365,25 @@ export interface OfflineIdentity<P extends OfflineProfile = OfflineProfile> {
  * with no signal at all (session.ts, offline cold open). Written only for
  * the user being persisted for — i.e. a verified, active rep, online — and
  * deleted with the cache.
+ *
+ * Keyed to the user only, not to the build like the cache: it is a profile
+ * row, not shaped by the app's code, and a waiting service worker takes
+ * over on the next cold launch — so the first open after a deploy is very
+ * often the new build. Keyed to the build, that open (in a store with no
+ * signal) found no identity and went to /login, which cannot work offline.
+ * Now it opens offline, on the saved copy if the deploy kept it, or empty
+ * with a banner that says so.
  */
 export function saveOfflineIdentity(userId: string, profile: OfflineProfile): void {
   if (persistingFor !== userId || profile.user_id !== userId) return
-  const record = { buster: busterFor(userId), savedAt: Date.now(), profile }
+  const record = { user: userId, savedAt: Date.now(), profile }
   void storage.setItem(IDENTITY_KEY, JSON.stringify(record))
 }
 
 /**
  * The saved identity for `userId`, only if it is still good enough to open
- * the app on: same user and build, under MAX_AGE, and an active rep. Null
- * otherwise — including whenever IndexedDB is unavailable.
+ * the app on: same user, under MAX_AGE, and an active rep. Null otherwise —
+ * including whenever IndexedDB is unavailable.
  */
 export async function readOfflineIdentity<P extends OfflineProfile>(
   userId: string,
@@ -381,12 +391,11 @@ export async function readOfflineIdentity<P extends OfflineProfile>(
   const raw = await storage.getItem(IDENTITY_KEY)
   if (!raw) return null
   try {
-    const record = JSON.parse(raw) as { buster?: string; savedAt?: number; profile?: P }
+    const record = JSON.parse(raw) as { savedAt?: number; profile?: P }
     const p = record.profile
     const fresh =
       typeof record.savedAt === 'number' && Date.now() - record.savedAt <= MAX_AGE_MS
     if (
-      record.buster !== busterFor(userId) ||
       !fresh ||
       !p ||
       p.user_id !== userId ||

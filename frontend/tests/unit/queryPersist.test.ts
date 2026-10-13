@@ -180,7 +180,7 @@ saveOfflineIdentity('rep-a', { ...rep, user_id: 'rep-b' })
 await sleep(50)
 t("a profile that isn't the user's own is not saved", (await readOfflineIdentity('rep-a'))?.profile.user_id, 'rep-a')
 
-const fresh = { buster: busterFor('rep-a'), savedAt: Date.now() }
+const fresh = { user: 'rep-a', savedAt: Date.now() }
 await writeIdentity({ ...fresh, profile: { ...rep, role: 'admin' } })
 t('an admin never opens offline', await readOfflineIdentity('rep-a'), null)
 await writeIdentity({ ...fresh, profile: { ...rep, role: 'order_entry' } })
@@ -189,8 +189,12 @@ await writeIdentity({ ...fresh, profile: { ...rep, active: false } })
 t('a deactivated rep never opens offline', await readOfflineIdentity('rep-a'), null)
 await writeIdentity({ ...fresh, savedAt: Date.now() - MAX_AGE_MS - 1, profile: rep })
 t('older than 24h: no', await readOfflineIdentity('rep-a'), null)
+// A profile row is not shaped by the app's code: a deploy must not cost the
+// rep their offline open (the first open after one usually runs the new build).
 await writeIdentity({ buster: 'rep-a:another-build', savedAt: Date.now(), profile: rep })
-t('another build: no', await readOfflineIdentity('rep-a'), null)
+t('saved by another build: still yes', (await readOfflineIdentity('rep-a'))?.profile.role, 'rep')
+await writeIdentity({ ...fresh, profile: { ...rep, user_id: 'rep-b' } })
+t("someone else's profile: no", await readOfflineIdentity('rep-a'), null)
 await writeIdentity({ ...fresh, profile: rep })
 t('…and the good one: yes', (await readOfflineIdentity('rep-a'))?.profile.role, 'rep')
 

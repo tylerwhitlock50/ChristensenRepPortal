@@ -55,6 +55,12 @@ export const useSessionStore = defineStore('session', () => {
    * can't confirm the sign-in (see openOffline): when that copy was saved.
    */
   const offlineSince = ref<number | null>(null)
+  /**
+   * Whether that open found a saved copy to show. False after a deploy that
+   * changed how data is shaped (lib/queryPersist.ts): the rep is signed in,
+   * offline, with nothing saved for this version of the app.
+   */
+  const offlineHasCopy = ref(false)
 
   const user = computed(() => session.value?.user ?? null)
   const isSignedIn = computed(() => !!session.value && !!profile.value)
@@ -226,8 +232,8 @@ export const useSessionStore = defineStore('session', () => {
    *   - a session supabase-js still holds in storage for user U (so U was
    *     signed in here and never signed out — sign-out deletes it);
    *   - a saved identity for U from lib/queryPersist: an active rep, saved
-   *     online within 24 hours, same build. Admins and order entry never
-   *     have one, so they never open offline;
+   *     online within 24 hours (by any build: a deploy keeps it). Admins
+   *     and order entry never have one, so they never open offline;
    *   - a failure that is a missing connection: no answer, a timeout, a
    *     network error. A refresh token the server REJECTS (revoked, user
    *     deleted) is an answer: supabase-js drops the session from storage,
@@ -257,7 +263,9 @@ export const useSessionStore = defineStore('session', () => {
       // Slower still: apply it when it comes, if we're still offline as U.
       applyLate: () => isOffline.value && session.value?.user.id === stored.user.id,
     })
-    offlineSince.value = (await savedCacheTimestamp(stored.user.id)) ?? saved.savedAt
+    const copyAt = await savedCacheTimestamp(stored.user.id)
+    offlineHasCopy.value = copyAt !== null
+    offlineSince.value = copyAt ?? saved.savedAt
     startReconnecting()
   }
 
@@ -690,6 +698,7 @@ export const useSessionStore = defineStore('session', () => {
     isViewingAs,
     canWrite,
     offlineSince,
+    offlineHasCopy,
     isOffline,
     displayName,
     init,

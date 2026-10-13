@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -5,11 +8,32 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 /**
- * One id per deploy. The saved read cache is keyed to it (lib/queryPersist.ts)
- * so a phone never restores data shaped for an older build. Vercel provides
- * the commit; anywhere else a build stamp does the same job.
+ * The saved read cache is keyed to this (lib/queryPersist.ts) so a phone
+ * never restores data shaped for an older build. It is a hash of the code
+ * that shapes what is saved — every query function and mapper lives in
+ * src/composables and src/lib — not the commit: keyed to the commit, every
+ * deploy (copy, a button, a page layout) threw the copy away, and the
+ * first cold open after one with no signal had nothing to show. A deploy
+ * that touches any of those files still starts the copy over.
  */
-const buildId = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) || `local-${Date.now()}`
+function hashSources(dirs: string[]): string {
+  const hash = createHash('sha256')
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    )) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (/\.(ts|vue)$/.test(entry.name)) {
+        hash.update(path)
+        hash.update(readFileSync(path))
+      }
+    }
+  }
+  for (const dir of dirs) walk(fileURLToPath(new URL(dir, import.meta.url)))
+  return hash.digest('hex').slice(0, 12)
+}
+const cacheSchema = hashSources(['./src/composables', './src/lib'])
 
 /**
  * The installable app TECH_STACK §1 promised. What the service worker does,
@@ -83,7 +107,7 @@ const pwa = VitePWA({
 export default defineConfig({
   plugins: [vue(), tailwindcss(), pwa],
   define: {
-    __BUILD_ID__: JSON.stringify(buildId),
+    __CACHE_SCHEMA__: JSON.stringify(cacheSchema),
   },
   resolve: {
     alias: {

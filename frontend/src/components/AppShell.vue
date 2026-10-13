@@ -389,9 +389,15 @@ async function signOut() {
         <!-- Read-only while offline (session.canWrite is false): nothing
              typed now could be waiting to sync, so the copy promises nothing.
              Surveys queued before the signal went keep their own badge. -->
-        <p class="text-[14px] leading-snug">
+        <p v-if="session.offlineHasCopy" class="text-[14px] leading-snug">
           You're offline — showing what was saved at {{ offlineSavedAt }}.
           Reconnect to make changes.
+        </p>
+        <!-- Opened offline on a new version of the app whose data shapes
+             changed: signed in, but nothing saved to show. -->
+        <p v-else class="text-[14px] leading-snug">
+          You're offline, and the app updated since your accounts were last
+          saved on this phone. Reconnect to load them.
         </p>
       </div>
     </div>
