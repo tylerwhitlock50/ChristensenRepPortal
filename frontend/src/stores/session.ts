@@ -1,17 +1,18 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import {
-  isAuthRetryableFetchError,
-  type Session,
-  type SupabaseClient,
-} from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import type { Session, SupabaseClient } from '@supabase/supabase-js'
+import { onlineManager } from '@tanstack/vue-query'
+import { isNoConnection, storedSession, supabase } from '@/lib/supabase'
 import { queryClient } from '@/lib/queryClient'
 import {
+  readOfflineIdentity,
   readPersistedCache,
   restorePersistedCache,
+  saveOfflineIdentity,
+  savedCacheTimestamp,
   startPersisting,
   wipePersistedCache,
+  type OfflineIdentity,
 } from '@/lib/queryPersist'
 import { fetchActingContext, type ActingContext } from '@/composables/useViewAs'
 import type { Tables } from '@/types/database.types'
@@ -21,6 +22,16 @@ export type Profile = Tables<'profiles'>
 
 /** 20260816140000 lands after database.types.ts was last generated. */
 const db = supabase as unknown as SupabaseClient
+
+/**
+ * How long a boot waits on a sign-in check that isn't answering before it
+ * opens on the rep's saved copy instead. supabase-js keeps retrying a token
+ * refresh for up to ~25 s with no signal; nobody in a store should stare at
+ * a skeleton for that.
+ */
+const OFFLINE_OPEN_AFTER_MS = 6_000
+/** While offline, how often to try the network again (if the phone says it has one). */
+const RECONNECT_EVERY_MS = 30_000
 
 /**
  * Session + profile only. Everything that comes from the database lives in
@@ -38,6 +49,11 @@ export const useSessionStore = defineStore('session', () => {
   const acting = ref<ActingContext | null>(null)
   /** False until the initial getSession() has resolved — guards must wait. */
   const ready = ref(false)
+  /**
+   * Set while the app is open on the rep's saved copy because the network
+   * can't confirm the sign-in (see openOffline): when that copy was saved.
+   */
+  const offlineSince = ref<number | null>(null)
 
   const user = computed(() => session.value?.user ?? null)
   const isSignedIn = computed(() => !!session.value && !!profile.value)
@@ -78,13 +94,19 @@ export const useSessionStore = defineStore('session', () => {
     () => profile.value?.full_name || user.value?.email || 'Signed in',
   )
 
+  /** Open on saved data with the sign-in unconfirmed: read-only until it is. */
+  const isOffline = computed(() => offlineSince.value !== null)
+
   /**
    * View-as is read-only, and the database enforces it (a trigger on every
    * RLS-enabled table raises 42501). This is what lets the UI stop offering
    * writes it knows will be refused, rather than surfacing an error after
-   * the rep-portal user has typed out a visit survey.
+   * the rep-portal user has typed out a visit survey. The offline open is
+   * read-only for a plainer reason: the sign-in is not confirmed yet.
    */
-  const canWrite = computed(() => isSignedIn.value && !isViewingAs.value)
+  const canWrite = computed(
+    () => isSignedIn.value && !isViewingAs.value && !isOffline.value,
+  )
 
   /**
    * Whether this identity may keep the ERP read cache on the device between
@@ -117,6 +139,7 @@ export const useSessionStore = defineStore('session', () => {
     if (keepsSavedCache.value) {
       if (opts.restore) await restorePersistedCache(userId)
       startPersisting(userId)
+      saveOfflineIdentity(userId, profile.value)
     } else {
       void wipePersistedCache()
     }
@@ -188,6 +211,136 @@ export const useSessionStore = defineStore('session', () => {
     await queryClient.resetQueries()
   }
 
+  /* ---- offline open ---------------------------------------------------- */
+
+  /**
+   * Opening the app in a dead zone. With an expired access token and no
+   * signal, supabase-js cannot refresh the session and reports none, and
+   * the router sent the rep to /login — with their accounts saved on the
+   * phone and no way to reach them. Now, if the sign-in check fails for
+   * lack of a connection (never on a rejection), the app opens read-only on
+   * what this phone saved for this same user, and keeps trying.
+   *
+   * What it takes, all of it:
+   *   - a session supabase-js still holds in storage for user U (so U was
+   *     signed in here and never signed out — sign-out deletes it);
+   *   - a saved identity for U from lib/queryPersist: an active rep, saved
+   *     online within 24 hours, same build. Admins and order entry never
+   *     have one, so they never open offline;
+   *   - a failure that is a missing connection: no answer, a timeout, a
+   *     network error. A refresh token the server REJECTS (revoked, user
+   *     deleted) is an answer: supabase-js drops the session and this ends on
+   *     /login as before, with the saved copy deleted.
+   *
+   * Nothing new is exposed: it shows only what is already in this phone's
+   * IndexedDB, nothing is written while offline (canWrite is false), and no
+   * request leaves until a real sign-in comes back. Back online, the session
+   * is verified, the profile re-read, and a rep deactivated meanwhile is
+   * signed out and the copy deleted.
+   */
+  async function openOffline(saved: OfflineIdentity<Profile>, stored: Session) {
+    session.value = stored
+    profile.value = saved.profile
+    acting.value = null
+    // Queries wait instead of failing one by one: no request until the
+    // sign-in is real again (goOnline).
+    onlineManager.setOnline(false)
+    await restorePersistedCache(stored.user.id)
+    offlineSince.value = (await savedCacheTimestamp(stored.user.id)) ?? saved.savedAt
+    startReconnecting()
+  }
+
+  let reconnectTimer: ReturnType<typeof setInterval> | null = null
+  let reconnecting = false
+
+  function startReconnecting() {
+    if (reconnectTimer) return
+    window.addEventListener('online', reconnect)
+    reconnectTimer = setInterval(() => {
+      if (navigator.onLine !== false) void reconnect()
+    }, RECONNECT_EVERY_MS)
+  }
+
+  function stopReconnecting() {
+    window.removeEventListener('online', reconnect)
+    if (reconnectTimer) clearInterval(reconnectTimer)
+    reconnectTimer = null
+  }
+
+  function leaveOffline() {
+    offlineSince.value = null
+    stopReconnecting()
+    onlineManager.setOnline(true)
+  }
+
+  /** Try the sign-in again; the 'online' event and a timer call this. */
+  async function reconnect() {
+    if (!isOffline.value || reconnecting) return
+    const { data, error } = await supabase.auth.getSession()
+    if (data.session) await goOnline(data.session)
+    else if (error && !isNoConnection(error)) await endRejected()
+  }
+
+  /** The sign-in is real again: verify who this is, then carry on online. */
+  async function goOnline(next: Session) {
+    if (!isOffline.value || reconnecting) return
+    reconnecting = true
+    try {
+      session.value = next
+      let failure: unknown = null
+      const fresh = await loadProfile().catch((e) => {
+        failure = e
+        return undefined
+      })
+      if (fresh === undefined) {
+        // Still no connection to the database, or it refused: stay put on
+        // the saved copy unless it was a real refusal.
+        if (!isNoConnection(failure)) await endRejected()
+        return
+      }
+      if (!fresh || !fresh.active) {
+        await signOut()
+        leaveOffline()
+        return
+      }
+      await loadActingContext()
+      leaveOffline()
+      await syncSavedCache({ restore: false })
+    } finally {
+      reconnecting = false
+    }
+  }
+
+  /** The server said no while we were offline: same as any sign-out. */
+  async function endRejected() {
+    leaveOffline()
+    session.value = null
+    profile.value = null
+    acting.value = null
+    const wiped = wipePersistedCache()
+    queryClient.clear()
+    await wiped
+  }
+
+  /**
+   * Resolves with the saved identity when the boot should stop waiting on
+   * the network: at once if the phone reports no connection, else after
+   * OFFLINE_OPEN_AFTER_MS. Never resolves without a usable saved identity.
+   */
+  function offlineFallback(
+    saved: Promise<OfflineIdentity<Profile> | null>,
+  ): Promise<OfflineIdentity<Profile>> {
+    return saved.then(
+      (identity) =>
+        new Promise<OfflineIdentity<Profile>>((resolve) => {
+          if (!identity) return
+          if (navigator.onLine === false) return resolve(identity)
+          setTimeout(() => resolve(identity), OFFLINE_OPEN_AFTER_MS)
+          window.addEventListener('offline', () => resolve(identity), { once: true })
+        }),
+    )
+  }
+
   /**
    * Called once from main.ts before the app mounts, then kept current by
    * Supabase's auth listener (token refresh, sign-out in another tab).
@@ -197,68 +350,139 @@ export const useSessionStore = defineStore('session', () => {
    * rep is opening while we wait on the database.
    */
   async function init(opts: { onSession?: () => void } = {}) {
-    const { data, error } = await supabase.auth.getSession()
-    session.value = data.session
-    if (session.value) {
-      // Both start now and overlap the profile round trip below: the page's
-      // code download, and the read of whatever this phone saved last time.
-      readPersistedCache(session.value.user.id)
+    // Read without the network, up front: who was signed in here, and
+    // whether this phone could open for them with no signal.
+    const stored = storedSession()
+    const savedIdentity = stored
+      ? readOfflineIdentity<Profile>(stored.user.id)
+      : Promise.resolve(null)
+    if (stored) {
+      readPersistedCache(stored.user.id)
       opts.onSession?.()
-      // Side by side, not one after the other: acting_context needs only the
-      // JWT, not the profile, and on a morning open over LTE each of these
-      // is a full round trip the rep stares at a skeleton through.
-      await Promise.all([
-        loadProfile().catch(() => {
-          // A profile read failure shouldn't wedge the app at a blank screen —
-          // the router guard will bounce to /login and the user can retry.
-          profile.value = null
-        }),
-        // Before ready, not after: the router guard reads isAdmin, and an
-        // admin who reloads the page mid-view-as must not be waved through
-        // to /admin for the frame it takes this to resolve.
-        loadActingContext(),
-      ])
-      // signIn() refuses a deactivated profile, but a rep deactivated while
-      // their refresh token was still good lands here on the next reload
-      // and would otherwise be treated as signed in until it expired.
-      if (profile.value && !profile.value.active) {
-        await signOut()
+    }
+
+    const auth = supabase.auth.getSession()
+    const first = await Promise.race([
+      auth.then((result) => ({ result })),
+      offlineFallback(savedIdentity).then((identity) => ({ identity })),
+    ])
+
+    if ('identity' in first) {
+      // The sign-in check is still trying. Open on the saved copy; when the
+      // check does finish, it either brings us online or ends the session.
+      await openOffline(first.identity, stored!)
+      void auth.then(({ data, error }) => {
+        if (data.session) void goOnline(data.session)
+        else if (error && !isNoConnection(error)) void endRejected()
+      })
+    } else {
+      const { data, error } = first.result
+      session.value = data.session
+      if (session.value) {
+        if (!stored) {
+          readPersistedCache(session.value.user.id)
+          opts.onSession?.()
+        }
+        let failure: unknown = null
+        // Side by side, not one after the other: acting_context needs only
+        // the JWT, not the profile, and on a morning open over LTE each of
+        // these is a full round trip the rep stares at a skeleton through.
+        const loaded = Promise.all([
+          loadProfile().catch((e) => {
+            // A profile read failure shouldn't wedge the app at a blank
+            // screen — the router guard will bounce to /login and the user
+            // can retry. Unless it failed for lack of signal and this phone
+            // has the rep's saved copy: then open on that (below).
+            failure = e
+            // …and if that already happened, this late failure changes nothing.
+            if (!isOffline.value) profile.value = null
+          }),
+          // Before ready, not after: the router guard reads isAdmin, and an
+          // admin who reloads the page mid-view-as must not be waved through
+          // to /admin for the frame it takes this to resolve.
+          loadActingContext(),
+        ]).then(() => true as const)
+        // The token is still good but the database isn't answering (no
+        // signal; postgrest-js retries the read for ~7 s): same fallback.
+        const loadedFirst = await Promise.race([loaded, offlineFallback(savedIdentity)])
+        let identity: OfflineIdentity<Profile> | null = null
+        if (loadedFirst !== true) identity = loadedFirst
+        else if (!profile.value && isNoConnection(failure)) identity = await savedIdentity
+        if (identity?.profile.user_id !== session.value.user.id) identity = null
+
+        if (identity) {
+          await openOffline(identity, session.value)
+          // If the reads were only slow, they finish and bring us back.
+          if (loadedFirst !== true) void loaded.then(() => reconnect())
+        } else {
+          if (loadedFirst !== true) await loaded
+          if (profile.value && !profile.value.active) {
+            // signIn() refuses a deactivated profile, but a rep deactivated
+            // while their refresh token was still good lands here on the
+            // next reload and would otherwise be treated as signed in until
+            // it expired.
+            await signOut()
+          } else {
+            // Before ready: restored data must be in the cache before the
+            // first page decides what to fetch. Bounded by the restore
+            // budget.
+            await syncSavedCache({ restore: true })
+          }
+        }
+      } else if (isNoConnection(error)) {
+        // The token refresh failed for lack of signal. Open on the saved
+        // copy if there is one; if not, /login as before — and keep the copy.
+        const identity = stored ? await savedIdentity : null
+        if (identity) await openOffline(identity, stored!)
       } else {
-        // Before ready: restored data must be in the cache before the first
-        // page decides what to fetch. Bounded by the restore budget.
-        await syncSavedCache({ restore: true })
+        // Nobody is signed in on this device (signed out, or the session is
+        // gone for good): nothing saved for anyone should outlive that.
+        void wipePersistedCache()
       }
-    } else if (!isAuthRetryableFetchError(error)) {
-      // Nobody is signed in on this device (signed out, or the session is
-      // gone for good): nothing saved for anyone should outlive that. A
-      // refresh that failed only for lack of signal keeps it.
-      void wipePersistedCache()
     }
     ready.value = true
 
     supabase.auth.onAuthStateChange((event, next) => {
       const previousUserId = session.value?.user.id
-      session.value = next
+      // supabase-js reports "no session" as INITIAL_SESSION when the refresh
+      // merely failed to connect; the session is still in storage. A real
+      // rejection removes it and arrives as SIGNED_OUT, handled below.
+      if (isOffline.value && event === 'INITIAL_SESSION') return
       if (!next) {
+        session.value = null
         profile.value = null
         acting.value = null
+        if (isOffline.value) leaveOffline()
         // Signed out in another tab, or the refresh token was revoked. The
         // saved copy goes first, so the clear below can't be saved over it.
         void wipePersistedCache()
         queryClient.clear()
         return
       }
+      // Offline and the token just refreshed: we have signal again. Verify
+      // before trusting it (goOnline), rather than taking the event's word.
+      if (isOffline.value) {
+        void goOnline(next)
+        return
+      }
+      session.value = next
       // A different user signed in without a reload — same leak, same fix.
       if (previousUserId && previousUserId !== next.user.id) {
         acting.value = null
         void wipePersistedCache()
         queryClient.clear()
       }
-      // TOKEN_REFRESHED fires often; the profile hasn't changed.
+      // TOKEN_REFRESHED fires often; the profile hasn't changed. SIGNED_IN
+      // also fires every time the app comes back to the foreground, so the
+      // acting context is only re-read for whoever can be acting as someone:
+      // admins (and a session that is mid-view-as). A rep's is always "self".
       if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+        const sameUser = previousUserId === next.user.id
         void Promise.all([
           loadProfile().catch(() => {}),
-          loadActingContext(),
+          !sameUser || isRealAdmin.value || isViewingAs.value
+            ? loadActingContext()
+            : null,
         ]).then(() => syncSavedCache({ restore: false }))
       }
     })
@@ -385,6 +609,7 @@ export const useSessionStore = defineStore('session', () => {
     session.value = null
     profile.value = null
     acting.value = null
+    if (isOffline.value) leaveOffline()
     // Sign-out is an in-tab router.push, not a reload, so the queryClient
     // singleton survives it. Account, recommendation and admin keys are NOT
     // scoped by user id, so without this the next rep to sign in on a shared
@@ -411,6 +636,8 @@ export const useSessionStore = defineStore('session', () => {
     isRealAdmin,
     isViewingAs,
     canWrite,
+    offlineSince,
+    isOffline,
     displayName,
     init,
     loadProfile,

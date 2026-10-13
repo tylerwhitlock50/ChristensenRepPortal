@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
+import { format, isToday } from 'date-fns'
 import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useFeatureFlags } from '@/composables/useAppSettings'
@@ -22,6 +23,25 @@ const flags = useFeatureFlags()
 /* ERP data is cached until the nightly load moves, not on a timer; this is
    the one check that notices (see useDataFreshness.ts). */
 useErpHeartbeat()
+
+/* Signed out from under the page: another tab, a revoked session, or an
+   offline open the server then refused. The shell has nothing left to show,
+   so go where a sign-in starts, keeping the way back. */
+watch(
+  () => session.isSignedIn,
+  (signedIn) => {
+    if (!signedIn && !route.meta.public) {
+      void router.replace({ name: 'login', query: { redirect: route.fullPath } })
+    }
+  },
+)
+
+/* Open on the saved copy with no signal (session store, openOffline). */
+const offlineSavedAt = computed(() => {
+  if (session.offlineSince == null) return ''
+  const d = new Date(session.offlineSince)
+  return format(d, isToday(d) ? 'h:mm a' : 'MMM d, h:mm a')
+})
 
 /* Open-mission count on the Today tab. Shares the Today page's query key, so
    when Today has loaded this costs nothing extra. Gated off for admins: their
@@ -321,6 +341,40 @@ async function signOut() {
          56px and this bar wraps to two lines on a phone. Renders nothing at
          all unless a view-as is live. -->
     <ViewAsBanner />
+
+    <!-- The offline open: everything below is what this phone saved, and
+         nothing can be changed until the sign-in is confirmed again. -->
+    <div
+      v-if="session.isOffline"
+      class="bg-ink-2 text-canvas border-b border-[#5a5d55]"
+      role="status"
+    >
+      <div
+        class="mx-auto flex items-start gap-3 px-4 py-2.5"
+        :class="wide ? 'max-w-7xl' : 'max-w-5xl'"
+      >
+        <svg
+          class="mt-0.5 size-5 shrink-0 text-[#C9C5BB]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M2 8.8a15 15 0 0 1 4.2-2.6M9.8 5.1A15 15 0 0 1 22 8.8" />
+          <path d="M5 12.5a10 10 0 0 1 3.3-1.9M13.4 10.2A10 10 0 0 1 19 12.5" />
+          <path d="M8.5 16.1a5 5 0 0 1 7 0" />
+          <path d="M12 20h.01" />
+          <path d="M3 3l18 18" />
+        </svg>
+        <p class="text-[14px] leading-snug">
+          You're offline — showing data saved at {{ offlineSavedAt }}. Changes
+          will sync when you're back online.
+        </p>
+      </div>
+    </div>
 
     <!-- pb clears the fixed bottom nav on phones -->
     <main

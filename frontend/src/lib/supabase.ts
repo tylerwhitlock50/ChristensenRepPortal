@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, isAuthRetryableFetchError, type Session } from '@supabase/supabase-js'
 import type { Database } from '@/types/database.types'
 
 const url = import.meta.env.VITE_SUPABASE_URL
@@ -73,6 +73,23 @@ export const supabase = createClient<Database>(url, key, {
   },
   global: { fetch: readTimeoutFetch(READ_TIMEOUT_MS) },
 })
+
+/**
+ * The session supabase-js has saved on this device, read straight from
+ * storage without refreshing it — so it may be expired. Only for the offline
+ * open (stores/session.ts), which needs to know WHO was signed in when the
+ * network can't confirm it; nothing may send this token anywhere.
+ */
+export function storedSession(): Session | null {
+  try {
+    const storageKey = (supabase.auth as unknown as { storageKey?: string }).storageKey
+    const raw = storageKey ? window.localStorage.getItem(storageKey) : null
+    const parsed = raw ? (JSON.parse(raw) as Session) : null
+    return parsed?.user?.id && parsed.refresh_token ? parsed : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Reads against the ETL-landed read models. Separate handle because `erp` is a
@@ -170,6 +187,15 @@ function isNetworkFailure(error: unknown): boolean {
   return /failed to fetch|network ?request ?failed|networkerror|load failed/i.test(
     e.message ?? '',
   )
+}
+
+/**
+ * The request never got an answer — no signal, or too little to finish —
+ * as opposed to an answer that said no. The offline open (stores/session.ts)
+ * only ever acts on this kind of failure, never on a rejection.
+ */
+export function isNoConnection(error: unknown): boolean {
+  return isAuthRetryableFetchError(error) || isNetworkFailure(error) || isReadTimeout(error)
 }
 
 /**

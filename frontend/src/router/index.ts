@@ -295,6 +295,23 @@ function carriesRecoveryCredential(to: RouteLocationNormalized): boolean {
   return false
 }
 
+/**
+ * The flag list for a guard, but never a navigation that hangs on it: with
+ * no signal (or the offline open, where queries wait for the network) the
+ * read can sit unanswered, and a tap that never goes anywhere reads as a
+ * broken app. Past this, the guard fails closed exactly as it does on an
+ * error. Normally this is a cache hit and costs nothing.
+ */
+const SETTINGS_WAIT_MS = 8_000
+function settingsForGuard() {
+  return Promise.race([
+    ensureSettings(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Feature flags did not load')), SETTINGS_WAIT_MS),
+    ),
+  ])
+}
+
 router.beforeEach(async (to) => {
   if (to.name !== 'reset-password' && carriesRecoveryCredential(to)) {
     return {
@@ -331,7 +348,7 @@ router.beforeEach(async (to) => {
   // here and loop.
   if (to.name === 'overview' && session.isOrderEntry) {
     try {
-      const settings = await ensureSettings()
+      const settings = await settingsForGuard()
       if (isFeatureEnabled(settings, 'feature.orders')) {
         return { name: 'orders-queue' }
       }
@@ -346,7 +363,7 @@ router.beforeEach(async (to) => {
     // lands on the Overview rather than a dead page. If the settings table
     // itself is unreachable, fail closed to the Overview too.
     try {
-      const settings = await ensureSettings()
+      const settings = await settingsForGuard()
       if (!isFeatureEnabled(settings, to.meta.feature)) {
         return { name: 'overview' }
       }

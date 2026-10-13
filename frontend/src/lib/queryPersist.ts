@@ -46,6 +46,7 @@ declare const __BUILD_ID__: string
 export const MAX_AGE_MS = 24 * 60 * 60_000
 export const RESTORE_BUDGET_MS = 300
 const CACHE_KEY = 'query-cache'
+const IDENTITY_KEY = 'offline-identity'
 /** Coalesce saves: a page load fires dozens of cache events in a second. */
 const SAVE_THROTTLE_MS = 2_000
 
@@ -275,5 +276,66 @@ export function stopPersisting(): void {
 export function wipePersistedCache(): Promise<void> {
   stopPersisting()
   pendingRead = null
-  return storage.removeItem(CACHE_KEY)
+  return Promise.all([
+    storage.removeItem(CACHE_KEY),
+    storage.removeItem(IDENTITY_KEY),
+  ]).then(() => undefined)
+}
+
+/* ------------------------------------------------- offline identity */
+
+/** The profile row as the session store holds it; only these fields matter here. */
+export interface OfflineProfile {
+  user_id: string
+  role: string | null
+  active: boolean | null
+  [column: string]: unknown
+}
+
+export interface OfflineIdentity<P extends OfflineProfile = OfflineProfile> {
+  profile: P
+  savedAt: number
+}
+
+/**
+ * Who the saved cache belongs to, kept beside it so the app can open on it
+ * with no signal at all (session.ts, offline cold open). Written only for
+ * the user being persisted for — i.e. a verified, active rep, online — and
+ * deleted with the cache.
+ */
+export function saveOfflineIdentity(userId: string, profile: OfflineProfile): void {
+  if (persistingFor !== userId || profile.user_id !== userId) return
+  const record = { buster: busterFor(userId), savedAt: Date.now(), profile }
+  void storage.setItem(IDENTITY_KEY, JSON.stringify(record))
+}
+
+/**
+ * The saved identity for `userId`, only if it is still good enough to open
+ * the app on: same user and build, under MAX_AGE, and an active rep. Null
+ * otherwise — including whenever IndexedDB is unavailable.
+ */
+export async function readOfflineIdentity<P extends OfflineProfile>(
+  userId: string,
+): Promise<OfflineIdentity<P> | null> {
+  const raw = await storage.getItem(IDENTITY_KEY)
+  if (!raw) return null
+  try {
+    const record = JSON.parse(raw) as { buster?: string; savedAt?: number; profile?: P }
+    const p = record.profile
+    const fresh =
+      typeof record.savedAt === 'number' && Date.now() - record.savedAt <= MAX_AGE_MS
+    if (
+      record.buster !== busterFor(userId) ||
+      !fresh ||
+      !p ||
+      p.user_id !== userId ||
+      p.role !== 'rep' ||
+      p.active !== true
+    ) {
+      return null
+    }
+    return { profile: p, savedAt: record.savedAt! }
+  } catch {
+    return null
+  }
 }

@@ -17,8 +17,10 @@ import {
   busterFor,
   cacheStore,
   MAX_AGE_MS,
+  readOfflineIdentity,
   readPersistedCache,
   restorePersistedCache,
+  saveOfflineIdentity,
   shouldPersistQuery,
   startPersisting,
   stopPersisting,
@@ -123,6 +125,43 @@ await sleep(2_300)
 t('rep B saves under rep B', (await saved())?.buster, busterFor('rep-b'))
 await wipePersistedCache()
 t('wipe deletes it', await saved(), null)
+
+/* --- the identity the offline open relies on ------------------------------ */
+const rep = { user_id: 'rep-a', role: 'rep', active: true, full_name: 'Riley' }
+const writeIdentity = async (record: object) => {
+  const { set } = await import('idb-keyval')
+  await set('offline-identity', JSON.stringify(record), cacheStore()!)
+}
+
+saveOfflineIdentity('rep-a', rep)
+await sleep(50)
+t('not saved unless that user is being persisted for', await readOfflineIdentity('rep-a'), null)
+
+startPersisting('rep-a')
+saveOfflineIdentity('rep-a', rep)
+await sleep(50)
+t('saved for the persisted rep', (await readOfflineIdentity('rep-a'))?.profile.full_name, 'Riley')
+t('never handed to another user', await readOfflineIdentity('rep-b'), null)
+saveOfflineIdentity('rep-a', { ...rep, user_id: 'rep-b' })
+await sleep(50)
+t("a profile that isn't the user's own is not saved", (await readOfflineIdentity('rep-a'))?.profile.user_id, 'rep-a')
+
+const fresh = { buster: busterFor('rep-a'), savedAt: Date.now() }
+await writeIdentity({ ...fresh, profile: { ...rep, role: 'admin' } })
+t('an admin never opens offline', await readOfflineIdentity('rep-a'), null)
+await writeIdentity({ ...fresh, profile: { ...rep, role: 'order_entry' } })
+t('order entry never opens offline', await readOfflineIdentity('rep-a'), null)
+await writeIdentity({ ...fresh, profile: { ...rep, active: false } })
+t('a deactivated rep never opens offline', await readOfflineIdentity('rep-a'), null)
+await writeIdentity({ ...fresh, savedAt: Date.now() - MAX_AGE_MS - 1, profile: rep })
+t('older than 24h: no', await readOfflineIdentity('rep-a'), null)
+await writeIdentity({ buster: 'rep-a:another-build', savedAt: Date.now(), profile: rep })
+t('another build: no', await readOfflineIdentity('rep-a'), null)
+await writeIdentity({ ...fresh, profile: rep })
+t('…and the good one: yes', (await readOfflineIdentity('rep-a'))?.profile.role, 'rep')
+
+await wipePersistedCache()
+t('wipe deletes the identity too', await readOfflineIdentity('rep-a'), null)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail > 0 ? 1 : 0)
