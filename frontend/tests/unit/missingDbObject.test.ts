@@ -59,6 +59,16 @@ t(
 
 /* --- Postgres codes passed through -------------------------------------- */
 t('42883 undefined function', isMissingDbObject({ code: '42883', message: 'x' }), true)
+t(
+  '42883 from a helper the new function calls',
+  isMissingDbObject({ code: '42883', message: 'function public.helper(text) does not exist' }),
+  true,
+)
+t(
+  '42883 "operator does not exist" is a bug in a function that exists',
+  isMissingDbObject({ code: '42883', message: 'operator does not exist: text = integer' }),
+  false,
+)
 t('42P01 undefined table', isMissingDbObject({ code: '42P01', message: 'x' }), true)
 t(
   '42703 undefined column (select of a new view column)',

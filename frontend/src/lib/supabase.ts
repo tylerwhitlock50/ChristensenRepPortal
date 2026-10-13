@@ -62,17 +62,19 @@ export function isSchemaNotExposed(error: unknown): boolean {
 export function isMissingDbObject(error: unknown): boolean {
   const e = error as { code?: string; message?: string } | null
   if (!e) return false
+  const msg = e.message ?? ''
+  // 42883 is also "operator does not exist: text = integer" — a bug in a
+  // function that does exist, which must surface, not hide the feature.
+  if (e.code === '42883') return !/^operator does not exist/i.test(msg)
   if (
     e.code === 'PGRST202' ||
     e.code === 'PGRST204' ||
     e.code === 'PGRST205' ||
-    e.code === '42883' ||
     e.code === '42P01' ||
     e.code === '42703'
   ) {
     return true
   }
-  const msg = e.message ?? ''
   return (
     /could not find the (function|table|relation|'[^']*' column)\b.*in the schema cache/i.test(
       msg,
