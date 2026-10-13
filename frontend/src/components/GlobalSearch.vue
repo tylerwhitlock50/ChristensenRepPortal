@@ -29,18 +29,18 @@ type Sheet = Awaited<ReturnType<typeof loadSheet>>['default']
 
 /* Loaded by hand rather than defineAsyncComponent: a sheet that fails to
    load (a dropped LTE connection, a build replaced under an open tab) must
-   leave the rep on the page they were on. An async component's load error
-   travels up to App.vue's boundary and swaps the whole screen for "This
-   screen didn't load". Here the magnifier simply does nothing, and the next
-   tap tries again. */
+   leave the rep on the page they were on, and here the magnifier simply
+   does nothing and the next tap tries again. (App.vue now also keeps an
+   async component's load failure off the error screen, but the sheet only
+   mounts once it can open.) */
 const sheet = shallowRef<Sheet | null>(null)
 let loading: Promise<Sheet | null> | null = null
 function ensureSheet(): Promise<Sheet | null> {
   const ready = sheet.value
   if (ready) return Promise.resolve(ready)
   loading ??= loadSheet()
-    // `m` is undefined when the app's preload-error hook took over (it
-    // reloads onto the new build); that is a failure here too.
+    // `m` is undefined if main.ts's preload-error hook took over during a
+    // page navigation (it reloads onto the new build); a failure here too.
     .then((m): Sheet | null => (sheet.value = m.default))
     .catch((): Sheet | null => null)
     .finally(() => (loading = null))

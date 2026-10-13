@@ -40,8 +40,15 @@ const AccountRevenueChart = defineAsyncComponent(
    render only while feature.visits is on and the rep taps into them, so
    they load with the panel rather than with every account open. Template
    refs still reach the inner component once it has loaded. */
-const VisitSurvey = defineAsyncComponent(() => import('@/components/VisitSurvey.vue'))
-const PhotoPicker = defineAsyncComponent(() => import('@/components/PhotoPicker.vue'))
+const VisitSurvey = defineAsyncComponent({
+  loader: () => import('@/components/VisitSurvey.vue'),
+  errorComponent: LazyLoadFailed,
+})
+const PhotoPicker = defineAsyncComponent({
+  loader: () => import('@/components/PhotoPicker.vue'),
+  errorComponent: LazyLoadFailed,
+})
+import LazyLoadFailed from '@/components/ui/LazyLoadFailed.vue'
 import type VisitSurveyComponent from '@/components/VisitSurvey.vue'
 import type PhotoPickerComponent from '@/components/PhotoPicker.vue'
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'

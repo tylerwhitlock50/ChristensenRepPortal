@@ -77,16 +77,31 @@ function isChunkLoadError(error: unknown): boolean {
   )
 }
 
+/* Only while the router is opening a page. An in-page import (the call
+   outcome sheet, the visit survey, the photo compressor) that fails on a
+   weak connection is handled where it is used — the piece shows a short
+   "didn't load" note, or the photo goes up uncompressed — and a reload
+   there would throw away the screen the rep was on for a chunk nobody
+   asked for yet. */
+let navigating = false
+router.beforeEach(() => {
+  navigating = true
+})
+router.afterEach(() => {
+  navigating = false
+})
+
 window.addEventListener('vite:preloadError', (event) => {
   // A background warm-up (lib/warmPages.ts) failing is not worth a reload;
   // if the rep then taps through, the router's hook below handles it.
-  if (isWarming()) return
+  if (isWarming() || !navigating) return
   if (reloadForNewBuild()) event.preventDefault()
 })
 
 // Not every lazy import goes through Vite's preload helper; a route
 // component that fails to load surfaces here instead.
 router.onError((error, to) => {
+  navigating = false
   if (isChunkLoadError(error)) reloadForNewBuild(to.fullPath)
 })
 

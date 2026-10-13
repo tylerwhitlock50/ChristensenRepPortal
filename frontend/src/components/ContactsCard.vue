@@ -5,6 +5,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import LazyLoadFailed from '@/components/ui/LazyLoadFailed.vue'
 import { telHref } from '@/lib/format'
 import { rankContacts, type ContactKind, type RankedContact } from '@/lib/contacts'
 import { useAccount } from '@/composables/useAccounts'
@@ -34,7 +35,10 @@ import {
 
 /* vee-validate and zod come with the form; most account opens never add or
    edit a contact, so they load on first use. */
-const ContactForm = defineAsyncComponent(() => import('@/components/ContactForm.vue'))
+const ContactForm = defineAsyncComponent({
+  loader: () => import('@/components/ContactForm.vue'),
+  errorComponent: LazyLoadFailed,
+})
 
 const props = defineProps<{ customerKey: string }>()
 
