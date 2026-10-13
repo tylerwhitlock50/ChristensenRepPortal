@@ -1,4 +1,5 @@
-import { QueryClient } from '@tanstack/vue-query'
+import { unref } from 'vue'
+import { QueryClient, type QueryKey } from '@tanstack/vue-query'
 
 /**
  * Query key convention (TECH_STACK §2.3) — flat and explicit so invalidation
@@ -146,7 +147,98 @@ export const qk = {
   },
 } as const
 
-export const queryClient = new QueryClient({
+/* -------------------------------------------------------------------------
+ * ERP reads: cached by the nightly load, not by a timer.
+ *
+ * Everything the ETL lands changes once a night, so treating it as volatile
+ * (a short staleTime, a refetch every time the rep comes back to the app)
+ * spent 6-16 requests per return on numbers that could not have moved.
+ * Instead:
+ *
+ *   - ERP queries stay fresh for ERP_STALE_TIME and are NOT refetched on
+ *     window focus.
+ *   - useErpHeartbeat (useDataFreshness.ts) checks v_data_freshness on
+ *     focus and every 15 minutes; when the load stamp moves it invalidates
+ *     every query isErpQueryKey() matches. Coming back to the app costs that
+ *     one tiny request.
+ *   - Their gcTime is 24 hours so the persisted cache (queryPersist.ts) can
+ *     hold them that long.
+ *
+ * Hours, not Infinity: the rows don't change during the day, but WHOSE rows
+ * they are can — an admin reassigning an account changes my_customer_keys()
+ * with no ETL run to announce it. A few hours bounds how long a reassigned
+ * account keeps showing.
+ *
+ * isErpQueryKey() is deliberately an allow-list, checked against what each
+ * query actually reads. Not on it, on purpose: goals (rep-written), the
+ * accounts list and table (v_account_table joins rep goals and
+ * deactivations), contacts (rep-entered rows), the admin reports (they join
+ * account_goals, actions and profiles), AI output, and data-freshness itself
+ * (it is the heartbeat). A new key is NOT ERP until it is added here.
+ * ------------------------------------------------------------------------- */
+
+export const ERP_STALE_TIME = 3 * 60 * 60_000
+export const ERP_GC_TIME = 24 * 60 * 60_000
+
+/** ['intel', <one of these>, …] — the caller's whole book, all ETL-landed. */
+const ERP_INTEL_KEYS = new Set([
+  'territory-yoy', //          v_territory_account_yoy (dim_customer + agg_account_rollup)
+  'territory-recent-orders', // v_territory_recent_orders (fact_order_line)
+  'territory-sku', //          v_territory_sku_sales
+  'backlog', //                v_backlog_by_sku
+  'ats', //                    v_ats_list
+  'global', //                 report_global_product_sales()
+  'signals', //                account_signals (rebuilt by the ETL's post-load step)
+])
+
+/** ['account', <key>, <one of these>, …] */
+const ERP_ACCOUNT_KEYS = new Set([
+  'detail', //          erp.dim_customer
+  'summary', //         v_account_summary
+  'revenue-monthly', // v_account_revenue_monthly
+  'orders', //          v_account_recent_order_headers (+ lines under it)
+  'shipments', //       v_account_recent_shipment_headers (+ lines under it)
+  'sku-sales', //       v_sku_sales_by_account
+  'backlog-sku', //     v_backlog_by_sku
+  'signals', //         account_signals
+  'sku-gaps', //        report_account_sku_gaps()
+  'reorders', //        report_reorder_candidates()
+])
+
+/** True for a query whose data only changes when the nightly ETL runs. */
+export function isErpQueryKey(queryKey: readonly unknown[]): boolean {
+  const [root, second, third] = queryKey.map((part) => unref(part))
+  if (root === 'intel') return ERP_INTEL_KEYS.has(second as string)
+  if (root === 'account') {
+    return typeof second === 'string' && ERP_ACCOUNT_KEYS.has(third as string)
+  }
+  return false
+}
+
+const ERP_QUERY_DEFAULTS = {
+  staleTime: ERP_STALE_TIME,
+  gcTime: ERP_GC_TIME,
+  refetchOnWindowFocus: false,
+} as const
+
+/**
+ * Applies ERP_QUERY_DEFAULTS by key. They slot in where setQueryDefaults()
+ * values do — over the client-wide defaults below, under whatever a query
+ * passes itself — so a composable's explicit staleTime still wins. That
+ * slot is the reason for a subclass: setQueryDefaults() matches key
+ * prefixes, and ['account', <any key>, 'summary'] is not a prefix.
+ */
+class RepPortalQueryClient extends QueryClient {
+  override getQueryDefaults(queryKey: Parameters<QueryClient['getQueryDefaults']>[0]) {
+    const defaults = super.getQueryDefaults(queryKey)
+    const key = unref(queryKey) as QueryKey | undefined
+    return Array.isArray(key) && isErpQueryKey(key)
+      ? { ...ERP_QUERY_DEFAULTS, ...defaults }
+      : defaults
+  }
+}
+
+export const queryClient = new RepPortalQueryClient({
   defaultOptions: {
     queries: {
       // ERP data only changes once a night; app data changes when the rep acts

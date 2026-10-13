@@ -7,6 +7,7 @@ import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useMyDueTasks } from '@/composables/useTasks'
 import { useOpenSupportCount } from '@/composables/useSupport'
+import { useErpHeartbeat } from '@/composables/useDataFreshness'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
@@ -16,6 +17,10 @@ const session = useSessionStore()
 const router = useRouter()
 const route = useRoute()
 const flags = useFeatureFlags()
+
+/* ERP data is cached until the nightly load moves, not on a timer; this is
+   the one check that notices (see useDataFreshness.ts). */
+useErpHeartbeat()
 
 /* Open-mission count on the Today tab. Shares the Today page's query key, so
    when Today has loaded this costs nothing extra. Gated off for admins: their

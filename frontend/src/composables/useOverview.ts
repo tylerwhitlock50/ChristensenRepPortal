@@ -100,7 +100,7 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
 }
 
 // Nightly ERP data; same holding period as useAccountMetrics.ts.
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /* -------------------------------------------------------------- queries */
 

@@ -49,7 +49,7 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /**
  * `limit` is how many of the ranked suggestions come back — 25 fits the
