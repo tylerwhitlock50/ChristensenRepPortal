@@ -193,7 +193,9 @@ const deltaTone = computed(() => {
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
-      :empty="!query.isPending.value && !query.error.value && !series.hasData"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
+      :empty="!query.isPending.value && !series.hasData"
       empty-title="No invoiced revenue"
       empty-body="Nothing has been invoiced to this account in the last 24 months."
       :rows="2"

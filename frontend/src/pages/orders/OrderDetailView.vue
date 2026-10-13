@@ -127,6 +127,8 @@ const timeline = computed(() => {
   <AsyncState
     :loading="detail.isLoading.value"
     :error="detail.error.value"
+    :has-data="detail.data.value !== undefined"
+    :updated-at="detail.dataUpdatedAt.value"
     :empty="!detail.isLoading.value && !order"
     empty-title="Order not found"
     empty-body="It may have been deleted, or it isn't yours to see."

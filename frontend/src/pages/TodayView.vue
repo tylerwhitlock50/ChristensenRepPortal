@@ -17,7 +17,7 @@ import StatTile from '@/components/ui/StatTile.vue'
 import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
-const { data, isPending, error, refetch } = useNeedsAttention()
+const { data, dataUpdatedAt, isPending, error, refetch } = useNeedsAttention()
 
 const items = computed(() => data.value ?? [])
 
@@ -176,6 +176,8 @@ const greeting = computed(() => {
     <AsyncState
       :loading="isPending"
       :error="error"
+      :has-data="data !== undefined"
+      :updated-at="dataUpdatedAt"
       :empty="items.length === 0"
       empty-title="That's the whole list."
       empty-body="Nothing needs attention right now. New recommendations land overnight — go home."

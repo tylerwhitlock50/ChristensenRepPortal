@@ -39,6 +39,8 @@ const hint = computed(
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && pivoted.length === 0"
       empty-title="No SKU history"
       empty-body="Nothing invoiced to this account in the last four years."

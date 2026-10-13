@@ -50,8 +50,11 @@ async function start() {
     <AsyncState
       :loading="options.isPending.value"
       :error="options.error.value"
+      :has-data="options.data.value !== undefined"
+      :updated-at="options.dataUpdatedAt.value"
       :empty="(options.data.value ?? []).length === 0"
       empty-body="No other active users to view as."
+      @retry="options.refetch()"
     >
       <div class="space-y-3">
         <p class="text-muted text-sm">

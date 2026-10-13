@@ -57,6 +57,8 @@ const filterOptions = computed(() => {
     <AsyncState
       :loading="ordersQuery.isLoading.value"
       :error="ordersQuery.error.value"
+      :has-data="ordersQuery.data.value !== undefined"
+      :updated-at="ordersQuery.dataUpdatedAt.value"
       :empty="filtered.length === 0"
       empty-title="No orders yet"
       empty-body="Write the first one — pick the account, pick the price list, add lines."

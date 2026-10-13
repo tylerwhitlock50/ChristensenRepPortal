@@ -16,7 +16,7 @@ import {
 import { daysUntilDue, dueLabel, shortDate } from '@/lib/format'
 
 const session = useSessionStore()
-const { data, isPending, error, refetch } = useMyTasks()
+const { data, dataUpdatedAt, isPending, error, refetch } = useMyTasks()
 const tasks = computed(() => data.value ?? [])
 
 /* ---- open vs finished ---------------------------------------------------
@@ -200,6 +200,8 @@ function closedLabel(task: Task): string {
       v-if="segment === 'open'"
       :loading="isPending"
       :error="error"
+      :has-data="data !== undefined"
+      :updated-at="dataUpdatedAt"
       :empty="tasks.length === 0"
       empty-title="Nothing on your list"
       empty-body="That's the whole list — you're not missing anything. Add a follow-up above when something needs a nudge."
@@ -294,6 +296,8 @@ function closedLabel(task: Task): string {
       v-else
       :loading="closed.isPending.value"
       :error="closed.error.value"
+      :has-data="closed.data.value !== undefined"
+      :updated-at="closed.dataUpdatedAt.value"
       :empty="closedTasks.length === 0"
       empty-title="Nothing finished yet"
       empty-body="Follow-ups you complete or drop land here."

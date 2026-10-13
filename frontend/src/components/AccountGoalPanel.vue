@@ -212,8 +212,12 @@ const setByLine = computed(() => {
     <p v-if="query.isPending.value" class="text-muted mt-2 text-sm">Checking…</p>
 
     <!-- A goal is optional. An error reading it says so and gets out of the
-         way rather than taking the Performance card down with it. -->
-    <p v-else-if="query.error.value && !editing" class="text-muted mt-2 text-sm">
+         way rather than taking the Performance card down with it. A failed
+         background refresh keeps the goal already on screen. -->
+    <p
+      v-else-if="query.error.value && query.data.value === undefined && !editing"
+      class="text-muted mt-2 text-sm"
+    >
       Goal unavailable right now.
     </p>
 

@@ -124,6 +124,8 @@ function subtitle(contact: AccountContact): string {
     <AsyncState
       :loading="contacts.isPending.value"
       :error="contacts.error.value"
+      :has-data="contacts.data.value !== undefined"
+      :updated-at="contacts.dataUpdatedAt.value"
       :empty="rows.length === 0 && !adding"
       empty-title="No contacts yet"
       empty-body="Add the buyer's name and number so the next person who calls has it."

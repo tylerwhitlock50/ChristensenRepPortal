@@ -105,7 +105,13 @@ async function runBrief() {
         result.message ?? 'Not enough territory activity to brief yet.'
     }
   } catch (e) {
-    briefError.value = (e as Error).message
+    // Same rule as AsyncState's hasData: a failed refresh over a brief that
+    // is already on screen keeps it, with a quiet line instead of the alert.
+    if (briefQuery.brief.value) {
+      briefNotice.value = "Couldn't refresh the brief. Showing the last one."
+    } else {
+      briefError.value = (e as Error).message
+    }
   }
 }
 
@@ -194,6 +200,8 @@ const goalSub = computed(() => {
     <AsyncState
       :loading="accountsQuery.isPending.value"
       :error="accountsQuery.error.value"
+      :has-data="accountsQuery.data.value !== undefined"
+      :updated-at="accountsQuery.dataUpdatedAt.value"
       :empty="!accountsQuery.isPending.value && rows.length === 0"
       empty-title="No accounts yet"
       empty-body="Your book is empty. If that seems wrong, ask your admin to check your rep assignment."
@@ -318,6 +326,8 @@ const goalSub = computed(() => {
         <AsyncState
           :loading="recentQuery.isPending.value"
           :error="recentQuery.error.value"
+          :has-data="recentQuery.data.value !== undefined"
+          :updated-at="recentQuery.dataUpdatedAt.value"
           :empty="!recentQuery.isPending.value && recent.length === 0"
           empty-title="No orders in the last two weeks"
           :rows="2"

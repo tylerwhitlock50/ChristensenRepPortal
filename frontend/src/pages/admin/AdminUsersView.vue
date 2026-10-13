@@ -337,6 +337,8 @@ async function setActive(active: boolean) {
       <AsyncState
         :loading="profiles.isPending.value"
         :error="profiles.error.value"
+        :has-data="profiles.data.value !== undefined"
+        :updated-at="profiles.dataUpdatedAt.value"
         :empty="(profiles.data.value?.length ?? 0) === 0"
         empty-title="No users yet"
         empty-body="Create the first one above."

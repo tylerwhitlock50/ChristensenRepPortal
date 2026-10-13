@@ -62,6 +62,8 @@ async function mark(status: 'closed' | 'open') {
     <AsyncState
       :loading="thread.isPending.value"
       :error="thread.error.value"
+      :has-data="thread.data.value !== undefined"
+      :updated-at="thread.dataUpdatedAt.value"
       :empty="(thread.data.value ?? []).length === 0"
       empty-title="No messages"
       :rows="2"

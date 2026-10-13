@@ -67,6 +67,8 @@ async function toggle(row: AppSettingRow) {
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
       empty-title="No settings"
       empty-body="Apply supabase/migrations/024_app_settings.sql to seed the feature flags."

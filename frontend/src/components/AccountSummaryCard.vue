@@ -88,7 +88,9 @@ const openOrdersSub = computed(() => {
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
-      :empty="!query.isPending.value && !query.error.value && !summary"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
+      :empty="!query.isPending.value && !summary"
       empty-title="No ERP history"
       empty-body="This account has no invoice or order lines in the ERP yet."
       :rows="2"

@@ -159,6 +159,8 @@ const csvColumns: CsvColumn<AtsRow>[] = [
       v-else
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
       empty-title="No ATS data yet"
       empty-body="The table exists but the nightly ERP load hasn't filled it. Check back after the next load."

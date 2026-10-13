@@ -141,6 +141,7 @@ function pct(value: number | null | undefined): string {
 
 const {
   data,
+  dataUpdatedAt,
   isPending,
   error,
   refetch,
@@ -300,6 +301,8 @@ function goalAmounts(g: AccountGoalProgress): string {
       v-if="view === 'table'"
       :loading="tableQuery.isPending.value"
       :error="tableQuery.error.value"
+      :has-data="tableQuery.data.value !== undefined"
+      :updated-at="tableQuery.dataUpdatedAt.value"
       :empty="!tableQuery.isPending.value && tableRows.length === 0"
       :empty-title="goalMode ? 'Nothing behind goal' : 'No accounts'"
       :empty-body="
@@ -405,6 +408,8 @@ function goalAmounts(g: AccountGoalProgress): string {
       v-else-if="goalMode"
       :loading="behind.isPending.value"
       :error="behind.error.value"
+      :has-data="behind.data.value !== undefined"
+      :updated-at="behind.dataUpdatedAt.value"
       :empty="behindRows.length === 0"
       empty-title="No goals to rank"
       :empty-body="
@@ -473,6 +478,8 @@ function goalAmounts(g: AccountGoalProgress): string {
       v-else
       :loading="isPending"
       :error="error"
+      :has-data="data !== undefined"
+      :updated-at="dataUpdatedAt"
       :empty="rows.length === 0"
       :empty-title="search ? 'No matches' : 'No accounts assigned yet'"
       :empty-body="

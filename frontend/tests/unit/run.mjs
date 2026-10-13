@@ -31,6 +31,12 @@ const isWindows = process.platform === 'win32'
 const bin = join(root, 'node_modules', '.bin', isWindows ? 'vite-node.cmd' : 'vite-node')
 const quote = (s) => (isWindows ? `"${s}"` : s)
 
+// vite-node transforms .vue files in "web" mode by default, which routes
+// `import 'vue'` through the dev server's dependency optimizer and never
+// resolves under Node. SSR mode leaves it a plain Node import, so a test can
+// render a component with vue/server-renderer (see asyncState.test.ts).
+const viteNodeArgs = [quote('--options.transformMode.ssr=\\.vue$')]
+
 const filters = process.argv.slice(2)
 const files = readdirSync(here)
   .filter((f) => f.endsWith('.test.ts'))
@@ -52,7 +58,7 @@ const results = []
 for (const file of files) {
   const path = join(here, file)
   console.log(`\n=== ${relative(root, path)}`)
-  const r = spawnSync(quote(bin), [quote(path)], {
+  const r = spawnSync(quote(bin), [...viteNodeArgs, quote(path)], {
     cwd: root,
     env,
     stdio: 'inherit',

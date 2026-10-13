@@ -32,7 +32,8 @@ const term = ref(typeof route.query.q === 'string' ? route.query.q : '')
 // otherwise be a round trip over LTE.
 const debounced = refDebounced(term, 350)
 
-const { data, isPending, error, refetch, longEnough } = useOrderLookup(debounced)
+const { data, dataUpdatedAt, isPending, error, refetch, longEnough } =
+  useOrderLookup(debounced)
 const rows = computed(() => data.value ?? [])
 
 watch(debounced, (q) => {
@@ -89,7 +90,9 @@ function trackingList(value: string | null): string[] {
       v-else
       :loading="isPending"
       :error="error"
-      :empty="!isPending && !error && rows.length === 0"
+      :has-data="data !== undefined"
+      :updated-at="dataUpdatedAt"
+      :empty="!isPending && rows.length === 0"
       empty-title="Nothing matches that"
       empty-body="Check the number, or try just the digits — a dealer's PO prefix isn't always what we recorded. Only orders on your own accounts are searched."
       :rows="3"

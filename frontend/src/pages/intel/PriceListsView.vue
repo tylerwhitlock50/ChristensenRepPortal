@@ -63,6 +63,8 @@ async function download(file: PriceListFileRow) {
     <AsyncState
       :loading="filesQuery.isLoading.value"
       :error="filesQuery.error.value"
+      :has-data="filesQuery.data.value !== undefined"
+      :updated-at="filesQuery.dataUpdatedAt.value"
       :empty="groups.length === 0"
       empty-title="No price lists yet"
       empty-body="An admin publishes the approved sheets from Admin → Price Lists."

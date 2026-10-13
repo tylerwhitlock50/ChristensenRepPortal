@@ -154,6 +154,8 @@ function onExport() {
     <AsyncState
       :loading="active.isPending.value && !nothingPicked"
       :error="active.error.value"
+      :has-data="active.data.value !== undefined"
+      :updated-at="active.dataUpdatedAt.value"
       :empty="!active.isPending.value && !nothingPicked && pivoted.length === 0"
       :empty-title="
         mode === 'account' ? 'Nothing bought yet' : 'No SKU history'

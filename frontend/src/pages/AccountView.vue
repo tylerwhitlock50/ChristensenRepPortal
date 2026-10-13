@@ -570,6 +570,8 @@ watch(key, () => {
     <AsyncState
       :loading="account.isPending.value"
       :error="account.error.value"
+      :has-data="account.data.value !== undefined"
+      :updated-at="account.dataUpdatedAt.value"
       :empty="!account.isPending.value && !account.data.value"
       empty-title="Account not found"
       empty-body="It may not be in your book, or the ERP load hasn't run yet."
@@ -835,6 +837,8 @@ watch(key, () => {
       <AsyncState
         :loading="ai.isPending.value"
         :error="ai.error.value"
+        :has-data="ai.data.value !== undefined"
+        :updated-at="ai.dataUpdatedAt.value"
         :rows="2"
         @retry="ai.refetch()"
       >
@@ -871,6 +875,8 @@ watch(key, () => {
       <AsyncState
         :loading="recs.isPending.value"
         :error="recs.error.value"
+        :has-data="recs.data.value !== undefined"
+        :updated-at="recs.dataUpdatedAt.value"
         :empty="openRecs.length === 0"
         empty-title="Nothing open here"
         :rows="1"
@@ -1070,6 +1076,8 @@ watch(key, () => {
       <AsyncState
         :loading="notes.isPending.value"
         :error="notes.error.value"
+        :has-data="notes.data.value !== undefined"
+        :updated-at="notes.dataUpdatedAt.value"
         :empty="(notes.data.value?.length ?? 0) === 0"
         empty-title="No notes yet"
         :rows="2"
@@ -1104,6 +1112,8 @@ watch(key, () => {
       <AsyncState
         :loading="actions.isPending.value"
         :error="actions.error.value"
+        :has-data="actions.data.value !== undefined"
+        :updated-at="actions.dataUpdatedAt.value"
         :empty="(actions.data.value?.length ?? 0) === 0"
         empty-title="Nothing logged yet"
         empty-body="Calls, visits, and emails you log show up here."

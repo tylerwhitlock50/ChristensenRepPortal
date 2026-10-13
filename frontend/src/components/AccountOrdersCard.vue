@@ -197,9 +197,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
       <AsyncState
         :loading="ordersQuery.isPending.value"
         :error="ordersQuery.error.value"
-        :empty="
-          !ordersQuery.isPending.value && !ordersQuery.error.value && !orders.length
-        "
+        :has-data="ordersQuery.data.value !== undefined"
+        :updated-at="ordersQuery.dataUpdatedAt.value"
+        :empty="!ordersQuery.isPending.value && !orders.length"
         empty-title="No orders"
         empty-body="Nothing has been ordered on this account yet."
         :rows="3"
@@ -351,11 +351,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
       <AsyncState
         :loading="shipmentsQuery.isPending.value"
         :error="shipmentsQuery.error.value"
-        :empty="
-          !shipmentsQuery.isPending.value &&
-          !shipmentsQuery.error.value &&
-          !shipments.length
-        "
+        :has-data="shipmentsQuery.data.value !== undefined"
+        :updated-at="shipmentsQuery.dataUpdatedAt.value"
+        :empty="!shipmentsQuery.isPending.value && !shipments.length"
         empty-title="No shipments"
         empty-body="Nothing has shipped to this account yet."
         :rows="3"
@@ -528,11 +526,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
     <AsyncState
       :loading="orderLinesQuery.isPending.value"
       :error="orderLinesQuery.error.value"
-      :empty="
-        !orderLinesQuery.isPending.value &&
-        !orderLinesQuery.error.value &&
-        !orderLines.length
-      "
+      :has-data="orderLinesQuery.data.value !== undefined"
+      :updated-at="orderLinesQuery.dataUpdatedAt.value"
+      :empty="!orderLinesQuery.isPending.value && !orderLines.length"
       empty-title="No lines"
       :rows="3"
       @retry="orderLinesQuery.refetch()"
@@ -657,11 +653,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
     <AsyncState
       :loading="shipmentLinesQuery.isPending.value"
       :error="shipmentLinesQuery.error.value"
-      :empty="
-        !shipmentLinesQuery.isPending.value &&
-        !shipmentLinesQuery.error.value &&
-        !shipmentLines.length
-      "
+      :has-data="shipmentLinesQuery.data.value !== undefined"
+      :updated-at="shipmentLinesQuery.dataUpdatedAt.value"
+      :empty="!shipmentLinesQuery.isPending.value && !shipmentLines.length"
       empty-title="No lines"
       :rows="3"
       @retry="shipmentLinesQuery.refetch()"

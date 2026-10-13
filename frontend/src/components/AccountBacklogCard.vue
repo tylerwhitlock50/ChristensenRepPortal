@@ -33,6 +33,8 @@ const hint = computed(
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
       empty-title="Nothing on backorder"
       empty-body="Every open line for this account has shipped or been allocated."

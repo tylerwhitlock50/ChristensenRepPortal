@@ -97,6 +97,8 @@ function onExport() {
     <AsyncState
       :loading="reps.isPending.value"
       :error="reps.error.value"
+      :has-data="reps.data.value !== undefined"
+      :updated-at="reps.dataUpdatedAt.value"
       :empty="(reps.data.value?.length ?? 0) === 0"
       empty-title="No reps yet"
       empty-body="Create users in Supabase Auth, then set their sales_rep_key on the profile."

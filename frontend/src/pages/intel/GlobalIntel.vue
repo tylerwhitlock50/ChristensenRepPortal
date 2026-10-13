@@ -115,6 +115,8 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
       empty-title="Nothing sold in this window"
       :rows="4"

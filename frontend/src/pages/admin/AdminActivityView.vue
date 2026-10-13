@@ -181,6 +181,8 @@ const stream = computed(() => {
       <AsyncState
         :loading="activity.isPending.value"
         :error="activity.error.value"
+        :has-data="activity.data.value !== undefined"
+        :updated-at="activity.dataUpdatedAt.value"
         :empty="rollups.length === 0"
         empty-title="No reps yet"
         empty-body="Create users and stamp their rep codes on the Users tab."
@@ -237,6 +239,8 @@ const stream = computed(() => {
       <AsyncState
         :loading="activity.isPending.value"
         :error="activity.error.value"
+        :has-data="activity.data.value !== undefined"
+        :updated-at="activity.dataUpdatedAt.value"
         :empty="filteredRows.length === 0"
         empty-title="No reps"
         @retry="activity.refetch()"
@@ -339,6 +343,8 @@ const stream = computed(() => {
       <AsyncState
         :loading="logins.isPending.value || actions.isPending.value"
         :error="logins.error.value || actions.error.value"
+        :has-data="logins.data.value !== undefined && actions.data.value !== undefined"
+        :updated-at="Math.min(logins.dataUpdatedAt.value, actions.dataUpdatedAt.value)"
         :empty="stream.length === 0"
         empty-title="Nothing in this window"
         empty-body="Sign-ins and logged actions show up here."

@@ -124,6 +124,8 @@ async function recheck(order: OrderRow) {
     <AsyncState
       :loading="queueQuery.isLoading.value"
       :error="queueQuery.error.value"
+      :has-data="queueQuery.data.value !== undefined"
+      :updated-at="queueQuery.dataUpdatedAt.value"
       :empty="filtered.length === 0"
       empty-title="Queue clear"
       :empty-body="
