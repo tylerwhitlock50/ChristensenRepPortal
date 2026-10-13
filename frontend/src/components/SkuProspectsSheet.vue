@@ -37,6 +37,10 @@ const rows = computed(() =>
       contactsLoaded: best !== null,
       callLabel: best?.callable ? best.contact?.label ?? null : null,
       callHref: best?.callable && best.contact?.phone ? telHref(best.contact.phone) : null,
+      // There IS a number; the dealer asked not to be called on it. Said as
+      // that, not as "no number" — the rep would add a duplicate contact or
+      // ring the store anyway (the account header says the same).
+      doNotCall: !best?.callable && !!best?.contact?.phone && best.contact.do_not_call === true,
     }
   }),
 )
@@ -114,6 +118,9 @@ function place(d: { city: string | null; state: string | null }) {
             >
               <span class="truncate">Call {{ d.callLabel }}</span>
             </a>
+            <p v-else-if="d.doNotCall" class="text-muted mt-1 text-[13px]">
+              Number marked do not call
+            </p>
             <p v-else class="text-muted mt-1 text-[13px]">No buyer number on file</p>
           </template>
         </li>
