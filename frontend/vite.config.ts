@@ -16,8 +16,12 @@ const buildId = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) || `local-${Date
  * and — as importantly — what it doesn't:
  *
  *   - Precaches the app itself (HTML, JS, CSS, fonts, icons) so it opens
- *     from the home screen with no signal. Admin pages are left out; reps
- *     never open them and it is bytes over their LTE on every deploy.
+ *     from the home screen with no signal. All of it, admin pages included
+ *     (about 45 kB gzip, and only the chunks a deploy changed are fetched
+ *     again): until the rep taps Refresh, the worker keeps serving the
+ *     previous build's index.html, and that build's chunks are gone from
+ *     Vercel after a deploy. A chunk left out of the precache 404s, and a
+ *     page that needs it never opens, not even after a reload.
  *   - Serves index.html for any navigation, so a deep link (or the password
  *     reset link, /reset-password?token_hash=…) opens offline too; the query
  *     string and hash are untouched and the page handles them as before.
@@ -60,7 +64,8 @@ const pwa = VitePWA({
   },
   workbox: {
     globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-    globIgnores: ['**/Admin*.js', '**/pwa-512x512.png', '**/pwa-maskable-512x512.png'],
+    // Install-only icons; the page never asks for them.
+    globIgnores: ['**/pwa-512x512.png', '**/pwa-maskable-512x512.png'],
     navigateFallback: '/index.html',
     // Static files are never answered with the app shell: a missing chunk
     // should fail as a missing chunk. Matched on the path only, so a query
