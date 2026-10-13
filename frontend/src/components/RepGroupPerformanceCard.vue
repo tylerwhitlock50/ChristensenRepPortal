@@ -167,6 +167,8 @@ function onExport() {
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="rows.length === 0"
       empty-title="No rep groups"
       empty-body="Groups fill in once the ETL has landed sales reps with a vendor id."

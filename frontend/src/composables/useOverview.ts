@@ -1,3 +1,4 @@
+import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
@@ -100,14 +101,19 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
 }
 
 // Nightly ERP data; same holding period as useAccountMetrics.ts.
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /* -------------------------------------------------------------- queries */
 
-/** Every account in the caller's book with YoY + backlog. THE Overview query. */
-export function useTerritoryAccounts() {
+/**
+ * Every account in the caller's book with YoY + backlog. THE Overview query.
+ * `enabled` lets a page that only sometimes shows it (the Accounts cards)
+ * skip the read; the Overview always wants it.
+ */
+export function useTerritoryAccounts(enabled: MaybeRefOrGetter<boolean> = true) {
   return useQuery({
     queryKey: qk.intel.territoryYoy(),
+    enabled: computed(() => toValue(enabled)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<TerritoryAccountRow[]> => {
@@ -239,25 +245,110 @@ export interface Observation {
   customer_name: string
   /** Plain-English, observation-voiced: what the data shows, never a task. */
   note: string
+  /** The same fact, short enough for a chip on a list row. */
+  chip: string
   /** Dollar magnitude, for ranking across kinds. */
   weight: number
 }
 
 /**
+ * The one loudest thing the numbers say about one account, or null — the
+ * classifier behind "Worth investigating", the call list's fallback and the
+ * reason chip on the Accounts cards, so all three describe an account the
+ * same way. Observation voice throughout: "hasn't invoiced in 103 days",
+ * never "call them".
+ *
+ * `signal` is the account's public.account_signals row, or null. When it is
+ * present and its cadence is confident, the per-account rhythm REPLACES the
+ * flat 90-day dormancy rule. The flat rule treats a dealer who orders
+ * monthly and a dealer who orders twice a year identically, which is
+ * precisely the failure 019_account_scoring.sql was written to fix; it
+ * stays as the fallback for accounts with no confident rhythm, which is
+ * most of the long tail.
+ */
+export function observeAccount(
+  r: TerritoryAccountRow,
+  signal: AccountSignalRow | null = null,
+  today: Date = new Date(),
+): Observation | null {
+  const name = r.customer_name || r.customer_key
+
+  // Overdue against their OWN rhythm. Ranked by trailing-12m like dormancy
+  // so a big dealer one cycle late outranks a small one three cycles late.
+  if (r.revenue_trailing_12m >= 5_000 && isOverdueForCadence(signal)) {
+    const sentence = cadenceSentence(signal)
+    if (sentence) {
+      return {
+        kind: 'cadence',
+        customer_key: r.customer_key,
+        customer_name: name,
+        note: sentence,
+        chip: sentence,
+        weight: r.revenue_trailing_12m,
+      }
+    }
+  }
+
+  // Dormant: real recent history, but nothing invoiced in 90+ days. Skipped
+  // when this account has a confident rhythm — the cadence branch above is
+  // strictly better informed, and firing both would double-report the same
+  // silence under two different numbers.
+  if (
+    r.last_invoice_date &&
+    r.revenue_trailing_12m >= 5_000 &&
+    !signal?.cadence_confident
+  ) {
+    const days = differenceInCalendarDays(today, parseISO(r.last_invoice_date))
+    if (days >= 90) {
+      return {
+        kind: 'dormant',
+        customer_key: r.customer_key,
+        customer_name: name,
+        note: `Hasn't invoiced in ${days} days`,
+        chip: `No invoice in ${days} days`,
+        weight: r.revenue_trailing_12m,
+      }
+    }
+  }
+
+  // Sharp decline: meaningful prior-year base, less than half of it now.
+  if (r.revenue_prior_ytd >= 10_000 && r.revenue_ytd < r.revenue_prior_ytd * 0.5) {
+    const pct = Math.round((1 - r.revenue_ytd / r.revenue_prior_ytd) * 100)
+    return {
+      kind: 'decline',
+      customer_key: r.customer_key,
+      customer_name: name,
+      note: `Revenue down ${pct}% vs this time last year`,
+      chip: `Down ${pct}% vs this time last year`,
+      weight: r.revenue_prior_ytd - r.revenue_ytd,
+    }
+  }
+
+  // A lot of money already past its promise date — the dealer is waiting
+  // on us, and probably about to ring.
+  if (r.backlog_amount >= 10_000) {
+    return {
+      kind: 'backlog',
+      customer_key: r.customer_key,
+      customer_name: name,
+      note: `Has ${money(r.backlog_amount)} of orders past their promise date`,
+      chip: `${money(r.backlog_amount)} past promise date`,
+      weight: r.backlog_amount,
+    }
+  }
+
+  return null
+}
+
+/**
  * "Worth investigating" — data-derived observations, deliberately framed as
  * what the data shows ("hasn't invoiced in 103 days"), never as assignments.
- * The rep decides whether action is warranted.
+ * The rep decides whether action is warranted. One per account (the
+ * loudest, see observeAccount), largest dollar weight first.
  *
  * `signals` is public.account_signals keyed by customer_key (see
  * useAccountSignals.ts) and is OPTIONAL — pass nothing and this behaves
  * exactly as it did before it existed.
- *
- * When a signal row is present and its cadence is confident, the per-account
- * rhythm REPLACES the flat 90-day dormancy rule for that account. The flat
- * rule treats a dealer who orders monthly and a dealer who orders twice a
- * year identically, which is precisely the failure 019_account_scoring.sql
- * was written to fix; it stays as the fallback for accounts with no confident
- * rhythm, which is most of the long tail.
  */
 export function worthInvestigating(
   rows: TerritoryAccountRow[],
@@ -267,73 +358,8 @@ export function worthInvestigating(
 ): Observation[] {
   const out: Observation[] = []
   for (const r of rows) {
-    const name = r.customer_name || r.customer_key
-    const signal = signals[r.customer_key] ?? null
-
-    // Overdue against their OWN rhythm. Ranked by trailing-12m like dormancy
-    // so a big dealer one cycle late outranks a small one three cycles late.
-    if (r.revenue_trailing_12m >= 5_000 && isOverdueForCadence(signal)) {
-      const sentence = cadenceSentence(signal)
-      if (sentence) {
-        out.push({
-          kind: 'cadence',
-          customer_key: r.customer_key,
-          customer_name: name,
-          note: sentence,
-          weight: r.revenue_trailing_12m,
-        })
-        continue // one observation per account — the loudest one
-      }
-    }
-
-    // Dormant: real recent history, but nothing invoiced in 90+ days. Skipped
-    // when this account has a confident rhythm — the cadence branch above is
-    // strictly better informed, and firing both would double-report the same
-    // silence under two different numbers.
-    if (
-      r.last_invoice_date &&
-      r.revenue_trailing_12m >= 5_000 &&
-      !signal?.cadence_confident
-    ) {
-      const days = differenceInCalendarDays(today, parseISO(r.last_invoice_date))
-      if (days >= 90) {
-        out.push({
-          kind: 'dormant',
-          customer_key: r.customer_key,
-          customer_name: name,
-          note: `Hasn't invoiced in ${days} days`,
-          weight: r.revenue_trailing_12m,
-        })
-        continue
-      }
-    }
-
-    // Sharp decline: meaningful prior-year base, less than half of it now.
-    if (r.revenue_prior_ytd >= 10_000 && r.revenue_ytd < r.revenue_prior_ytd * 0.5) {
-      const pct = Math.round(
-        (1 - r.revenue_ytd / r.revenue_prior_ytd) * 100,
-      )
-      out.push({
-        kind: 'decline',
-        customer_key: r.customer_key,
-        customer_name: name,
-        note: `Revenue down ${pct}% vs this time last year`,
-        weight: r.revenue_prior_ytd - r.revenue_ytd,
-      })
-      continue
-    }
-
-    // A lot of money already past its promise date — the dealer is waiting
-    // on us, and probably about to ring.
-    if (r.backlog_amount >= 10_000) {
-      out.push({
-        kind: 'backlog',
-        customer_key: r.customer_key,
-        customer_name: name,
-        note: `Has ${money(r.backlog_amount)} of orders past their promise date`,
-        weight: r.backlog_amount,
-      })
-    }
+    const o = observeAccount(r, signals[r.customer_key] ?? null, today)
+    if (o) out.push(o)
   }
   return out.sort((a, b) => b.weight - a.weight).slice(0, n)
 }

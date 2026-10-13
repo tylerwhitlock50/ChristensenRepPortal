@@ -407,6 +407,8 @@ function exportDetail() {
       <AsyncState
         :loading="batches.isPending.value"
         :error="batches.error.value"
+        :has-data="batches.data.value !== undefined"
+        :updated-at="batches.dataUpdatedAt.value"
         :empty="(batches.data.value?.length ?? 0) === 0"
         empty-title="No missions yet"
         empty-body="Create the first one above — it lands on every targeted rep's Today page."
@@ -508,6 +510,8 @@ function exportDetail() {
       <AsyncState
         :loading="detail.isPending.value"
         :error="detail.error.value"
+        :has-data="detail.data.value !== undefined"
+        :updated-at="detail.dataUpdatedAt.value"
         :empty="(detail.data.value?.length ?? 0) === 0"
         empty-title="Nothing in this batch"
         @retry="detail.refetch()"

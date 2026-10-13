@@ -13,8 +13,17 @@
  * stacked list plus a sort control instead of a table they have to drag
  * sideways. Without it, the table still scrolls horizontally — inside its own
  * wrapper, never the page.
+ *
+ * Rendering cost: only one of the two (cards or table) is ever in the DOM,
+ * and only the first `renderLimit` rows of it, with a "Show more" button for
+ * the rest. A phone used to build every row twice — once as a card, once as
+ * a hidden 12-cell table row — for 2,000-row grids like Global best sellers.
+ * Sorting, filtering and the rows emitted for CSV export still cover every
+ * row; only what is drawn is capped.
  */
 import { computed, ref, watch } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
+import AppButton from '@/components/ui/AppButton.vue'
 import {
   FlexRender,
   getCoreRowModel,
@@ -65,6 +74,8 @@ const props = withDefaults(
     maxHeight?: string
     /** Keeps columns readable; the wrapper scrolls, the page does not. */
     minWidth?: string
+    /** Rows drawn before "Show more"; each tap draws this many again. */
+    renderLimit?: number
   }>(),
   {
     globalFilter: '',
@@ -73,6 +84,7 @@ const props = withDefaults(
     searchPlaceholder: 'Search…',
     maxHeight: '65vh',
     minWidth: '44rem',
+    renderLimit: 100,
   },
 )
 
@@ -168,10 +180,45 @@ const table = useVueTable<T>({
   getFacetedUniqueValues: getFacetedUniqueValues(),
 })
 
-const rows = computed(() => table.getRowModel().rows)
+/**
+ * Read `data` here so new rows redraw. TanStack reads options.data through
+ * a getter its own memo sees but Vue does not track; the row model only
+ * re-ran when sorting or a filter changed, so a toggle, an account filter
+ * or a background refetch with new rows left the old ones on screen (and in
+ * the CSV). Touching the prop makes this computed depend on it; the call
+ * below then rebuilds the row model because options.data changed.
+ */
+const rows = computed(() => {
+  void data.value
+  return table.getRowModel().rows
+})
 const visibleRows = computed(() => rows.value.map((r) => r.original))
 
 watch(visibleRows, (value) => emit('rowsChange', value), { immediate: true })
+
+/* ---- what actually gets drawn ------------------------------------------ */
+
+/** Tailwind's `sm` breakpoint, in rem like Tailwind's, so the two never disagree. */
+const isWide = useMediaQuery('(min-width: 40rem)')
+
+const drawLimit = ref(props.renderLimit)
+const drawnRows = computed(() => rows.value.slice(0, drawLimit.value))
+const hiddenCount = computed(() => Math.max(0, rows.value.length - drawLimit.value))
+const nextBatch = computed(() => Math.min(props.renderLimit, hiddenCount.value))
+
+function showMore() {
+  drawLimit.value += props.renderLimit
+}
+
+// A new sort, search or data set starts from the top again: "show more" was
+// about the old rows, and the ones that matter now are the first. A
+// background refetch of the same data (same length) leaves it alone.
+watch(
+  [sorting, filter, columnFilters, () => props.data.length, () => props.renderLimit],
+  () => {
+    drawLimit.value = props.renderLimit
+  },
+)
 
 function ariaSort(column: Column<T, unknown>) {
   if (!column.getCanSort()) return undefined
@@ -298,9 +345,9 @@ defineExpose({ table, visibleRows })
     </div>
 
     <!-- Phone: stacked cards + an explicit sort control, since the sortable
-         column headers live in the table that is hidden here. -->
-    <template v-if="$slots.card">
-      <div v-if="rows.length && sortableColumns.length" class="mb-2 flex gap-2 sm:hidden">
+         column headers live in the table that is not drawn here. -->
+    <template v-if="$slots.card && !isWide">
+      <div v-if="rows.length && sortableColumns.length" class="mb-2 flex gap-2">
         <label class="min-w-0 flex-1">
           <span class="sr-only">Sort by</span>
           <select
@@ -324,12 +371,12 @@ defineExpose({ table, visibleRows })
         </button>
       </div>
 
-      <div v-if="rows.length" class="divide-line divide-y sm:hidden">
-        <div v-for="row in rows" :key="row.id" class="py-3 first:pt-0">
+      <div v-if="rows.length" class="divide-line divide-y">
+        <div v-for="row in drawnRows" :key="row.id" class="py-3 first:pt-0">
           <slot name="card" :row="row.original" />
         </div>
       </div>
-      <div v-else class="sm:hidden">
+      <div v-else>
         <slot name="empty">
           <p class="text-muted py-10 text-center text-[15px]">Nothing to show.</p>
         </slot>
@@ -338,8 +385,8 @@ defineExpose({ table, visibleRows })
 
     <!-- The scroll box. Horizontal scroll lives here, never on the page. -->
     <div
+      v-else
       class="border-line overflow-auto border"
-      :class="$slots.card ? 'hidden sm:block' : ''"
       :style="{ maxHeight }"
       tabindex="0"
       role="region"
@@ -444,7 +491,7 @@ defineExpose({ table, visibleRows })
         </thead>
 
         <tbody class="divide-line divide-y">
-          <tr v-for="row in rows" :key="row.id" class="bg-surface">
+          <tr v-for="row in drawnRows" :key="row.id" class="bg-surface">
             <td
               v-for="cell in row.getVisibleCells()"
               :key="cell.id"
@@ -474,6 +521,19 @@ defineExpose({ table, visibleRows })
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div
+      v-if="hiddenCount > 0"
+      class="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2"
+    >
+      <p class="text-muted text-[13px]">
+        Showing {{ drawnRows.length.toLocaleString() }} of
+        {{ rows.length.toLocaleString() }}
+      </p>
+      <AppButton variant="ghost" @click="showMore">
+        Show {{ nextBatch.toLocaleString() }} more
+      </AppButton>
     </div>
   </div>
 </template>

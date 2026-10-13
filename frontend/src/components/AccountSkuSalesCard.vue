@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { pivotSkuYears, useSkuSalesByAccount } from '@/composables/useIntel'
 import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -15,9 +15,32 @@ import { count, money } from '@/lib/format'
  *
  * The year pair used to live in the header hint, but a collapsed card wants
  * to say how much there is to read; every row spells out both years anyway.
+ *
+ * Nothing is fetched until the card is first opened: a big dealer's SKU
+ * history is two or more pages (LIPSEYS: 1,692 rows), and most account opens
+ * never look. Until then the query runs against an empty key, which keeps it
+ * disabled (useSkuSalesByAccount only runs with a key), and the hint says
+ * what the card holds instead of counting it.
  */
 const props = defineProps<{ customerKey: string }>()
-const key = computed(() => props.customerKey)
+
+const card = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
+/* Latched: closing the card keeps the rows (and the count) it fetched.
+   Re-armed per account, since the router reuses this component. */
+const wanted = ref(false)
+watch(
+  () => card.value?.isOpen,
+  (open) => {
+    if (open) wanted.value = true
+  },
+)
+watch(
+  () => props.customerKey,
+  () => {
+    wanted.value = !!card.value?.isOpen
+  },
+)
+const key = computed(() => (wanted.value ? props.customerKey : ''))
 
 const query = useSkuSalesByAccount(key)
 const yearNow = new Date().getFullYear()
@@ -29,16 +52,20 @@ const shown = computed(() =>
   expanded.value ? pivoted.value : pivoted.value.slice(0, PREVIEW),
 )
 
-const hint = computed(
-  () => cardHintState(query, pivoted.value.length) ?? `${pivoted.value.length} SKUs`,
+const hint = computed(() =>
+  !wanted.value
+    ? 'This year vs last'
+    : (cardHintState(query, pivoted.value.length) ?? `${pivoted.value.length} SKUs`),
 )
 </script>
 
 <template>
-  <AppCollapsibleCard title="Sales by SKU" :hint="hint" :padded="false">
+  <AppCollapsibleCard ref="card" title="Sales by SKU" :hint="hint" :padded="false">
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && pivoted.length === 0"
       empty-title="No SKU history"
       empty-body="Nothing invoiced to this account in the last four years."

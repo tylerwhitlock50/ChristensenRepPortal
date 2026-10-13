@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, toRef } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
+import { format, isThisYear, parseISO } from 'date-fns'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
@@ -7,11 +8,13 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
+import { trackingList, upsTrackUrl } from '@/lib/tracking'
 import {
   useAccountOrderHeaders,
   useAccountOrderLines,
   useAccountShipmentHeaders,
   useAccountShipmentLines,
+  useAccountSummary,
 } from '@/composables/useAccountMetrics'
 
 /**
@@ -44,6 +47,14 @@ import {
  * The modal's line queries fetch one document by its primary key and only run
  * while a modal is open.
  *
+ * ── Nothing is fetched until a card opens ─────────────────────────────────
+ * Both cards arrive collapsed, and most account opens never expand them, so
+ * each list's query waits for its card's first open. Until then the hints
+ * come from v_account_summary, which the page has already read ("latest
+ * Sep 12 · 2 open"). Orders can arrive sooner: the "Before you call" card
+ * reads the newest page for its last-order line, and this card shows those
+ * rows without a second request.
+ *
  * Tracking numbers: everything ships UPS, so the number links straight to
  * UPS tracking. The header shows one number per packlist (line-level
  * tracking_number, header waybill fallback — migration 032); the drill-in
@@ -69,10 +80,48 @@ import {
  * sideways (html has overflow-x: hidden in style.css).
  */
 const props = defineProps<{ customerKey: string }>()
+const emit = defineEmits<{
+  /** The rep closed an order's drill-in — the page drops a ?order= that
+      named it. */
+  'order-closed': [orderId: string]
+}>()
 
 const customerKey = toRef(props, 'customerKey')
-const ordersQuery = useAccountOrderHeaders(customerKey)
-const shipmentsQuery = useAccountShipmentHeaders(customerKey)
+
+const ordersCardRef = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
+const shipmentsCardRef = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
+
+/* Latched on first open: closing the card again keeps its rows rather than
+   dropping them and showing the summary hint. Re-armed per account — the
+   router reuses this component across /accounts/:customerKey. */
+const ordersWanted = ref(false)
+const shipmentsWanted = ref(false)
+watch(
+  () => ordersCardRef.value?.isOpen,
+  (open) => {
+    if (open) ordersWanted.value = true
+  },
+)
+watch(
+  () => shipmentsCardRef.value?.isOpen,
+  (open) => {
+    if (open) shipmentsWanted.value = true
+  },
+)
+watch(customerKey, () => {
+  ordersWanted.value = !!ordersCardRef.value?.isOpen
+  shipmentsWanted.value = !!shipmentsCardRef.value?.isOpen
+  // An open drill-in belongs to the account it was opened on.
+  openOrderId.value = null
+  openPacklistId.value = null
+})
+
+const ordersQuery = useAccountOrderHeaders(customerKey, { enabled: ordersWanted })
+const shipmentsQuery = useAccountShipmentHeaders(customerKey, {
+  enabled: shipmentsWanted,
+})
+/** Already read by the page (vue-query dedupes it) — the collapsed hints. */
+const summary = useAccountSummary(customerKey)
 
 /* Paged as of migration 035 — flatten the pages the same way AccountsView
    flattens its book. */
@@ -114,21 +163,66 @@ const shipments = computed(() =>
 /**
  * What the collapsed headers say. Both lists come back newest first, so row 0
  * is the latest — "12 · latest Jul 9" tells a rep whether there is anything
- * recent in here before they spend a tap on it.
+ * recent in here before they spend a tap on it. A full first page with more
+ * behind it reads "20+", not "20": the count is what is loaded.
  */
-function withLatest(rows: { length: number }, latest: string | null): string {
-  return latest ? `${rows.length} · latest ${shortDate(latest)}` : String(rows.length)
+function withLatest(rows: { length: number }, latest: string | null, more: boolean): string {
+  const n = `${rows.length}${more ? '+' : ''}`
+  return latest ? `${n} · latest ${shortDate(latest)}` : n
 }
 
-const ordersHint = computed(
-  () =>
-    cardHintState(ordersQuery, allOrders.value.length) ??
-    withLatest(allOrders.value, allOrders.value[0]?.order_date ?? null),
+/** "Oct 8", or "Mar 2024" when it was not this year: a collapsed header has
+    room for a short hint only — the title truncates first. */
+function hintDate(value: string): string {
+  const d = parseISO(value)
+  return format(d, isThisYear(d) ? 'MMM d' : 'MMM yyyy')
+}
+
+/* Before the list loads: the summary's dates and open count, or nothing —
+   never "···" for a read that is not running. */
+const ordersSummaryHint = computed(() => {
+  const s = summary.data.value
+  if (!s?.last_order_date) return s ? 'None' : undefined
+  const open = s.open_order_count > 0 ? ` · ${count(s.open_order_count)} open` : ''
+  return `latest ${hintDate(s.last_order_date)}${open}`
+})
+/* The summary has no ship date, and the last INVOICE date (which the
+   Performance card already shows) read as "nothing shipped since" until the
+   card was opened and said otherwise. Only "None" is safe to say early. */
+const shipmentsSummaryHint = computed(() => {
+  const s = summary.data.value
+  if (!s) return undefined
+  return s.last_invoice_date ? undefined : 'None'
+})
+
+/** Not fetched yet, and not failed: the summary speaks for the list. */
+function notLoaded(q: {
+  data: { value: unknown }
+  isFetching: { value: boolean }
+  error: { value: unknown }
+}): boolean {
+  return q.data.value === undefined && !q.isFetching.value && !q.error.value
+}
+
+const ordersHint = computed(() =>
+  notLoaded(ordersQuery)
+    ? ordersSummaryHint.value
+    : (cardHintState(ordersQuery, allOrders.value.length) ??
+      withLatest(
+        allOrders.value,
+        allOrders.value[0]?.order_date ?? null,
+        ordersQuery.hasNextPage.value,
+      )),
 )
-const shipmentsHint = computed(
-  () =>
-    cardHintState(shipmentsQuery, allShipments.value.length) ??
-    withLatest(allShipments.value, allShipments.value[0]?.ship_date ?? null),
+const shipmentsHint = computed(() =>
+  notLoaded(shipmentsQuery)
+    ? shipmentsSummaryHint.value
+    : (cardHintState(shipmentsQuery, allShipments.value.length) ??
+      withLatest(
+        allShipments.value,
+        allShipments.value[0]?.ship_date ?? null,
+        shipmentsQuery.hasNextPage.value,
+      )),
 )
 
 /* ---- drill-in modals ---------------------------------------------------- */
@@ -144,38 +238,54 @@ const shipmentLines = computed(() => shipmentLinesQuery.data.value ?? [])
 
 /* Resolved against the UNFILTERED lists: clearing the search box while a
    modal is open must not empty the modal's header. */
-const openOrder = computed(
+const openOrderRow = computed(
   () => allOrders.value.find((o) => o.order_id === openOrderId.value) ?? null,
 )
+
+/**
+ * The drill-in's subtitle. From the header row when the order is among the
+ * loaded pages; otherwise — a deep link to an older order — from its own
+ * lines, which carry the order date (035).
+ */
+function lineCount(n: number): string {
+  return `${count(n)} line${n === 1 ? '' : 's'}`
+}
+const openOrderSubtitle = computed(() => {
+  const o = openOrderRow.value
+  if (o) {
+    return `Ordered ${shortDate(o.order_date)} · ${lineCount(o.line_count)} · ${money(o.bookings)}`
+  }
+  const lines = orderLines.value
+  if (!lines.length) return undefined
+  const value = lines.reduce((sum, l) => sum + (l.bookings ?? 0), 0)
+  return `Ordered ${shortDate(lines[0].order_date)} · ${lineCount(lines.length)} · ${money(value)}`
+})
 const openShipment = computed(
   () => allShipments.value.find((s) => s.packlist_id === openPacklistId.value) ?? null,
 )
 
-/** ups.com's tracking page accepts the number straight in the query string. */
-function upsTrackUrl(trackingNumber: string): string {
-  return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber)}`
-}
-
 /* ---- programmatic entry points ------------------------------------------
-   The header/Performance stats deep-link here ("Last order →"). The parent
-   scrolls; these open the right card, and openNewestOrder also pops the
-   drill-in for the newest order — index 0, both lists come back newest
-   first. If the query hasn't resolved yet, expanding the card is enough:
-   the rep lands on the list either way.
+   The page deep-links here: "Last order" and "what's owed" in the Before
+   you call card, the Performance card's last invoice, and ?order=<id> from
+   Lookup and the activity feed. The parent scrolls; these open the right
+   card, and openOrder also pops the drill-in for one order. It needs only
+   the id — the lines are fetched by primary key, so an order older than
+   the loaded pages opens just the same.
 ------------------------------------------------------------------------- */
-const ordersCardRef = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
-const shipmentsCardRef = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
-
 function expandOrders() {
   ordersCardRef.value?.expand()
 }
 function expandShipments() {
   shipmentsCardRef.value?.expand()
 }
-function openNewestOrder() {
+function openOrder(orderId: string) {
   expandOrders()
-  const newest = allOrders.value[0]
-  if (newest) openOrderId.value = newest.order_id
+  if (orderId) openOrderId.value = orderId
+}
+function closeOrder() {
+  const id = openOrderId.value
+  openOrderId.value = null
+  if (id) emit('order-closed', id)
 }
 
 /** The shipments card is halfway down this component — "Last invoice →"
@@ -185,7 +295,7 @@ function scrollToShipments() {
   el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments })
+defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
 </script>
 
 <template>
@@ -197,9 +307,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
       <AsyncState
         :loading="ordersQuery.isPending.value"
         :error="ordersQuery.error.value"
-        :empty="
-          !ordersQuery.isPending.value && !ordersQuery.error.value && !orders.length
-        "
+        :has-data="ordersQuery.data.value !== undefined"
+        :updated-at="ordersQuery.dataUpdatedAt.value"
+        :empty="!ordersQuery.isPending.value && !allOrders.length"
         empty-title="No orders"
         empty-body="Nothing has been ordered on this account yet."
         :rows="3"
@@ -216,6 +326,12 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
             class="field"
           />
         </label>
+        <!-- A search with no match keeps the box (and the footer's Load
+             older orders): it is about what is loaded, not the account. -->
+        <p v-if="orderSearch.trim() && !orders.length" class="text-muted py-2 text-[15px]" role="status">
+          No loaded order matches "{{ orderSearch.trim() }}".
+          <template v-if="ordersQuery.hasNextPage.value">Load older orders below to look further back.</template>
+        </p>
 
         <!-- Phone: one tappable row per order. The whole row is the button —
              a nested link would be invalid inside it, and everything a rep
@@ -258,7 +374,7 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
           </li>
         </ul>
 
-        <div class="hidden overflow-x-auto sm:block">
+        <div v-if="orders.length" class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
               Orders for this account, newest first — select one for its lines
@@ -351,11 +467,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
       <AsyncState
         :loading="shipmentsQuery.isPending.value"
         :error="shipmentsQuery.error.value"
-        :empty="
-          !shipmentsQuery.isPending.value &&
-          !shipmentsQuery.error.value &&
-          !shipments.length
-        "
+        :has-data="shipmentsQuery.data.value !== undefined"
+        :updated-at="shipmentsQuery.dataUpdatedAt.value"
+        :empty="!shipmentsQuery.isPending.value && !allShipments.length"
         empty-title="No shipments"
         empty-body="Nothing has shipped to this account yet."
         :rows="3"
@@ -372,6 +486,10 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
             class="field"
           />
         </label>
+        <p v-if="shipmentSearch.trim() && !shipments.length" class="text-muted py-2 text-[15px]" role="status">
+          No loaded shipment matches "{{ shipmentSearch.trim() }}".
+          <template v-if="shipmentsQuery.hasNextPage.value">Load older shipments below to look further back.</template>
+        </p>
 
         <!-- Phone: same shape as the orders list. The tracking link is NOT
              here — an <a> inside the row button would be invalid interactive
@@ -407,7 +525,7 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
           </li>
         </ul>
 
-        <div class="hidden overflow-x-auto sm:block">
+        <div v-if="shipments.length" class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
               The 20 most recent shipments for this account — select one for its
@@ -503,36 +621,30 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
   <AppModal
     :open="!!openOrderId"
     :title="`Order ${openOrderId ?? ''}`"
-    :subtitle="
-      openOrder
-        ? `Ordered ${shortDate(openOrder.order_date)} · ${count(openOrder.line_count)} lines · ${money(openOrder.bookings)}`
-        : undefined
-    "
-    @update:open="openOrderId = null"
+    :subtitle="openOrderSubtitle"
+    @update:open="closeOrder"
   >
     <!-- flex-wrap, not an inline span: at phone width "next promise" and its
          date were breaking across lines with the badge, so the phrase read as
          two unrelated fragments. -->
     <div
-      v-if="openOrder && openOrder.open_line_count > 0"
+      v-if="openOrderRow && openOrderRow.open_line_count > 0"
       class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
     >
       <AppBadge tone="high">
-        {{ count(openOrder.open_line_count) }} open —
-        {{ count(openOrder.backlog_qty) }} pcs / {{ money(openOrder.backlog_amount) }}
+        {{ count(openOrderRow.open_line_count) }} open —
+        {{ count(openOrderRow.backlog_qty) }} pcs / {{ money(openOrderRow.backlog_amount) }}
       </AppBadge>
-      <span v-if="openOrder.next_promise_date" class="text-muted whitespace-nowrap">
-        next promise {{ shortDate(openOrder.next_promise_date) }}
+      <span v-if="openOrderRow.next_promise_date" class="text-muted whitespace-nowrap">
+        next promise {{ shortDate(openOrderRow.next_promise_date) }}
       </span>
     </div>
     <AsyncState
       :loading="orderLinesQuery.isPending.value"
       :error="orderLinesQuery.error.value"
-      :empty="
-        !orderLinesQuery.isPending.value &&
-        !orderLinesQuery.error.value &&
-        !orderLines.length
-      "
+      :has-data="orderLinesQuery.data.value !== undefined"
+      :updated-at="orderLinesQuery.dataUpdatedAt.value"
+      :empty="!orderLinesQuery.isPending.value && !orderLines.length"
       empty-title="No lines"
       :rows="3"
       @retry="orderLinesQuery.refetch()"
@@ -562,6 +674,24 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
             <span v-else class="text-muted text-[13px]">
               {{ humanize(line.line_status_desc) }}
             </span>
+          </p>
+          <!-- This line's own parcels (20261013150000), as on Find. -->
+          <p
+            v-if="trackingList(line.tracking_numbers).length"
+            class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1"
+          >
+            <span class="u-label text-muted">Tracking</span>
+            <a
+              v-for="t in trackingList(line.tracking_numbers)"
+              :key="t"
+              :href="upsTrackUrl(t)"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-ink inline-flex min-h-11 items-center text-sm break-all underline decoration-dotted underline-offset-2"
+              :title="`Track ${t} on ups.com`"
+            >
+              {{ t }}
+            </a>
           </p>
         </li>
       </ul>
@@ -611,6 +741,17 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
                 <span v-else class="text-muted">
                   {{ humanize(line.line_status_desc) }}
                 </span>
+                <a
+                  v-for="t in trackingList(line.tracking_numbers)"
+                  :key="t"
+                  :href="upsTrackUrl(t)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-ink block text-xs underline decoration-dotted underline-offset-2"
+                  :title="`Track ${t} on ups.com`"
+                >
+                  {{ t }}
+                </a>
               </td>
             </tr>
           </tbody>
@@ -657,11 +798,9 @@ defineExpose({ expandOrders, expandShipments, openNewestOrder, scrollToShipments
     <AsyncState
       :loading="shipmentLinesQuery.isPending.value"
       :error="shipmentLinesQuery.error.value"
-      :empty="
-        !shipmentLinesQuery.isPending.value &&
-        !shipmentLinesQuery.error.value &&
-        !shipmentLines.length
-      "
+      :has-data="shipmentLinesQuery.data.value !== undefined"
+      :updated-at="shipmentLinesQuery.dataUpdatedAt.value"
+      :empty="!shipmentLinesQuery.isPending.value && !shipmentLines.length"
       empty-title="No lines"
       :rows="3"
       @retry="shipmentLinesQuery.refetch()"

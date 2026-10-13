@@ -37,6 +37,7 @@ export const FEATURE_KEYS = [
   'feature.tasks',
   'feature.action_logging',
   'feature.orders',
+  'feature.quick_log',
 ] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
 
@@ -83,7 +84,7 @@ export function isFeatureEnabled(
 }
 
 /**
- * The four capture-feature switches as ready-to-gate computeds, all false
+ * The capture-feature switches as ready-to-gate computeds, all false
  * while loading (see header).
  */
 export function useFeatureFlags() {
@@ -96,6 +97,8 @@ export function useFeatureFlags() {
     tasks: flag('feature.tasks'),
     actionLogging: flag('feature.action_logging'),
     orders: flag('feature.orders'),
+    /** After a Call tap on a list, ask how it went (20261013130000). */
+    quickLog: flag('feature.quick_log'),
     isLoading: query.isLoading,
   }
 }

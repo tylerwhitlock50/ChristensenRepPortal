@@ -225,6 +225,8 @@ async function doRevoke(token: McpTokenRow) {
       <AsyncState
         :loading="tokens.isLoading.value"
         :error="tokens.error.value"
+        :has-data="tokens.data.value !== undefined"
+        :updated-at="tokens.dataUpdatedAt.value"
         :empty="(tokens.data.value ?? []).length === 0"
         empty-title="No tokens yet"
         empty-body="Create one above to connect Claude."

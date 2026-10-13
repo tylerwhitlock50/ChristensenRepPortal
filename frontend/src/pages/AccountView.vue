@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useOnline } from '@vueuse/core'
 import { useQueryClient } from '@tanstack/vue-query'
 import { useSessionStore } from '@/stores/session'
@@ -13,10 +13,11 @@ import {
   useLogAccountAction,
   useNotes,
 } from '@/composables/useAccountData'
-import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
-import { useAccountSummary } from '@/composables/useAccountMetrics'
+import { useAccountRevenueMonthly } from '@/composables/useAccountMetrics'
+import { buildAccountReach } from '@/composables/useBestContacts'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useAccountGoal } from '@/composables/useAccountGoals'
+import { useQuickCallLog } from '@/composables/useQuickCallLog'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -24,6 +25,9 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import RecommendationCard from '@/components/RecommendationCard.vue'
 import AccountSummaryCard from '@/components/AccountSummaryCard.vue'
 import AccountShipReadiness from '@/components/AccountShipReadiness.vue'
+import AccountAiSummaryCard from '@/components/AccountAiSummaryCard.vue'
+import AiFeedbackThumbs from '@/components/AiFeedbackThumbs.vue'
+import BeforeYouCallCard from '@/components/BeforeYouCallCard.vue'
 /**
  * chart.js is roughly two thirds of this route's bundle, and this is the page
  * a rep opens standing in a store on LTE. Async-loaded so the numbers, orders
@@ -32,16 +36,29 @@ import AccountShipReadiness from '@/components/AccountShipReadiness.vue'
 const AccountRevenueChart = defineAsyncComponent(
   () => import('@/components/AccountRevenueChart.vue'),
 )
+/* The survey (vee-validate + zod) and the photo picker (image compression)
+   render only while feature.visits is on and the rep taps into them, so
+   they load with the panel rather than with every account open. Template
+   refs still reach the inner component once it has loaded. */
+const VisitSurvey = defineAsyncComponent({
+  loader: () => import('@/components/VisitSurvey.vue'),
+  errorComponent: LazyLoadFailed,
+})
+const PhotoPicker = defineAsyncComponent({
+  loader: () => import('@/components/PhotoPicker.vue'),
+  errorComponent: LazyLoadFailed,
+})
+import LazyLoadFailed from '@/components/ui/LazyLoadFailed.vue'
+import type VisitSurveyComponent from '@/components/VisitSurvey.vue'
+import type PhotoPickerComponent from '@/components/PhotoPicker.vue'
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
 import AccountSkuSalesCard from '@/components/AccountSkuSalesCard.vue'
 import AccountBacklogCard from '@/components/AccountBacklogCard.vue'
 import AccountOpportunityCard from '@/components/AccountOpportunityCard.vue'
-import AccountQuickActions from '@/components/AccountQuickActions.vue'
+import AccountQuickActions, { type QuickLink } from '@/components/AccountQuickActions.vue'
 import AccountTasksCard from '@/components/AccountTasksCard.vue'
 import ContactsCard from '@/components/ContactsCard.vue'
-import VisitSurvey from '@/components/VisitSurvey.vue'
 import VisitHistoryCard from '@/components/VisitHistoryCard.vue'
-import PhotoPicker from '@/components/PhotoPicker.vue'
 import { useDraft, visitDraftKey } from '@/lib/drafts'
 import { enqueue, type QueuedPhoto } from '@/lib/submitQueue'
 import {
@@ -65,7 +82,7 @@ import {
   useReactivateAccount,
 } from '@/composables/useAccountStatus'
 import { isCreditBlocked } from '@/lib/ffl'
-import { count, daysAgo, humanize, money, shortDate, telHref } from '@/lib/format'
+import { daysAgo, humanize, money, shortDate, telHref } from '@/lib/format'
 
 const props = defineProps<{ customerKey: string }>()
 const key = computed(() => props.customerKey)
@@ -83,13 +100,15 @@ const flags = useFeatureFlags()
 /* The quick-action strip only offers chips whose target panels exist under
    the current flags. Summary is data-side and always available.
 
-   Every one of these six ends in a write, "summary" included — it caches to
-   public.ai_summaries — so an admin viewing as a rep gets none of them. The
-   database would refuse anyway (20260816140000), but refusing after someone
-   has filled in a visit survey is not the same as not offering it. */
+   The other five each end in a write, so an admin viewing as a rep gets
+   none of them. The database would refuse anyway (20260816140000), but
+   refusing after someone has filled in a visit survey is not the same as
+   not offering it. Summary stays: it only scrolls, and while viewing as a
+   rep the card it lands on shows the cached brief without its Summarize
+   button. The link chips below write nothing either, and stay too. */
 const quickActions = computed<QuickAction[]>(() => {
-  if (!session.canWrite) return []
   const list: QuickAction[] = ['summary']
+  if (!session.canWrite) return list
   if (flags.visits.value) list.push('visit', 'photo')
   if (flags.actionLogging.value) list.push('contact', 'note')
   if (flags.tasks.value) list.push('task')
@@ -97,41 +116,70 @@ const quickActions = computed<QuickAction[]>(() => {
 })
 
 const account = useAccount(key)
-// Same query AccountSummaryCard runs — vue-query dedupes it, so this costs
-// nothing extra. Here it feeds the "Last order" tile below.
-const summary = useAccountSummary(key)
-const recs = useAccountRecommendations(key)
+/* Started here rather than inside the chart: the chart is an async chunk,
+   and a query that lives in it would wait for chart.js to download before
+   even asking. Same key, so the chart's own call is a cache hit. */
+useAccountRevenueMonthly(key)
+/* Each of these feeds a section that renders only under its flag; with the
+   flag off they used to run on every account open regardless. */
+const recs = useAccountRecommendations(key, { enabled: flags.recommendations })
+const notes = useNotes(key, { enabled: flags.actionLogging })
+const actions = useAccountActions(key, { enabled: flags.actionLogging })
 
 /**
- * dim_customer.last_order_date is the ERP's unmaintained field — NULL for
- * most accounts, which made this tile say "never" right above a Performance
- * card showing a real last-order date. Prefer the order-history-derived date
- * from v_account_summary so the two always agree; the raw field is only the
- * fallback while the summary is loading or migration 011/015 isn't applied.
- */
-const lastOrderDate = computed(
-  () =>
-    summary.data.value?.last_order_date ??
-    account.data.value?.last_order_date ??
-    null,
-)
-const notes = useNotes(key)
-const actions = useAccountActions(key)
-
-/**
- * The buyer, in the header — who to ring before walking in. Same query
- * ContactsCard runs at the bottom of the page (vue-query dedupes it); the
- * list already comes back is_primary first, so row 0 is the best answer we
- * have even when nobody is flagged primary.
+ * Who to call, and where they are. The ERP's is_primary contact is, for
+ * about half of dealers, an INVOICE / accounts-payable mailbox with no
+ * phone, and the real buyer sits further down; lib/contacts.ts ranks the
+ * rows (a rep's go-to contact first, billing and our own staff never) and
+ * this takes the top one. Built from the two queries the page already runs
+ * — the contacts list (ContactsCard reads the same one, so the header and
+ * the card's first row always agree) and dim_customer, which carries the
+ * invoice/statement emails ranking uses and the sold-to street address.
  */
 const contacts = useContacts(key)
-/* An explicit find, not row 0: the query orders is_primary DESC, and the
-   ERP branch of v_account_contacts leaves is_primary NULL (not false) when
-   the flag is unset — NULLs sort first under DESC, so row 0 can be an
-   unflagged ERP contact sitting above the rep's actual primary. */
-const primaryContact = computed(() => {
-  const list = contacts.data.value ?? []
-  return list.find((c) => c.is_primary === true) ?? list[0] ?? null
+const reach = computed(() =>
+  buildAccountReach(props.customerKey, contacts.data.value ?? [], account.data.value),
+)
+const buyer = computed(() => reach.value.best.contact)
+
+/* The header Call button feeds the quick call log (feature.quick_log) like
+   the Overview's call list does: the global sheet asks "how did it go?" when
+   the rep comes back from the dialler. No preventDefault — the tel: link
+   dials as before; with the flag off this records nothing. */
+const quickLog = useQuickCallLog()
+function noteCallTap() {
+  quickLog.noteCallTap({
+    customerKey: props.customerKey,
+    customerName: title.value,
+    contactLabel: buyer.value?.label ?? '',
+  })
+}
+
+/** Directions, Email, New order: chips that leave the page. */
+const headerLinks = computed<QuickLink[]>(() => {
+  const links: QuickLink[] = []
+  if (reach.value.directionsUrl) {
+    links.push({
+      id: 'directions',
+      label: 'Directions',
+      icon: 'directions',
+      href: reach.value.directionsUrl,
+      external: true,
+    })
+  }
+  const b = buyer.value
+  if (b?.email && !b.do_not_email) {
+    links.push({ id: 'email', label: 'Email', icon: 'email', href: `mailto:${b.email}` })
+  }
+  if (flags.orders.value && session.canWrite) {
+    links.push({
+      id: 'order',
+      label: 'New order',
+      icon: 'order',
+      to: { name: 'orders-new', query: { customer: props.customerKey } },
+    })
+  }
+  return links
 })
 
 /**
@@ -150,24 +198,6 @@ const goalSource = computed(() => {
     return erp != null ? `your goal · ERP ${money(erp)}` : 'your goal'
   }
   return erp != null ? 'from ERP' : 'not set'
-})
-
-/**
- * The open-order line above the fold. Null when there is nothing outstanding
- * — an account with a clean book should say nothing rather than render a
- * cheerful "0 open orders" the rep has to read past every visit.
- */
-const openOrders = computed(() => {
-  const s = summary.data.value
-  if (!s || s.open_order_count <= 0) return null
-  const orders = `${s.open_order_count} open order${s.open_order_count === 1 ? '' : 's'}`
-  const units = s.backlog_qty
-    ? ` · ${count(Math.round(s.backlog_qty))} units on backorder`
-    : ''
-  return {
-    label: `${orders} · ${money(s.open_order_value)}`,
-    detail: `Still owed to this dealer${units}`,
-  }
 })
 
 /** Colours the header's Credit tile; the full story is in AccountShipReadiness. */
@@ -190,37 +220,6 @@ const place = computed(() => {
     .filter((v) => v && v !== '—')
     .join(', ')
 })
-
-/* ---- AI summary ---------------------------------------------------------
-   Cached row first, always. The button is an explicit choice — nothing fires
-   a generation on mount, and an account with too little history says so
-   instead of inventing a paragraph.
-------------------------------------------------------------------------- */
-const ai = useAiSummary(key)
-const generate = useGenerateAiSummary()
-const aiNotice = ref('')
-const aiError = ref('')
-
-async function runSummary() {
-  aiNotice.value = ''
-  aiError.value = ''
-  try {
-    const result = await generate.mutateAsync(props.customerKey)
-    if (result.status === 'insufficient_data') {
-      aiNotice.value =
-        result.message ??
-        "There isn't enough activity on this account to summarize yet. Log a visit or a call and try again."
-    } else if (result.status === 'cooldown') {
-      const mins = Math.max(1, Math.ceil((result.retry_after_seconds ?? 60) / 60))
-      aiNotice.value = `Just refreshed. You can regenerate in about ${mins} minute${mins === 1 ? '' : 's'}.`
-    } else if (result.status === 'cached') {
-      aiNotice.value = 'Nothing has changed since the last summary.'
-    }
-  } catch (e) {
-    aiError.value =
-      (e as Error).message || 'Could not build the summary right now.'
-  }
-}
 
 /* ---- log a contact ------------------------------------------------------ */
 const logging = ref(false)
@@ -269,7 +268,7 @@ const route = useRoute()
 
 // Keyed by user as well as account: IndexedDB is per-device, so an unscoped
 // key hands the next rep on a shared phone the previous rep's draft.
-const survey = ref<InstanceType<typeof VisitSurvey> | null>(null)
+const survey = ref<InstanceType<typeof VisitSurveyComponent> | null>(null)
 const draftKey = computed(() => visitDraftKey(key.value, session.user?.id))
 const {
   state: draftValues,
@@ -319,7 +318,7 @@ function closeSurvey() {
 
 /* Photos taken inside the survey. Online they upload themselves; offline the
    picker holds them and they travel with the queued survey. */
-const picker = ref<InstanceType<typeof PhotoPicker> | null>(null)
+const picker = ref<InstanceType<typeof PhotoPickerComponent> | null>(null)
 const pendingSurveyPhotos = ref<QueuedPhoto[]>([])
 
 function onSurveyPhotosPending(photos: QueuedPhoto[]) {
@@ -424,11 +423,12 @@ const noteSection = ref<HTMLElement | null>(null)
 const photoSection = ref<HTMLElement | null>(null)
 const summarySection = ref<HTMLElement | null>(null)
 
-/* ---- clickable order stats ----------------------------------------------
-   "Last order", "Open orders" and "Last invoice" (header strip + Performance
-   card) all resolve to the orders/shipments cards further down: expand the
-   right card, then the same nextTick-then-scroll move as onQuickAction.
-   "Last order" additionally pops the newest order's line modal.
+/* ---- doors to the orders card -------------------------------------------
+   "Last order" and "Still owed" in the Before you call card, the
+   Performance card's "Last invoice", and ?order=<id> all resolve to the
+   orders/shipments cards further down: expand the right card, then the
+   same nextTick-then-scroll move as onQuickAction. An order id also pops
+   that order's line modal — any order, not only one already loaded.
 ------------------------------------------------------------------------- */
 const ordersSection = ref<HTMLElement | null>(null)
 const ordersCard = ref<InstanceType<typeof AccountOrdersCard> | null>(null)
@@ -438,13 +438,18 @@ async function scrollToOrders(behavior: ScrollBehavior = 'smooth') {
   ordersSection.value?.scrollIntoView({ behavior, block: 'start' })
 }
 
-async function showLastOrder() {
+/** '' = no particular order: just land on the list. */
+async function showOrder(orderId: string) {
   ordersCard.value?.expandOrders()
+  if (!orderId) {
+    void scrollToOrders()
+    return
+  }
   // Instant, not smooth: the modal about to open locks body scroll
   // (AppModal), which would freeze a smooth scroll mid-flight. Jump first,
   // so closing the modal lands the rep on the orders card.
   await scrollToOrders('auto')
-  ordersCard.value?.openNewestOrder()
+  ordersCard.value?.openOrder(orderId)
 }
 function showOpenOrders() {
   ordersCard.value?.expandOrders()
@@ -454,6 +459,17 @@ async function showLastInvoice() {
   ordersCard.value?.expandShipments()
   await nextTick()
   ordersCard.value?.scrollToShipments()
+}
+
+/* ---- "No buyer number on file" → Add contact ----------------------------
+   The form lives in ContactsCard, in place, like every other write here. */
+const contactsSection = ref<HTMLElement | null>(null)
+const contactsCard = ref<InstanceType<typeof ContactsCard> | null>(null)
+
+async function addContact() {
+  contactsCard.value?.startAdd()
+  await nextTick()
+  contactsSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function onQuickAction(action: QuickAction) {
@@ -492,6 +508,39 @@ watch(
   },
   { immediate: true },
 )
+
+/* ---- order deep link ----------------------------------------------------
+   Lookup and the activity feed link here as ?order=<order id>: open that
+   order's lines (and expand the orders card behind them). No scroll, unlike
+   the in-page doors above: on a cold load everything above the card is
+   still arriving, so a jump lands somewhere arbitrary — and closing the
+   sheet should leave the rep at the top of the account they just opened.
+   The nextTick lets the orders card mount first. The param stays in the
+   URL while the sheet is open (a reload reopens the same order) and goes
+   when it closes: otherwise the same link tapped again — from the search
+   box in the app header, say — would be a navigation to the URL already
+   showing, and nothing would open.
+------------------------------------------------------------------------- */
+const router = useRouter()
+
+watch(
+  () => route.query.order,
+  async (raw) => {
+    const id = (Array.isArray(raw) ? raw[0] : raw)?.trim()
+    if (!id) return
+    await nextTick()
+    ordersCard.value?.openOrder(id)
+  },
+  { immediate: true },
+)
+
+function onOrderClosed(orderId: string) {
+  const raw = route.query.order
+  if ((Array.isArray(raw) ? raw[0] : raw)?.trim() !== orderId) return
+  const query = { ...route.query }
+  delete query.order
+  void router.replace({ query })
+}
 
 /* ---- deactivation --------------------------------------------------------
    The rep's override of the ERP's active_flag (migration 023). The panel
@@ -546,7 +595,8 @@ async function submitReactivation() {
 // be open on account B and stamp the wrong recommendation. The same goes for
 // every other typed-but-unsaved thing on the page: a half-written note or
 // contact log for A must not be one tap from saving against B, and A's
-// summary notice or "saved on this phone" line must not read as B's.
+// "saved on this phone" line must not read as B's. (The summary card and
+// ContactsCard reset their own.)
 watch(key, () => {
   closeSurvey()
   queuedNotice.value = false
@@ -556,8 +606,6 @@ watch(key, () => {
   logError.value = ''
   noteBody.value = ''
   noteError.value = ''
-  aiNotice.value = ''
-  aiError.value = ''
   deactivating.value = false
   deactivationReason.value = null
   deactivationNote.value = ''
@@ -570,6 +618,8 @@ watch(key, () => {
     <AsyncState
       :loading="account.isPending.value"
       :error="account.error.value"
+      :has-data="account.data.value !== undefined"
+      :updated-at="account.dataUpdatedAt.value"
       :empty="!account.isPending.value && !account.data.value"
       empty-title="Account not found"
       empty-body="It may not be in your book, or the ERP load hasn't run yet."
@@ -593,6 +643,12 @@ watch(key, () => {
                 · {{ account.data.value.territory }}
               </template>
             </p>
+            <!-- The street, so "where is this place" has an answer. Directions
+                 is a chip below. For chains the ERP sold-to is head office,
+                 not the store — lib/maps.ts. -->
+            <p v-if="reach.addressLine" class="text-canvas/80 mt-0.5 text-sm">
+              {{ reach.addressLine }}
+            </p>
             <div class="mt-3 flex flex-wrap items-center gap-2">
               <!-- The rep's write-off outranks the ERP flag: the ERP will keep
                    saying Active forever, and that's the whole reason 023 exists. -->
@@ -613,85 +669,93 @@ watch(key, () => {
             </div>
           </div>
 
-          <!-- The buyer — who to ring before walking in. Same rows as the
-               ContactsCard at the bottom; the compliance flags (034) decide
-               whether the phone/email are links at all. -->
+          <!-- Who to call — the ranked best contact, not the ERP's primary
+               flag (see `reach` above), with one big way to dial them. The
+               compliance flags (034) decide whether the number is a button
+               at all. Waits for the contacts list so it never flashes "no
+               number" at a dealer that has one. -->
           <div
-            v-if="primaryContact"
-            class="mt-4 shrink-0 sm:mt-3 sm:max-w-[18rem] sm:text-right"
+            v-if="contacts.data.value !== undefined"
+            class="mt-4 shrink-0 sm:mt-3 sm:w-[18rem]"
           >
-            <p class="text-canvas text-sm font-semibold">
-              {{ primaryContact.name }}
+            <p class="font-label text-[11px] font-semibold tracking-[0.14em] text-[#8E8A80] uppercase">
+              Who to call
             </p>
-            <p v-if="primaryContact.title" class="text-xs text-[#8E8A80]">
-              {{ primaryContact.title }}
-            </p>
-            <p v-if="primaryContact.phone" class="mt-1 text-sm">
-              <a
-                v-if="!primaryContact.do_not_call"
-                :href="telHref(primaryContact.phone)"
-                class="text-canvas underline decoration-dotted underline-offset-2"
+            <template v-if="buyer">
+              <p class="text-canvas mt-0.5 text-[15px] font-semibold break-words">
+                {{ buyer.label }}
+              </p>
+              <p v-if="buyer.title" class="text-xs text-[#8E8A80]">{{ buyer.title }}</p>
+            </template>
+
+            <a
+              v-if="buyer?.callable && buyer.phone"
+              :href="telHref(buyer.phone)"
+              @click="noteCallTap"
+              class="tap-target font-label bg-canvas text-ink mt-3 flex w-full items-center justify-center gap-2 rounded-[2px] px-4 text-[15px] font-semibold tracking-[0.1em] uppercase hover:bg-[#E6E3DC]"
+            >
+              <svg
+                class="size-5 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
               >
-                {{ primaryContact.phone }}
-              </a>
-              <span v-else class="text-[#8E8A80]">
-                {{ primaryContact.phone }} · do not call
-              </span>
-            </p>
-            <p v-if="primaryContact.email" class="mt-0.5 text-sm break-all">
-              <a
-                v-if="!primaryContact.do_not_email"
-                :href="`mailto:${primaryContact.email}`"
-                class="text-canvas underline decoration-dotted underline-offset-2"
+                <path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z" />
+              </svg>
+              Call {{ buyer.phone }}
+            </a>
+            <template v-else>
+              <!-- A flagged number keeps its digits visible but loses the
+                   one-tap action, so dialling can never be an accident. -->
+              <p v-if="buyer?.phone && buyer.do_not_call" class="mt-1 text-sm text-[#8E8A80]">
+                {{ buyer.phone }} · do not call
+              </p>
+              <!-- A named contact with no number (a go-to the rep chose, an
+                   email-only buyer) is not "no buyer": say whose number is
+                   missing. -->
+              <p v-else-if="buyer" class="text-canvas mt-1 text-sm">
+                No number on file for {{ buyer.label }}
+              </p>
+              <p v-else class="text-canvas mt-1 text-sm">No buyer number on file</p>
+              <button
+                v-if="session.canWrite"
+                type="button"
+                class="tap-target font-label text-canvas mt-2 inline-flex items-center rounded-[2px] border border-[#4A4D44] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase hover:border-canvas"
+                @click="addContact"
               >
-                {{ primaryContact.email }}
-              </a>
-              <span v-else class="text-[#8E8A80]">
-                {{ primaryContact.email }} · do not email
-              </span>
-            </p>
+                Add contact
+              </button>
+            </template>
           </div>
         </div>
 
         <!-- What the rep can do, before the numbers rather than after them. -->
         <div class="mt-4">
-          <AccountQuickActions :include="quickActions" @select="onQuickAction" />
+          <AccountQuickActions
+            :include="quickActions"
+            :links="headerLinks"
+            @select="onQuickAction"
+          />
         </div>
       </header>
 
       <!--
-        ERP facts straight off dim_customer — except "Last order", which
-        prefers the order-history-derived date (see lastOrderDate above).
-        This strip stays even though AccountSummaryCard repeats "Last order":
-        the card needs the v_account_* rollup views (migration 011), and until
-        those are applied this is the only account history on the page.
+        ERP facts straight off dim_customer. "Last order" and the open-order
+        line used to sit here too, repeating what the Performance card said;
+        both now live once, in the Before you call card just below. Three
+        across at 390px, so the labels track tighter and the values step
+        down a size on a phone.
       -->
-      <dl class="bg-line border-line -mx-4 grid grid-cols-2 gap-px border-b sm:grid-cols-4">
-        <div class="bg-surface px-3 py-2.5">
-          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
-            Last order
-          </dt>
-          <dd class="u-display mt-0.5 text-xl">
-            <!-- Straight to the order itself: expands the orders card below
-                 and opens the newest order's lines. Plain text when there's
-                 no order — a clickable "never" that goes nowhere is worse. -->
-            <button
-              v-if="lastOrderDate"
-              type="button"
-              class="underline decoration-dotted underline-offset-4"
-              title="Show the most recent order"
-              @click="showLastOrder"
-            >
-              {{ daysAgo(lastOrderDate) }}
-            </button>
-            <template v-else>{{ daysAgo(lastOrderDate) }}</template>
-          </dd>
-        </div>
-        <div class="bg-surface px-3 py-2.5">
-          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+      <dl class="bg-line border-line -mx-4 grid grid-cols-3 gap-px border-b">
+        <div class="bg-surface min-w-0 px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.06em] uppercase sm:tracking-[0.12em]">
             Customer since
           </dt>
-          <dd class="u-display mt-0.5 text-xl">
+          <dd class="u-display mt-0.5 text-base sm:text-xl">
             {{ shortDate(account.data.value?.account_open_date) }}
           </dd>
         </div>
@@ -702,24 +766,24 @@ watch(key, () => {
           part, and hiding it would make the two screens disagree silently.
           Setting and editing happen in the Performance card below.
         -->
-        <div class="bg-surface px-3 py-2.5">
-          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+        <div class="bg-surface min-w-0 px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.06em] uppercase sm:tracking-[0.12em]">
             Goal
           </dt>
-          <dd class="u-display mt-0.5 text-xl">
+          <dd class="u-display mt-0.5 text-base sm:text-xl">
             {{ money(displayGoal) }}
           </dd>
           <p class="text-muted mt-0.5 text-[11px]">{{ goalSource }}</p>
         </div>
-        <div class="bg-surface px-3 py-2.5">
-          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.12em] uppercase">
+        <div class="bg-surface min-w-0 px-3 py-2.5">
+          <dt class="font-label text-muted text-[10px] font-semibold tracking-[0.06em] uppercase sm:tracking-[0.12em]">
             Credit
           </dt>
           <!-- Was one bare word. credit_limit_amount sat unused next to it in
                dim_customer the whole time, and the limit is what makes the
                status mean something. -->
           <dd
-            class="u-display mt-0.5 text-xl"
+            class="u-display mt-0.5 text-base sm:text-xl"
             :class="creditBlocked ? 'text-danger' : ''"
           >
             {{ humanize(account.data.value?.credit_status) }}
@@ -732,27 +796,6 @@ watch(key, () => {
           </p>
         </div>
       </dl>
-
-      <!--
-        "What are they still waiting on?" — above the fold.
-        This was reachable only by scrolling to a collapsed card, opening it,
-        and tapping into a modal, which is three moves too many for the
-        question a dealer asks first. The numbers come from the summary query
-        the Performance card already runs (vue-query dedupes it), so this
-        costs no extra request.
-      -->
-      <button
-        v-if="openOrders"
-        type="button"
-        class="border-line bg-surface hover:bg-canvas -mx-4 block w-[calc(100%+2rem)] border-b px-4 py-3 text-left"
-        title="Show the open orders"
-        @click="showOpenOrders"
-      >
-        <p class="text-ink text-[15px] font-semibold underline decoration-dotted underline-offset-4">
-          {{ openOrders.label }}
-        </p>
-        <p class="text-muted text-[13px]">{{ openOrders.detail }}</p>
-      </button>
     </AsyncState>
 
     <!-- Deactivated: say so up top, with the way back. The full story and
@@ -793,6 +836,17 @@ watch(key, () => {
       </p>
     </AppCard>
 
+    <!-- The pre-call brief: rhythm, last order, what's owed, their repeat
+         buys in stock, pricing. Each fact once, on the whole page. -->
+    <BeforeYouCallCard
+      :customer-key="customerKey"
+      :customer-type="account.data.value?.customer_type ?? null"
+      :can-write="session.canWrite"
+      :orders-enabled="flags.orders.value"
+      @show-order="showOrder"
+      @show-open-orders="showOpenOrders"
+    />
+
     <!--
       "Can we ship?" — FFL expiry and credit holds, the two things that stop
       an order dead. Renders nothing when both are fine, so its presence is
@@ -811,56 +865,24 @@ watch(key, () => {
     <!-- Mini-dashboard: every number below is aggregated in Postgres. -->
     <AccountSummaryCard
       :customer-key="customerKey"
-      @show-orders="showOpenOrders"
-      @show-last-order="showLastOrder"
       @show-last-invoice="showLastInvoice"
     />
     <AccountRevenueChart :customer-key="customerKey" />
 
-    <!-- The account Sales Brief — cached copy first, regeneration on request
-         only. HEADLINES-first structure comes from the prompt (v2). -->
+    <!-- The account Sales Brief. The Summary chip scrolls here and never
+         generates — that is the card's own button, a paid call. -->
     <section ref="summarySection" class="scroll-mt-16">
-    <AppCard>
-      <template #header>
-        <h2 class="u-label text-ink">Sales Brief</h2>
-        <AppButton
-          variant="ghost"
-          :loading="generate.isPending.value"
-          @click="runSummary"
-        >
-          {{ ai.hasSummary.value ? 'Regenerate' : 'Summarize' }}
-        </AppButton>
-      </template>
-
-      <AsyncState
-        :loading="ai.isPending.value"
-        :error="ai.error.value"
-        :rows="2"
-        @retry="ai.refetch()"
-      >
-        <div>
-          <template v-if="ai.hasSummary.value">
-            <p class="text-ink-2 text-[15px] leading-relaxed whitespace-pre-wrap">
-              {{ ai.summary.value?.content }}
-            </p>
-            <p class="text-muted mt-2 text-xs">{{ ai.asOf.value }}</p>
-          </template>
-          <p v-else class="text-muted text-[15px] leading-relaxed">
-            No summary yet. Tap Summarize and we'll read this account's numbers,
-            recent orders and your notes back to you in a few sentences.
-          </p>
-
-          <p v-if="aiNotice" class="text-muted mt-3 text-sm">{{ aiNotice }}</p>
-          <p
-            v-if="aiError"
-            role="alert"
-            class="text-danger mt-3 text-sm font-medium"
-          >
-            {{ aiError }}
-          </p>
-        </div>
-      </AsyncState>
-    </AppCard>
+      <AccountAiSummaryCard :customer-key="customerKey" :can-write="session.canWrite">
+        <template #footer="{ summary }">
+          <AiFeedbackThumbs
+            surface="account_summary"
+            :subject-key="customerKey"
+            :generated-at="summary.generated_at"
+            :prompt-version="summary.prompt_version"
+            :read-only="!session.canWrite"
+          />
+        </template>
+      </AccountAiSummaryCard>
     </section>
 
     <!-- Open recommendations -->
@@ -871,6 +893,8 @@ watch(key, () => {
       <AsyncState
         :loading="recs.isPending.value"
         :error="recs.error.value"
+        :has-data="recs.data.value !== undefined"
+        :updated-at="recs.dataUpdatedAt.value"
         :empty="openRecs.length === 0"
         empty-title="Nothing open here"
         :rows="1"
@@ -1016,7 +1040,11 @@ watch(key, () => {
 
     <!-- Orders and shipments, straight off the rollup views. -->
     <section ref="ordersSection" class="scroll-mt-16">
-      <AccountOrdersCard ref="ordersCard" :customer-key="customerKey" />
+      <AccountOrdersCard
+        ref="ordersCard"
+        :customer-key="customerKey"
+        @order-closed="onOrderClosed"
+      />
     </section>
 
     <!-- What they buy and what they're owed, by SKU (data-first additions). -->
@@ -1028,7 +1056,9 @@ watch(key, () => {
          way round, and reads best against what they already carry. -->
     <AccountOpportunityCard :customer-key="customerKey" />
 
-    <ContactsCard :customer-key="customerKey" />
+    <section ref="contactsSection" class="scroll-mt-16">
+      <ContactsCard ref="contactsCard" :customer-key="customerKey" />
+    </section>
 
     <!-- Personal follow-ups on this account. -->
     <section v-if="flags.tasks.value" ref="taskSection" class="scroll-mt-16">
@@ -1070,6 +1100,8 @@ watch(key, () => {
       <AsyncState
         :loading="notes.isPending.value"
         :error="notes.error.value"
+        :has-data="notes.data.value !== undefined"
+        :updated-at="notes.dataUpdatedAt.value"
         :empty="(notes.data.value?.length ?? 0) === 0"
         empty-title="No notes yet"
         :rows="2"
@@ -1104,6 +1136,8 @@ watch(key, () => {
       <AsyncState
         :loading="actions.isPending.value"
         :error="actions.error.value"
+        :has-data="actions.data.value !== undefined"
+        :updated-at="actions.dataUpdatedAt.value"
         :empty="(actions.data.value?.length ?? 0) === 0"
         empty-title="Nothing logged yet"
         empty-body="Calls, visits, and emails you log show up here."

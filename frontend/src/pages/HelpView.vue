@@ -140,6 +140,8 @@ function statusTone(status: string): 'late' | 'high' | 'good' | 'neutral' {
       <AsyncState
         :loading="articles.isPending.value"
         :error="articles.error.value"
+        :has-data="articles.data.value !== undefined"
+        :updated-at="articles.dataUpdatedAt.value"
         :empty="filtered.length === 0"
         :empty-title="search ? 'No guide matches that' : 'No guides yet'"
         :empty-body="search ? 'Try a different word, or ask below.' : 'Ask a question below and we will write one.'"
@@ -269,6 +271,8 @@ function statusTone(status: string): 'late' | 'high' | 'good' | 'neutral' {
       <AsyncState
         :loading="mine.isPending.value"
         :error="mine.error.value"
+        :has-data="mine.data.value !== undefined"
+        :updated-at="mine.dataUpdatedAt.value"
         :empty="(mine.data.value ?? []).length === 0"
         empty-title="Nothing asked yet"
         empty-body="Your questions and the answers will stay here."

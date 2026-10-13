@@ -224,6 +224,8 @@ function toggleClass(on: boolean) {
       <AsyncState
         :loading="query.isPending.value"
         :error="query.error.value"
+        :has-data="query.data.value !== undefined"
+        :updated-at="query.dataUpdatedAt.value"
         :empty="subChannelRows.length === 0"
         empty-title="No channel data"
         empty-body="Channels fill in once the ETL has landed the customer reporting hierarchy."

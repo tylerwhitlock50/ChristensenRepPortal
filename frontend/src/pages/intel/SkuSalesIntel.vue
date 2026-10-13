@@ -7,14 +7,12 @@ import {
   useTerritorySkuSales,
   type SkuPivotRow,
 } from '@/composables/useIntel'
-import { useTerritoryAccounts } from '@/composables/useOverview'
-import AccountPicker from '@/components/AccountPicker.vue'
+import TerritoryAccountPicker from './TerritoryAccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import { deltaLabel, percentChange } from '@/composables/useAccountMetrics'
 import ProductLink from '@/components/ui/ProductLink.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
 import { count, money, shortDate } from '@/lib/format'
@@ -23,7 +21,12 @@ import { count, money, shortDate } from '@/lib/format'
  * Sales by SKU — what was bought, by SKU, this year vs history. Two modes:
  * "My territory" (the whole book rolled up per SKU) and "By account"
  * (one account's SKU history, picker fed from the same territory rows the
- * Overview already cached).
+ * Overview already cached — read only once "By account" is chosen).
+ *
+ * Last year is the WHOLE calendar year (agg_sku_year has no months), so it
+ * is labelled "all of" and never set against this year as a percentage: in
+ * October a flat territory read "−20% vs last year" because ten months were
+ * being compared with twelve.
  */
 const mode = ref<'territory' | 'account'>('territory')
 const accountKey = ref('')
@@ -31,7 +34,6 @@ const search = ref('')
 
 const territory = useTerritorySkuSales()
 const account = useSkuSalesByAccount(accountKey)
-const picker = useTerritoryAccounts()
 
 const active = computed(() => (mode.value === 'territory' ? territory : account))
 const yearNow = new Date().getFullYear()
@@ -53,14 +55,6 @@ const totals = computed(() => {
   return { rev, revLY, qty, skus: rows.filter((r) => r.qtyThisYear > 0).length }
 })
 
-const accounts = computed(() =>
-  [...(picker.data.value ?? [])].sort((a, b) =>
-    (a.customer_name ?? a.customer_key).localeCompare(
-      b.customer_name ?? b.customer_key,
-    ),
-  ),
-)
-
 const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
   { id: 'part_id', header: 'SKU', accessorKey: 'part_id', meta: { filter: 'text' } },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
@@ -76,10 +70,10 @@ const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
     accessorKey: 'chambering',
     meta: { filter: 'select' },
   },
-  { id: 'qtyThisYear', header: `Qty ${yearNow}`, accessorKey: 'qtyThisYear' },
-  { id: 'revenueThisYear', header: `Rev ${yearNow}`, accessorKey: 'revenueThisYear' },
-  { id: 'qtyLastYear', header: `Qty ${yearNow - 1}`, accessorKey: 'qtyLastYear' },
-  { id: 'revenueLastYear', header: `Rev ${yearNow - 1}`, accessorKey: 'revenueLastYear' },
+  { id: 'qtyThisYear', header: `Qty ${yearNow} so far`, accessorKey: 'qtyThisYear' },
+  { id: 'revenueThisYear', header: `Rev ${yearNow} so far`, accessorKey: 'revenueThisYear' },
+  { id: 'qtyLastYear', header: `Qty all ${yearNow - 1}`, accessorKey: 'qtyLastYear' },
+  { id: 'revenueLastYear', header: `Rev all ${yearNow - 1}`, accessorKey: 'revenueLastYear' },
   { id: 'lastInvoiceDate', header: 'Last invoice', accessorKey: 'lastInvoiceDate' },
 ])
 
@@ -91,10 +85,10 @@ const csvColumns: CsvColumn<SkuPivotRow>[] = [
   { key: 'product_family', header: 'Family' },
   { key: 'chambering', header: 'Chambering' },
   { key: 'upc', header: 'UPC' },
-  { key: 'qtyThisYear', header: `Qty ${yearNow}` },
-  { key: 'revenueThisYear', header: `Revenue ${yearNow}` },
-  { key: 'qtyLastYear', header: `Qty ${yearNow - 1}` },
-  { key: 'revenueLastYear', header: `Revenue ${yearNow - 1}` },
+  { key: 'qtyThisYear', header: `Qty ${yearNow} to date` },
+  { key: 'revenueThisYear', header: `Revenue ${yearNow} to date` },
+  { key: 'qtyLastYear', header: `Qty all of ${yearNow - 1}` },
+  { key: 'revenueLastYear', header: `Revenue all of ${yearNow - 1}` },
   { key: 'lastInvoiceDate', header: 'Last invoice' },
 ]
 function onExport() {
@@ -127,10 +121,9 @@ function onExport() {
         </button>
       </div>
 
-      <AccountPicker
+      <TerritoryAccountPicker
         v-if="mode === 'account'"
         v-model="accountKey"
-        :accounts="accounts"
         placeholder="Choose an account…"
         class="order-last w-full sm:order-none sm:w-auto sm:min-w-0 sm:max-w-sm sm:flex-1"
       />
@@ -154,6 +147,8 @@ function onExport() {
     <AsyncState
       :loading="active.isPending.value && !nothingPicked"
       :error="active.error.value"
+      :has-data="active.data.value !== undefined"
+      :updated-at="active.dataUpdatedAt.value"
       :empty="!active.isPending.value && !nothingPicked && pivoted.length === 0"
       :empty-title="
         mode === 'account' ? 'Nothing bought yet' : 'No SKU history'
@@ -177,9 +172,9 @@ function onExport() {
           <StatTile
             :label="`Revenue ${yearNow}`"
             :value="money(totals.rev)"
-            :sub="`${deltaLabel(percentChange(totals.rev, totals.revLY))} vs ${yearNow - 1} (${money(totals.revLY)})`"
+            :sub="`So far · all of ${yearNow - 1}: ${money(totals.revLY)}`"
           />
-          <StatTile :label="`Units ${yearNow}`" :value="count(totals.qty)" />
+          <StatTile :label="`Units ${yearNow}`" :value="count(totals.qty)" sub="So far" />
           <StatTile label="SKUs bought" :value="count(totals.skus)" :sub="`in ${yearNow}`" />
           <StatTile label="SKUs all years" :value="count(pivoted.length)" />
         </div>
@@ -228,8 +223,8 @@ function onExport() {
                   </ProductLink>
                 </p>
                 <p class="text-ink-2 mt-1 text-sm tabular-nums">
-                  {{ yearNow }}: {{ count(row.qtyThisYear) }} units,
-                  {{ money(row.revenueThisYear) }} · {{ yearNow - 1 }}:
+                  {{ yearNow }} so far: {{ count(row.qtyThisYear) }} units,
+                  {{ money(row.revenueThisYear) }} · all of {{ yearNow - 1 }}:
                   {{ count(row.qtyLastYear) }} units,
                   {{ money(row.revenueLastYear) }}
                 </p>

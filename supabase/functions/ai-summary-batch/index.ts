@@ -58,10 +58,42 @@
   the access decision in TypeScript — strictly worse than an honest,
   documented, narrow exception.
 
+  ── Small calls, repeated (20261013140000) ─────────────────────────────────
+  One request used to try every target (up to 100 model calls) and reply at
+  the end — far past an Edge Function's wall-clock limit, so a long run was
+  cut off before it logged anything. Now each call does a bounded slice and
+  the ETL repeats it (etl/views.yml `repeat_until_idle`) while the reply says
+  `generated > 0`. Three things make that converge:
+
+    - ai_batch_targets() leaves out accounts summarised in the last 20 hours
+      BEFORE the per-rep cap, and this function filters them again before
+      slicing (the same rule, for a database that still has 021's version),
+      so a repeat call sees the next accounts, not the same top N;
+    - every account this function finishes — generated, cached (unchanged),
+      insufficient or failed — is stamped in public.ai_batch_checks, which
+      ai_batch_targets() also leaves out for 20 hours. Without it an
+      unchanged or failing account wrote nothing, kept its rep's top slots
+      on every repeat call, and a failing one was paid for again each time.
+      The reply's `checked` counts those stamps, and the ETL keeps calling
+      while `generated + checked > 0`: a call that only confirmed unchanged
+      accounts still moved down the list;
+    - `max_accounts` caps PAID generations per call, not accounts looked at:
+      an unchanged account comes back 'cached' for the price of its reads
+      and does not use up the call, so a run of unchanged accounts at the
+      top cannot end the night early;
+    - a time budget (AI_BATCH_TIME_BUDGET_SECONDS, default 75) after which
+      no new account is started, leaving room for the ones in flight under
+      the 150 s request limit.
+
+  Targets are worked in the function's order — round-robin across reps,
+  each rep's highest score first — so a call cut short by its allowance has
+  spent it on every rep's top accounts, not on whichever books score
+  highest.
+
   ── Invoking it ────────────────────────────────────────────────────────────
       curl -X POST "$SUPABASE_URL/functions/v1/ai-summary-batch" \
         -H "x-batch-secret: $AI_BATCH_SECRET" \
-        -H 'content-type: application/json' -d '{"per_rep":5}'
+        -H 'content-type: application/json' -d '{"per_rep":5,"max_accounts":15}'
 ============================================================================*/
 
 import { fail, json, preflight } from '../_shared/cors.ts'
@@ -75,8 +107,11 @@ import {
 } from '../_shared/aiSummary.ts'
 
 const DEFAULT_PER_REP = envInt('AI_BATCH_PER_REP', 5)
+/** Paid generations per call (see header). The ETL sends 15. */
 const MAX_ACCOUNTS = envInt('AI_BATCH_MAX_ACCOUNTS', 100)
 const CONCURRENCY = Math.max(1, envInt('AI_BATCH_CONCURRENCY', 3))
+/** No new account starts after this; in-flight ones finish (≤ 60 s each). */
+const TIME_BUDGET_MS = envInt('AI_BATCH_TIME_BUDGET_SECONDS', 75) * 1000
 
 /**
  * Skip an account whose summary is already younger than this. The context
@@ -100,11 +135,25 @@ function secretMatches(provided: string, expected: string): boolean {
 
 type RequestBody = { per_rep?: number; max_accounts?: number }
 
-type Outcome = 'generated' | 'cached' | 'skipped' | 'insufficient' | 'failed'
+type Outcome = 'generated' | 'cached' | 'skipped' | 'insufficient' | 'failed' | 'deferred'
+
+/**
+ * The per-call budget of paid generations, shared by the pool's workers.
+ * Claimed only once an account is known to need a model call, so cached
+ * and insufficient accounts never spend it.
+ */
+type Budget = { paid: number; cap: number; deadline: number }
+
+function isFresh(generatedAt: string | null | undefined): boolean {
+  if (!generatedAt || MIN_AGE_HOURS <= 0) return false
+  const ageHours = (Date.now() - new Date(generatedAt).getTime()) / 3_600_000
+  return ageHours >= 0 && ageHours < MIN_AGE_HOURS
+}
 
 async function generateFor(
   client: ReturnType<typeof serviceClient>,
   customerKey: string,
+  budget: Budget,
 ): Promise<Outcome> {
   const existing = await client
     .from('ai_summaries')
@@ -114,10 +163,8 @@ async function generateFor(
 
   const row = existing.data as { context_hash: string | null; generated_at: string } | null
 
-  if (row && MIN_AGE_HOURS > 0) {
-    const ageHours = (Date.now() - new Date(row.generated_at).getTime()) / 3_600_000
-    if (ageHours >= 0 && ageHours < MIN_AGE_HOURS) return 'skipped'
-  }
+  // A rep may have generated it since the target list was read.
+  if (row && isFresh(row.generated_at)) return 'skipped'
 
   const prepared = await prepareContext(client, customerKey)
   if (prepared.insufficient) return 'insufficient'
@@ -125,7 +172,12 @@ async function generateFor(
   // Unchanged since last time → nothing to pay for.
   if (row && row.context_hash === prepared.contextHash) return 'cached'
 
-  const briefing = await callOpenAI(prepared.contextJson)
+  // Needs a model call. Leave it for the next call if this one has spent
+  // its allowance or its time.
+  if (budget.paid >= budget.cap || Date.now() > budget.deadline) return 'deferred'
+  budget.paid += 1
+
+  const briefing = await callOpenAI(prepared.promptJson)
 
   const { error } = await client.from('ai_summaries').upsert(
     {
@@ -148,19 +200,23 @@ async function generateFor(
 }
 
 /** Fixed-size worker pool. Deliberately not Promise.all over the whole list:
-    100 concurrent OpenAI calls is how a nightly job earns a rate limit. */
+    100 concurrent OpenAI calls is how a nightly job earns a rate limit.
+    Workers stop taking accounts once the budget's allowance or time is
+    gone; whatever is left is reported as `remaining`. */
 async function runPool(
   keys: string[],
   worker: (key: string) => Promise<Outcome>,
   size: number,
-): Promise<Record<Outcome, number>> {
+  budget: Budget,
+): Promise<Record<Outcome, number> & { taken: number; remaining: number }> {
   const tally: Record<Outcome, number> = {
-    generated: 0, cached: 0, skipped: 0, insufficient: 0, failed: 0,
+    generated: 0, cached: 0, skipped: 0, insufficient: 0, failed: 0, deferred: 0,
   }
   let next = 0
+  const spent = () => budget.paid >= budget.cap || Date.now() > budget.deadline
 
   async function pump(): Promise<void> {
-    while (next < keys.length) {
+    while (next < keys.length && !spent()) {
       const key = keys[next++]
       try {
         tally[await worker(key)] += 1
@@ -174,7 +230,61 @@ async function runPool(
   }
 
   await Promise.all(Array.from({ length: Math.min(size, keys.length) }, () => pump()))
-  return tally
+  // Deferred accounts were looked at but not paid for: still to do.
+  return { ...tally, taken: next, remaining: keys.length - next + tally.deferred }
+}
+
+/**
+ * Remember that tonight's run looked at this account, whatever came of it
+ * (ai_batch_checks, 20261013140000) — see the header. False when the stamp
+ * could not be written (a database without the table): the reply's
+ * `checked` then stays 0 and the ETL repeats on `generated` alone, as
+ * before, instead of re-reading the same accounts eight times.
+ */
+async function markChecked(
+  client: ReturnType<typeof serviceClient>,
+  customerKey: string,
+  outcome: Outcome,
+): Promise<boolean> {
+  const { error } = await client.from('ai_batch_checks').upsert(
+    { customer_key: customerKey, outcome, checked_at: new Date().toISOString() },
+    { onConflict: 'customer_key' },
+  )
+  if (error) {
+    console.warn('batch: could not stamp ai_batch_checks', customerKey, error)
+    return false
+  }
+  return true
+}
+
+/**
+ * Drop targets whose summary is younger than MIN_AGE_HOURS, BEFORE the
+ * cap: 20261013140000's ai_batch_targets() already does, 021's did not,
+ * and without this a repeat call against the old function would spend its
+ * whole slice re-reading the accounts the previous call just wrote.
+ */
+async function withoutFresh(
+  client: ReturnType<typeof serviceClient>,
+  keys: string[],
+): Promise<string[]> {
+  if (keys.length === 0 || MIN_AGE_HOURS <= 0) return keys
+  const fresh = new Set<string>()
+  for (let i = 0; i < keys.length; i += 200) {
+    const chunk = keys.slice(i, i + 200)
+    const { data, error } = await client
+      .from('ai_summaries')
+      .select('customer_key, generated_at')
+      .in('customer_key', chunk)
+    if (error) {
+      // Not fatal: generateFor() checks each account's age again.
+      console.warn('batch: freshness pre-filter failed', error)
+      return keys
+    }
+    for (const r of (data ?? []) as { customer_key: string; generated_at: string }[]) {
+      if (isFresh(r.generated_at)) fresh.add(r.customer_key)
+    }
+  }
+  return keys.filter((k) => !fresh.has(k))
 }
 
 async function handle(req: Request): Promise<Response> {
@@ -203,19 +313,48 @@ async function handle(req: Request): Promise<Response> {
     throw new HttpError(500, 'targets_failed', 'Could not resolve the target accounts.')
   }
 
-  const all = ((targets.data ?? []) as { customer_key: string }[]).map((r) => r.customer_key)
-  const keys = all.slice(0, cap)
-  // Never let a cap silently look like full coverage.
-  if (all.length > keys.length) {
-    console.warn(`batch: capped at ${keys.length} of ${all.length} target accounts`)
-  }
+  // In the order the function returns them: round-robin across reps
+  // (every rep's #1, then every rep's #2, ...), so a call that runs out of
+  // allowance has spent it fairly. Re-sorting by score here would hand
+  // every call to the books with the highest scores. (021's version
+  // returns key order; it only runs until 20261013140000 is applied.)
+  const ranked = ((targets.data ?? []) as { customer_key: string }[]).map((r) => r.customer_key)
+  const keys = await withoutFresh(client, ranked)
 
-  const tally = await runPool(keys, (k) => generateFor(client, k), CONCURRENCY)
+  const budget: Budget = { paid: 0, cap, deadline: Date.parse(started) + TIME_BUDGET_MS }
+  let checked = 0
+  const { taken, ...tally } = await runPool(
+    keys,
+    async (k) => {
+      // 'failed' unless generateFor returns: a throw is stamped too, so a
+      // broken account is not paid for again by tonight's next call.
+      let outcome: Outcome = 'failed'
+      try {
+        outcome = await generateFor(client, k, budget)
+        return outcome
+      } finally {
+        // Deferred (no allowance left) and skipped (fresh) are not done.
+        if (outcome !== 'deferred' && outcome !== 'skipped') {
+          if (await markChecked(client, k, outcome)) checked += 1
+        }
+      }
+    },
+    CONCURRENCY,
+    budget,
+  )
 
+  // `generated + checked` is what the ETL's repeat_until_idle reads: 0 means
+  // this call found nothing left to look at.
   const summary = {
-    targets: all.length,
-    attempted: keys.length,
+    targets: ranked.length,
+    fresh: ranked.length - keys.length,
+    attempted: taken,
+    checked,
     ...tally,
+  }
+  // Never let a cap silently look like full coverage.
+  if (tally.remaining > 0) {
+    console.warn(`batch: ${tally.remaining} target accounts left for the next call`)
   }
   console.log('batch complete', summary)
 

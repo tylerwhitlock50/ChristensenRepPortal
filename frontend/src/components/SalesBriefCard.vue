@@ -3,13 +3,20 @@ import { computed } from 'vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import FreshnessStamp from '@/components/FreshnessStamp.vue'
-import { parseBrief, type AiBriefRow } from '@/composables/useAiBrief'
+import AiFeedbackThumbs from '@/components/AiFeedbackThumbs.vue'
+import { briefHeadlines, parseBrief, type AiBriefRow } from '@/composables/useAiBrief'
 
 /**
  * The Sales Brief — the analyst's read on whatever data the page is showing.
  * HEADLINES first (Bloomberg-style scannability), analysis below, freshness
  * in the footer. Shared by the Overview today and by future AI Actions on
  * the intel pages; keep it dumb — all data comes in as props.
+ *
+ * Tappable headlines: a brief written since ai-brief 2.0.0 carries its
+ * headlines tagged with the account each is about (ai_briefs.items, keys
+ * checked server-side against the brief's own data). Those headlines get a
+ * chip that opens the account. Anything older, or a database without the
+ * column, renders the prose headlines exactly as before.
  */
 const props = defineProps<{
   brief: AiBriefRow | null
@@ -31,6 +38,16 @@ defineEmits<{ regenerate: [] }>()
 
 const parsed = computed(() =>
   props.brief ? parseBrief(props.brief.content) : { headlines: [], body: '' },
+)
+const tagged = computed(() => briefHeadlines(props.brief))
+const headlines = computed(
+  () =>
+    tagged.value ??
+    parsed.value.headlines.map((text) => ({ text, customerKey: null, accountName: null })),
+)
+/** Feedback is about a territory brief; other actions would pass their own. */
+const surface = computed(() =>
+  props.brief?.action === 'territory.brief' ? ('territory_brief' as const) : null,
 )
 const paragraphs = computed(() =>
   parsed.value.body.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean),
@@ -65,14 +82,27 @@ const paragraphs = computed(() =>
     </div>
 
     <template v-else-if="brief">
-      <ul v-if="parsed.headlines.length" class="mb-4 space-y-2">
+      <ul v-if="headlines.length" class="mb-4 space-y-2">
         <li
-          v-for="(h, i) in parsed.headlines"
+          v-for="(h, i) in headlines"
           :key="i"
           class="text-ink flex gap-2.5 text-[17px] leading-snug font-semibold"
         >
           <span class="bg-accent mt-[7px] block h-[3px] w-3 shrink-0" aria-hidden="true" />
-          {{ h }}
+          <span class="min-w-0">
+            {{ h.text }}
+            <!-- The chip is the headline's door into the account: a full
+                 48px row of its own under the sentence, not an inline link
+                 a thumb has to hit between words. -->
+            <RouterLink
+              v-if="h.customerKey"
+              :to="{ name: 'account', params: { customerKey: h.customerKey } }"
+              class="tap-target border-line-2 text-ink-2 hover:border-ink hover:text-ink mt-1.5 flex w-fit max-w-full items-center gap-1.5 border px-3 text-[14px] font-normal"
+            >
+              <span class="truncate">{{ h.accountName || h.customerKey }}</span>
+              <span aria-hidden="true" class="shrink-0">→</span>
+            </RouterLink>
+          </span>
         </li>
       </ul>
       <div class="space-y-3">
@@ -84,6 +114,14 @@ const paragraphs = computed(() =>
           {{ p }}
         </p>
       </div>
+
+      <AiFeedbackThumbs
+        v-if="surface"
+        :surface="surface"
+        :generated-at="brief.generated_at"
+        :prompt-version="brief.prompt_version"
+        :read-only="readOnly"
+      />
     </template>
 
     <p v-else class="text-muted text-[15px]">

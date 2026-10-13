@@ -136,8 +136,21 @@ means for every other answer.
 | `get_goal_progress` | `v_account_goal_progress`, `v_my_goal_rollup` | Goal attainment and seasonal pace |
 | `list_recommendations` | `recommendations` | The generated work list, with why-now |
 | `list_account_activity` | `notes`, `actions`, `visits` | What the team has actually done there |
-| `list_contacts` | `v_account_contacts` | Who to call (ERP + rep-entered) |
+| `list_contacts` | `v_account_contacts`, `erp.dim_customer` | Who to call (ERP + rep-entered), ranked like the portal: buyer first, billing/AP last, with a `best_contact` |
+| `find_dealers_for_sku` | `v_sku_sales_by_account` | Which dealers in my book bought this SKU (or its family + chambering) — who to call when it lands in stock |
 | `get_global_product_sales` | `report_global_product_sales()` | Company-wide units, for benchmarking |
+
+### Prompts
+
+`prompts/list` offers three ready-made questions (`mcp/prompts.ts`): **Pre-call
+brief** (`account`), **Plan my week** (optional `focus`) and **What can I sell
+from today's stock** (optional `account`). Each is only a user message naming
+the tools to use and the house rules (invoiced vs booked, dates not day counts,
+observations not instructions); it reads nothing itself.
+
+`list_contacts` ranks with `_shared/contacts.ts`, a copy of
+`frontend/src/lib/contacts.ts`; `_shared/contacts.test.ts` fails if the two
+rank the same rows differently (`deno test --allow-env supabase/functions/`).
 
 Two deliberate omissions:
 
@@ -190,9 +203,11 @@ or an unknown tool name.
 ```
 mcp/
 ├── index.ts        transport, JSON-RPC dispatch, auth handover
-├── tools.ts        the twenty tools + the registry
+├── tools.ts        the twenty-one tools + the registry
+├── prompts.ts      the three MCP prompts
 └── README.md       this file
 ../_shared/mcpAuth.ts   token extraction, resolution, JWT minting
+../_shared/contacts.ts  contact ranking (copy of the frontend's, parity-tested)
 ```
 
 Database side: `supabase/migrations/20260816120000_mcp_access.sql`

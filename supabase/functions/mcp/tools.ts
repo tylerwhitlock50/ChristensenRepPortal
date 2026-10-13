@@ -32,6 +32,7 @@
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 import type { McpCaller } from '../_shared/mcpAuth.ts'
+import { bestContact, rankContacts, type RankableContact } from '../_shared/contacts.ts'
 
 export interface ToolContext {
   db: SupabaseClient
@@ -866,6 +867,82 @@ const getSkuSales: ToolDef = {
   },
 }
 
+/**
+ * 'yyyy-mm' for month `m` (0-based) of year `y`. `m` may run negative or past
+ * 11; Date normalises it.
+ */
+function monthKey(y: number, m: number): string {
+  const d = new Date(Date.UTC(y, m, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+/**
+ * How many months get_sales_summary always reads, whatever `months` asks
+ * for. The summary's furthest look-back is January of last year: 24 months
+ * including this one, in December. 25 is the tool's default `months` and
+ * leaves a month of slack.
+ */
+export const SALES_SUMMARY_MONTHS = 25
+
+/**
+ * The `summary` block of get_sales_summary, from report_sales_by_month rows
+ * (any order; months with no invoices absent). Pure, so the month arithmetic
+ * is testable.
+ *
+ * The rows must reach back SALES_SUMMARY_MONTHS. A prior-year figure summed
+ * from fewer months is not null, it is wrong: with only 13 months read,
+ * year_to_date_last_year was last October alone and the YTD comparison
+ * read +829%.
+ */
+export function summariseSalesMonths(rows: Row[], now: Date = new Date()) {
+  // Index by 'yyyy-mm' for the lookups below.
+  const byMonth = new Map<string, Row>()
+  for (const r of rows) byMonth.set(String(r.sales_month).slice(0, 7), r)
+  const rev = (key: string) => num(byMonth.get(key)?.revenue)
+
+  const year = now.getUTCFullYear()
+  const month = now.getUTCMonth() // 0-based
+
+  // Sum of the months from `fromMonth` (0-based) through `month` in `y`,
+  // null when none of them had invoices.
+  const span = (y: number, fromMonth: number): number | null => {
+    let total = 0
+    let seen = false
+    for (let m = fromMonth; m <= month; m++) {
+      const v = rev(monthKey(y, m))
+      if (v !== null) {
+        total += v
+        seen = true
+      }
+    }
+    return seen ? total : null
+  }
+
+  const thisMonth = rev(monthKey(year, month))
+  const lastMonth = rev(monthKey(year, month - 1))
+  const sameMonthLastYear = rev(monthKey(year - 1, month))
+  const quarterStart = month - (month % 3)
+  const qtd = span(year, quarterStart)
+  const qtdLastYear = span(year - 1, quarterStart)
+  const ytd = span(year, 0)
+  const ytdLastYear = span(year - 1, 0)
+
+  return {
+    this_month: money(thisMonth),
+    this_month_note: 'Partial — through the last nightly load (see whoami data_through).',
+    last_month: money(lastMonth),
+    same_month_last_year: money(sameMonthLastYear),
+    this_month_vs_last_year_pct:
+      thisMonth !== null && sameMonthLastYear ? pct(thisMonth - sameMonthLastYear, sameMonthLastYear) : null,
+    quarter_to_date: money(qtd),
+    quarter_to_date_last_year: money(qtdLastYear),
+    year_to_date: money(ytd),
+    year_to_date_last_year: money(ytdLastYear),
+    ytd_vs_last_year_pct:
+      ytd !== null && ytdLastYear ? pct(ytd - ytdLastYear, ytdLastYear) : null,
+  }
+}
+
 const getSalesSummary: ToolDef = {
   name: 'get_sales_summary',
   title: 'Sales by month',
@@ -889,8 +966,9 @@ const getSalesSummary: ToolDef = {
         maximum: 48,
         default: 25,
         description:
-          'How many months back, newest month included. 25 (the default) is ' +
-          'enough for every year-over-year figure in `summary`.',
+          'How many months of the `months` series to return, newest month ' +
+          'included. `summary` (this month, QTD, YTD and their prior-year ' +
+          'figures) is complete whatever this is.',
       },
     },
     additionalProperties: false,
@@ -899,69 +977,28 @@ const getSalesSummary: ToolDef = {
     const months = clampInt(args.months, 25, 1, 48)
     const key = str(args.customer_key)
 
+    // Always read enough for the summary, then return only the months asked
+    // for. At 25 or more (the default) that is everything read, exactly the
+    // function's answer. Fewer: the newest `months`, counted back from the
+    // same "this month" the summary uses.
+    const fetched = Math.max(months, SALES_SUMMARY_MONTHS)
     const result = await db.rpc('report_sales_by_month', {
       p_customer_key: key,
-      p_months: months,
+      p_months: fetched,
     })
     const rows = rowsOf(result, 'monthly sales')
 
-    // Index by 'yyyy-mm' for the summary lookups below.
-    const byMonth = new Map<string, Row>()
-    for (const r of rows) byMonth.set(String(r.sales_month).slice(0, 7), r)
-    const rev = (ym: string) => num(byMonth.get(ym)?.revenue)
-
     const now = new Date()
-    const ym = (y: number, m: number) => {
-      // m may run negative or past 11; Date normalises it.
-      const d = new Date(Date.UTC(y, m, 1))
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
-    }
-    const year = now.getUTCFullYear()
-    const month = now.getUTCMonth() // 0-based
-
-    // Sum of the months from `fromMonth` (0-based) through `month` in `y`,
-    // null when none of them are inside the requested window.
-    const span = (y: number, fromMonth: number): number | null => {
-      let total = 0
-      let seen = false
-      for (let m = fromMonth; m <= month; m++) {
-        const v = rev(ym(y, m))
-        if (v !== null) {
-          total += v
-          seen = true
-        }
-      }
-      return seen ? total : null
-    }
-
-    const thisMonth = rev(ym(year, month))
-    const lastMonth = rev(ym(year, month - 1))
-    const sameMonthLastYear = rev(ym(year - 1, month))
-    const quarterStart = month - (month % 3)
-    const qtd = span(year, quarterStart)
-    const qtdLastYear = span(year - 1, quarterStart)
-    const ytd = span(year, 0)
-    const ytdLastYear = span(year - 1, 0)
+    const since = monthKey(now.getUTCFullYear(), now.getUTCMonth() - (months - 1))
+    const series =
+      fetched === months ? rows : rows.filter((r) => String(r.sales_month).slice(0, 7) >= since)
 
     return {
       scope: key ?? 'whole book',
       months_requested: months,
-      summary: {
-        this_month: money(thisMonth),
-        this_month_note: 'Partial — through the last nightly load (see whoami data_through).',
-        last_month: money(lastMonth),
-        same_month_last_year: money(sameMonthLastYear),
-        this_month_vs_last_year_pct:
-          thisMonth !== null && sameMonthLastYear ? pct(thisMonth - sameMonthLastYear, sameMonthLastYear) : null,
-        quarter_to_date: money(qtd),
-        quarter_to_date_last_year: money(qtdLastYear),
-        year_to_date: money(ytd),
-        year_to_date_last_year: money(ytdLastYear),
-        ytd_vs_last_year_pct:
-          ytd !== null && ytdLastYear ? pct(ytd - ytdLastYear, ytdLastYear) : null,
-      },
+      summary: summariseSalesMonths(rows, now),
       // Oldest first, so a model can read the trend left to right.
-      months: rows.map((r) =>
+      months: series.map((r) =>
         compact({
           month: String(r.sales_month).slice(0, 7),
           revenue: money(r.revenue),
@@ -1669,13 +1706,25 @@ const listAccountActivity: ToolDef = {
   },
 }
 
+const CONTACT_COLUMNS =
+  'contact_key, source, name, title, phone, email, is_primary, do_not_call, notes, updated_at'
+
+/** "column … does not exist" — display_name on a database without 20261013100000. */
+function isMissingColumn(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null
+  return e?.code === '42703' || /column .* does not exist/i.test(e?.message ?? '')
+}
+
 const listContacts: ToolDef = {
   name: 'list_contacts',
   title: 'Account contacts',
   description:
     'People at one account: ERP system-of-record contacts plus anything the ' +
     'reps have captured in the portal (`source` says which). Answers "who do ' +
-    'I call".',
+    'I call". Ranked the way the portal ranks them: the ERP\'s "primary" is ' +
+    'often an invoice / accounts-payable mailbox with no phone, so `kind` ' +
+    'says what each contact is (buyer, callable, orders line, billing, …) ' +
+    'and `best_contact` is the one to ask for.',
   inputSchema: {
     type: 'object',
     properties: { customer_key: CUSTOMER_KEY },
@@ -1684,15 +1733,242 @@ const listContacts: ToolDef = {
   },
   async handler(args, { db }) {
     const key = requireKey(args)
-    const result = await db
-      .from('v_account_contacts')
-      .select('source, name, title, phone, email, is_primary, notes')
+
+    // display_name (20261013100000) is the printable name; a database
+    // without it still answers, ranked on `name`.
+    const read = (columns: string) =>
+      db.from('v_account_contacts').select(columns).eq('customer_key', key)
+    let result: PgResult = await read(`${CONTACT_COLUMNS}, display_name`)
+    if (result.error && isMissingColumn(result.error)) result = await read(CONTACT_COLUMNS)
+
+    // The account's own billing addresses: a contact at one of them is
+    // accounts payable, not the buyer. Best-effort — ranking still works
+    // on names and titles without them.
+    const billing = await db
+      .schema('erp')
+      .from('dim_customer')
+      .select('invoice_email, statement_email')
       .eq('customer_key', key)
-      .order('is_primary', { ascending: false })
+      .maybeSingle()
+    const b = (billing.error ? null : billing.data) as Row | null
+    const opts = {
+      invoiceEmail: (b?.invoice_email as string | null) ?? null,
+      statementEmail: (b?.statement_email as string | null) ?? null,
+    }
+
+    // Same ranking as the account page (frontend/src/lib/contacts.ts, copied
+    // to _shared/contacts.ts with a parity test).
+    const rowsIn = rowsOf(result, 'contacts') as Array<RankableContact & { notes?: string | null }>
+    const ranked = rankContacts(rowsIn, opts)
+    const best = bestContact(rowsIn, opts)
 
     return {
       customer_key: key,
-      contacts: rowsOf(result, 'contacts').map(compact),
+      best_contact: best.contact
+        ? compact({
+            name: best.contact.label,
+            title: best.contact.title ?? null,
+            phone: best.callable ? best.contact.phone ?? null : null,
+            kind: best.reason,
+            callable: best.callable,
+          })
+        : { note: 'No buyer number on file.' },
+      contacts: ranked.map((c) =>
+        compact({
+          name: c.label,
+          kind: c.kind,
+          callable: c.callable,
+          source: c.source,
+          title: c.title,
+          phone: c.phone,
+          email: c.email,
+          is_primary: c.is_primary,
+          do_not_call: c.do_not_call === true ? true : null,
+          notes: c.notes ?? null,
+        }),
+      ),
+      note:
+        'Best to call first. "billing" and "internal" (our own staff) are last; ' +
+        'a do_not_call number must not be dialled.',
+    }
+  },
+}
+
+/** Rows read for find_dealers_for_sku's family fallback. */
+const PROSPECT_ROW_CAP = 5000
+const PROSPECT_COLUMNS = 'customer_key, part_key, sales_year, qty, last_invoice_date'
+
+type ProspectRow = { customer_key: string; sales_year: number; qty: number; last_invoice_date: string | null }
+
+/**
+ * Sales rows → one entry per dealer, most recent buyer first. The same rule
+ * as the In stock page's sheet (frontend/src/composables/useSkuProspects.ts
+ * rankProspects): returns are not purchases; latest year and its units.
+ */
+function rankDealers(rows: ProspectRow[]) {
+  const by = new Map<string, {
+    customer_key: string; last_year: number; units_last_year: number
+    units_4y: number; last_invoice_date: string | null
+  }>()
+  for (const r of rows) {
+    const qty = Number(r.qty ?? 0)
+    if (!(qty > 0)) continue
+    const year = Number(r.sales_year)
+    const d = by.get(r.customer_key) ??
+      { customer_key: r.customer_key, last_year: year, units_last_year: 0, units_4y: 0, last_invoice_date: null }
+    if (year > d.last_year) {
+      d.last_year = year
+      d.units_last_year = 0
+    }
+    if (year === d.last_year) d.units_last_year += qty
+    d.units_4y += qty
+    if (r.last_invoice_date && (!d.last_invoice_date || r.last_invoice_date > d.last_invoice_date)) {
+      d.last_invoice_date = r.last_invoice_date
+    }
+    by.set(r.customer_key, d)
+  }
+  return [...by.values()].sort(
+    (a, b) =>
+      (b.last_invoice_date ?? '').localeCompare(a.last_invoice_date ?? '') ||
+      b.units_4y - a.units_4y ||
+      a.customer_key.localeCompare(b.customer_key),
+  )
+}
+
+const findDealersForSku: ToolDef = {
+  name: 'find_dealers_for_sku',
+  title: 'Who buys this SKU',
+  description:
+    'The reverse of get_account_sku_gaps: given a product, the dealers in ' +
+    'YOUR book who have bought it (current + 3 prior years), most recent ' +
+    'buyer first, with the latest year and units. Answers "this just came ' +
+    'into stock — who should I call?". When nobody bought that exact SKU it ' +
+    'falls back to dealers who bought the same family and chambering, and ' +
+    '`match` says so. Pair with check_availability for stock and ' +
+    'list_contacts for who to ask for.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      sku: {
+        type: 'string',
+        description: 'Part ID (e.g. "MESA-65CM-22"), exact or a unique fragment.',
+      },
+      part_key: { type: 'string', description: 'ERP part key, if you already have it.' },
+      limit: limitProp(25, 100),
+    },
+    additionalProperties: false,
+  },
+  async handler(args, { db }) {
+    const limit = clampInt(args.limit, 25, 1, 100)
+    const sku = str(args.sku)
+    const partKey = str(args.part_key)
+    if (!sku && !partKey) {
+      throw new ToolError('Pass `sku` (a part ID) or `part_key`. check_availability lists both.')
+    }
+
+    // Resolve the part: exact part_key, else exact part ID, else a fragment
+    // that matches exactly one part.
+    const parts = db
+      .schema('erp')
+      .from('dim_part')
+      .select('part_key, part_id, part_description, product_family, chambering')
+    let candidates: Row[]
+    if (partKey) {
+      candidates = rowsOf(await parts.eq('part_key', partKey).limit(1), 'the part')
+    } else {
+      const term = safeLike(sku!)
+      candidates = rowsOf(await parts.ilike('part_id', term).limit(5), 'the part')
+      if (candidates.length === 0) {
+        candidates = rowsOf(
+          await db
+            .schema('erp')
+            .from('dim_part')
+            .select('part_key, part_id, part_description, product_family, chambering')
+            .ilike('part_id', `*${term}*`)
+            .order('part_id')
+            .limit(6),
+          'the part',
+        )
+      }
+    }
+    if (candidates.length === 0) {
+      throw new ToolError(`No part matches "${sku ?? partKey}". Try check_availability with a query.`)
+    }
+    if (candidates.length > 1) {
+      throw new ToolError(
+        `"${sku}" matches several parts: ${candidates.map((c) => c.part_id).join(', ')}. ` +
+          'Pass the exact part ID or its part_key.',
+      )
+    }
+    const part = candidates[0]
+
+    const readSales = (filters: Record<string, string>) =>
+      fetchCapped(
+        (from, to) => {
+          let q = db.from('v_sku_sales_by_account').select(PROSPECT_COLUMNS)
+          for (const [column, value] of Object.entries(filters)) q = q.eq(column, value)
+          // The view's grain — a unique order for paging.
+          return q.order('customer_key').order('part_key').order('sales_year').range(from, to)
+        },
+        PROSPECT_ROW_CAP,
+        'SKU buyers',
+      )
+
+    // v_sku_sales_by_account is security_invoker over RLS-scoped
+    // erp.agg_sku_year: the caller's book, no customer filter here.
+    let match: 'exact' | 'similar' | 'none' = 'exact'
+    let { rows, capped } = await readSales({ part_key: String(part.part_key) })
+    let dealers = rankDealers(rows as ProspectRow[])
+
+    const spec = (v: unknown) => {
+      const t = typeof v === 'string' ? v.trim() : ''
+      return t && t.toUpperCase() !== 'N/A' ? t : null
+    }
+    const family = spec(part.product_family)
+    const chambering = spec(part.chambering)
+    if (dealers.length === 0 && (family || chambering)) {
+      match = 'similar'
+      ;({ rows, capped } = await readSales({
+        ...(family ? { product_family: family } : {}),
+        ...(chambering ? { chambering } : {}),
+      }))
+      dealers = rankDealers(rows as ProspectRow[])
+    }
+    if (dealers.length === 0) match = 'none'
+
+    const shown = dealers.slice(0, limit)
+    const accounts = shown.length
+      ? rowsOf(
+          await db
+            .from('v_account_list')
+            .select('customer_key, customer_name, sold_to_city, sold_to_state, active_flag, deactivated_at')
+            .in('customer_key', shown.map((d) => d.customer_key)),
+          'account names',
+        )
+      : []
+    const byKey = new Map(accounts.map((a) => [String(a.customer_key), a]))
+
+    return {
+      part: compact(part),
+      match,
+      dealers_matched: dealers.length,
+      dealers: shown.map((d) => {
+        const a = byKey.get(d.customer_key)
+        return compact({
+          ...d,
+          customer_name: a?.customer_name ?? null,
+          city: a?.sold_to_city ?? null,
+          state: a?.sold_to_state ?? null,
+          inactive: a && (a.active_flag !== 'Y' || a.deactivated_at) ? true : null,
+        })
+      }),
+      ...(capped ? { capped_at: PROSPECT_ROW_CAP } : {}),
+      note:
+        match === 'similar'
+          ? `Nobody in your book bought this exact SKU; these bought other ${[family, chambering].filter(Boolean).join(' ')}.`
+          : match === 'none'
+            ? 'Nobody in your book has bought this SKU or its family in the last four years.'
+            : 'Units are invoiced units. Use list_contacts(customer_key) for who to ask for.',
     }
   },
 }
@@ -1779,6 +2055,7 @@ const ALL_TOOLS: ToolDef[] = [
   listRecommendations,
   listAccountActivity,
   listContacts,
+  findDealersForSku,
   getGlobalProductSales,
 ]
 

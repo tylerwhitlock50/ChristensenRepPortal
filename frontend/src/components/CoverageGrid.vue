@@ -197,6 +197,8 @@ function toggleClass(on: boolean) {
       <AsyncState
         :loading="coverage.isPending.value"
         :error="coverage.error.value"
+        :has-data="coverage.data.value !== undefined"
+        :updated-at="coverage.dataUpdatedAt.value"
         :empty="allRows.length === 0"
         empty-title="No assigned accounts"
         empty-body="Coverage fills in once profiles carry a sales_rep_key and the ETL has run."

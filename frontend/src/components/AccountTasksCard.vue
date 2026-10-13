@@ -70,6 +70,8 @@ async function complete(task: Task) {
       <AsyncState
         :loading="query.isPending.value"
         :error="query.error.value"
+        :has-data="query.data.value !== undefined"
+        :updated-at="query.dataUpdatedAt.value"
         :empty="tasks.length === 0"
         empty-title="None yet"
         empty-body="Anything you add here shows up on Today with a link back to this account."

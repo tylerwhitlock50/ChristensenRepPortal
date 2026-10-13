@@ -132,6 +132,12 @@ export interface AccountOrderLineRow {
   customer_key: string
   order_id: string
   line_num: number
+  /**
+   * The order's date, repeated on each line (035). Lets the drill-in title
+   * an order that is not among the loaded headers — a deep link to an old
+   * one (?order=) opens by id alone.
+   */
+  order_date: string | null
   promise_date: string | null
   line_status_desc: string | null
   part_key: string | null
@@ -150,6 +156,12 @@ export interface AccountOrderLineRow {
    * it; never sum it across lines (sales_semantic_model.md §1 rule 7).
    */
   total_shipped_qty_to_date: number | null
+  /**
+   * The line's own UPS numbers, comma-joined (20261013150000). Null for an
+   * unshipped line, and on a database without the column: the read is
+   * select('*'), so its absence just leaves this null.
+   */
+  tracking_numbers: string | null
 }
 
 /** One packlist's lines — public.v_account_shipment_lines. */
@@ -221,7 +233,7 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
 }
 
 // The ETL lands erp once a night, so these are safe to hold for a while.
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /* -------------------------------------------------------------- queries */
 
@@ -296,15 +308,24 @@ export function useAccountRevenueMonthly(customerKey: MaybeRef<string>) {
  *
  * The consequence to respect: an unbounded select now returns EVERY order for
  * the account. Both queries below must keep sending .range().
+ *
+ * Both take `enabled`. The cards that list them start collapsed, so the
+ * account page runs them only once a card is opened — or, for orders, once
+ * the "Before you call" card wants the newest one. Every observer of a key
+ * sees the cache: a disabled card still shows rows another observer
+ * fetched.
  */
 export const ORDERS_PAGE_SIZE = 20
 
 /** Recent ORDERS (header grain), newest first, paged. */
-export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
+export function useAccountOrderHeaders(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useInfiniteQuery({
     queryKey: computed(() => accountMetricsKeys.orderHeaders(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     initialPageParam: 0,
@@ -346,11 +367,14 @@ export function useAccountOrderHeaders(customerKey: MaybeRef<string>) {
 }
 
 /** Recent PACKLISTS (header grain), newest first, paged. */
-export function useAccountShipmentHeaders(customerKey: MaybeRef<string>) {
+export function useAccountShipmentHeaders(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useInfiniteQuery({
     queryKey: computed(() => accountMetricsKeys.shipmentHeaders(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     initialPageParam: 0,
@@ -415,6 +439,7 @@ export function useAccountOrderLines(
         customer_key: String(r.customer_key),
         order_id: String(r.order_id),
         line_num: num(r.line_num),
+        order_date: (r.order_date as string | null) ?? null,
         promise_date: (r.promise_date as string | null) ?? null,
         line_status_desc: (r.line_status_desc as string | null) ?? null,
         part_key: (r.part_key as string | null) ?? null,
@@ -427,6 +452,7 @@ export function useAccountOrderLines(
         customer_po_number: (r.customer_po_number as string | null) ?? null,
         desired_ship_date: (r.desired_ship_date as string | null) ?? null,
         total_shipped_qty_to_date: numOrNull(r.total_shipped_qty_to_date),
+        tracking_numbers: (r.tracking_numbers as string | null) ?? null,
       }))
     },
   })

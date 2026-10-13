@@ -1,12 +1,24 @@
 <script setup lang="ts">
-import { onErrorCaptured, ref, watch } from 'vue'
+import { defineAsyncComponent, onErrorCaptured, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '@/components/AppShell.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import { useSessionStore } from '@/stores/session'
+import { useUsagePing } from '@/composables/useUsagePing'
 
 const route = useRoute()
 const session = useSessionStore()
+
+// App opens count as activity, not only password sign-ins (Admin → Activity).
+useUsagePing()
+
+// Its own chunk, fetched after the shell paints: nothing on first load
+// needs it, and it pulls in date math and the task/action writers. If the
+// chunk fails to download it renders nothing (see onErrorCaptured below)
+// and is tried again the next time the shell mounts it.
+const CallOutcomeSheet = defineAsyncComponent(
+  () => import('@/components/CallOutcomeSheet.vue'),
+)
 
 /**
  * Last-resort error boundary.
@@ -23,7 +35,25 @@ const session = useSessionStore()
  */
 const renderError = ref<Error | null>(null)
 
-onErrorCaptured((err) => {
+/**
+ * Vue's `info` for a defineAsyncComponent whose chunk failed to download:
+ * the type name in a dev build, an error-reference URL (runtime-13) in
+ * production.
+ */
+function isAsyncLoaderFailure(info: string): boolean {
+  return info === 'async component loader' || /#runtime-13$/.test(info)
+}
+
+onErrorCaptured((err, _instance, info) => {
+  // A lazily loaded piece of a page (a sheet, a form, a chart) whose code
+  // didn't arrive — a dropped LTE connection, or the first session before
+  // the offline copy finished installing — is not a broken screen. The
+  // piece renders its own "didn't load" note (or nothing) and Vue tries the
+  // download again the next time it mounts; the page around it stays.
+  if (isAsyncLoaderFailure(info)) {
+    console.warn('[lazy load failed]', err)
+    return false
+  }
   renderError.value = err instanceof Error ? err : new Error(String(err))
   console.error('[render error]', err)
   return false
@@ -78,5 +108,9 @@ function reload() {
          state — setViewAs() resets the query cache, but a component's own
          refs (module-scoped brief guard, open panels) it cannot reach. -->
     <RouterView :key="session.acting?.target_user_id ?? 'self'" />
+    <!-- The quick call log's "how did it go?" (feature.quick_log). Here, not
+         on a page, so a call started from any list is asked about wherever
+         the rep comes back to. Renders nothing while the flag is off. -->
+    <CallOutcomeSheet />
   </AppShell>
 </template>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useAccountBacklog } from '@/composables/useIntel'
+import { useAccountSummary } from '@/composables/useAccountMetrics'
 import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { cardHintState } from '@/components/ui/cardHint'
@@ -13,26 +14,59 @@ import { count, money, shortDate } from '@/lib/format'
  * Collapsed on arrival, but the dollars owed stay in the header: that number
  * is the whole reason to open it, and "None" says the conversation is moot
  * without costing a tap.
+ *
+ * The rows are fetched on first open (or already sit in the cache, when the
+ * Before you call card read them for its promise dates). Until then the
+ * header reads the same dollars and units from v_account_summary, which the
+ * page has loaded anyway: open_order_value is the sum this view rolls up.
  */
 const props = defineProps<{ customerKey: string }>()
-const key = computed(() => props.customerKey)
+
+const card = ref<InstanceType<typeof AppCollapsibleCard> | null>(null)
+/* Latched on first open, re-armed per account — see AccountSkuSalesCard. */
+const wanted = ref(false)
+watch(
+  () => card.value?.isOpen,
+  (open) => {
+    if (open) wanted.value = true
+  },
+)
+watch(
+  () => props.customerKey,
+  () => {
+    wanted.value = !!card.value?.isOpen
+  },
+)
+/* An empty key keeps useAccountBacklog disabled. */
+const key = computed(() => (wanted.value ? props.customerKey : ''))
 
 const query = useAccountBacklog(key)
+const summary = useAccountSummary(computed(() => props.customerKey))
 const rows = computed(() => query.data.value ?? [])
 const total = computed(() => rows.value.reduce((a, r) => a + r.backlog_amount, 0))
 
-const hint = computed(
-  () =>
-    cardHintState(query, rows.value.length) ??
-    `${rows.value.length} · ${money(total.value)}`,
+const summaryHint = computed(() => {
+  const s = summary.data.value
+  if (!s) return undefined
+  if (s.open_order_count <= 0) return 'None'
+  return `${count(Math.round(s.backlog_qty))} units · ${money(s.open_order_value)}`
+})
+
+const hint = computed(() =>
+  !wanted.value
+    ? summaryHint.value
+    : (cardHintState(query, rows.value.length) ??
+      `${rows.value.length} · ${money(total.value)}`),
 )
 </script>
 
 <template>
-  <AppCollapsibleCard title="On backorder" :hint="hint" :padded="false">
+  <AppCollapsibleCard ref="card" title="On backorder" :hint="hint" :padded="false">
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
       empty-title="Nothing on backorder"
       empty-body="Every open line for this account has shipped or been allocated."

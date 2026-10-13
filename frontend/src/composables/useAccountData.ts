@@ -1,7 +1,7 @@
 import { computed, unref, type MaybeRef } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
-import { qk } from '@/lib/queryClient'
+import { isErpQueryKey, qk } from '@/lib/queryClient'
 import type { Tables } from '@/types/database.types'
 import type { ActionType } from '@/types/domain'
 
@@ -34,13 +34,27 @@ export type AccountContact = {
    */
   do_not_call: boolean
   do_not_email: boolean
+  /**
+   * The name to print (migration 20261013100000): ERP contact_name, else
+   * first + last, else the contact id. Absent on a database without it —
+   * lib/contacts.ts contactDisplayName() falls back to `name`.
+   */
+  display_name?: string | null
 }
 
-export function useNotes(customerKey: MaybeRef<string>) {
+/**
+ * Notes and the activity list below both take `enabled`: the account page
+ * renders them only while feature.actionLogging is on, and a read nobody
+ * sees should not be one of the requests a rep waits on in a parking lot.
+ */
+export function useNotes(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useQuery({
     queryKey: computed(() => qk.account.notes(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     queryFn: async (): Promise<Note[]> => {
       const { data, error } = await supabase
         .from('notes')
@@ -102,11 +116,14 @@ export function useContacts(customerKey: MaybeRef<string>) {
 }
 
 /** Visit/call/email history for the account — the "was this worked?" answer. */
-export function useAccountActions(customerKey: MaybeRef<string>) {
+export function useAccountActions(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useQuery({
     queryKey: computed(() => qk.account.activity(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     queryFn: async (): Promise<Action[]> => {
       const { data, error } = await supabase
         .from('actions')
@@ -142,7 +159,15 @@ export function useLogAccountAction() {
       return data
     },
     onSuccess: (_d, vars) => {
-      void qc.invalidateQueries({ queryKey: qk.account.root(vars.customerKey) })
+      // Everything rep-written under the account (its activity, status,
+      // AI summary…), but not its ERP reads: an inserted action changes none
+      // of them (account_signals' touch count moves with tonight's load),
+      // and the quick call log makes this insert after nearly every call —
+      // re-reading ten ERP views each time on LTE undid their nightly cache.
+      void qc.invalidateQueries({
+        queryKey: qk.account.root(vars.customerKey),
+        predicate: (q) => !isErpQueryKey(q.queryKey),
+      })
     },
   })
 }

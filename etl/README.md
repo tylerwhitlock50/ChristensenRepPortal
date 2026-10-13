@@ -16,16 +16,35 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
 - **Schedule:** the "Run CRM update" scheduled task runs `push.ps1` at
   5 PM Mountain daily. It exits with the loader's code and appends to
   `push.log`, so Task Scheduler's *Last Run Result* is the alarm.
-- **Post-load:** after every table loads it runs `views.yml → post_load_sql`
+- **Post-load:** after the tables load it runs `views.yml → post_load_sql`
   in order (rollup refresh first, then scoring/recommendations, then order
-  QC) and finally logs one `etl:run` row in `public.job_runs`. That row is
-  `success` only when every table AND every post-load step succeeded; the
-  portal's freshness stamp reads it, so a partial night shows as stale
-  instead of fresh.
+  QC) and then logs one `etl:run` row in `public.job_runs`. That row is
+  `success` only when every table AND every required post-load step
+  succeeded; the portal's freshness stamp reads it, so a partial night shows
+  as stale instead of fresh. Steps marked `optional: true` (statistics,
+  order change capture) are logged as `etl:post_load` errors when they fail
+  and never hold the stamp back. `post_load_http` (the AI batch) runs after
+  the `etl:run` row and never affects it.
+- **When post-load runs:** never on a subset run
+  (`python push_to_supabase.py dim_customer …`). On a full run: when every
+  table loaded, or — if some failed — when every table in
+  `views.yml → post_load_requires` (the tables the post-load steps read:
+  `dim_customer`, `dim_part`, `fact_invoice_line`, `fact_order_line`,
+  `fact_shipment_line`) loaded. So one failing feed that nothing downstream
+  reads (contacts, ATS, inventory) no longer freezes the rollups, signals and
+  AI batch; `push.log` prints a `WARNING: … table(s) FAILED` banner first.
+  That night's `etl:run` is still `error`: its message names the failed
+  tables and ends `post-load ran anyway: …` (or, when a required table
+  failed, `post-load skipped: required table(s) did not load: …`), and the
+  exit code is still 1. The AI batch runs only when every required
+  post-load step succeeded. Without `post_load_requires` every table is
+  required (the old rule). Add a table to the list whenever a post-load
+  step starts reading it.
 
 ## Files
 
-- `views.yml` — view→table mapping, snake_case overrides, post-load SQL
+- `views.yml` — view→table mapping, snake_case overrides, the tables
+  post-load needs (`post_load_requires`), post-load SQL and HTTP calls
 - `push_to_supabase.py` — the job (pyodbc → psycopg COPY)
 - `deploy_migrations.py` — applies `../supabase/migrations/*.sql` to Supabase
   (same box, same `.env`, needs only `PG_CONN`)

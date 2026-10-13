@@ -243,6 +243,8 @@ async function deleteArticle(id: number) {
       <AsyncState
         :loading="inbox.isPending.value"
         :error="inbox.error.value"
+        :has-data="inbox.data.value !== undefined"
+        :updated-at="inbox.dataUpdatedAt.value"
         :empty="visible.length === 0"
         :empty-title="filter === 'open' ? 'Inbox zero' : 'Nothing here'"
         :empty-body="filter === 'open' ? 'No questions are waiting on you.' : ''"
@@ -306,6 +308,8 @@ async function deleteArticle(id: number) {
       <AsyncState
         :loading="articles.isPending.value"
         :error="articles.error.value"
+        :has-data="articles.data.value !== undefined"
+        :updated-at="articles.dataUpdatedAt.value"
         :empty="(articles.data.value ?? []).length === 0"
         empty-title="No guides yet"
         empty-body="Write the first one — what reps ask most."

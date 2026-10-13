@@ -200,6 +200,8 @@ function topWhy(row: (typeof previewRows.value)[number]): string {
     <AsyncState
       :loading="settings.isPending.value || rules.isPending.value"
       :error="settings.error.value || rules.error.value"
+      :has-data="settings.data.value !== undefined && rules.data.value !== undefined"
+      :updated-at="Math.min(settings.dataUpdatedAt.value, rules.dataUpdatedAt.value)"
       :rows="3"
       @retry="settings.refetch(); rules.refetch()"
     >

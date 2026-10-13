@@ -41,7 +41,7 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
   return !isViewMissing(error) && failureCount < 1
 }
 
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /* ------------------------------------------------------------- SKU sales */
 

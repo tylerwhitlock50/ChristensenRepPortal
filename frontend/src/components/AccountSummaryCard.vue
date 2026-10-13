@@ -4,25 +4,26 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import AccountGoalPanel from '@/components/AccountGoalPanel.vue'
-import { count, daysAgo, money, shortDate } from '@/lib/format'
+import { format, isThisYear, parseISO } from 'date-fns'
+import { daysAgo, money } from '@/lib/format'
 import {
   deltaLabel,
   percentChange,
   useAccountSummary,
 } from '@/composables/useAccountMetrics'
-import {
-  cadenceSentence,
-  isOverdueForCadence,
-  useAccountSignals,
-} from '@/composables/useAccountSignals'
 
 /**
- * The four numbers a rep needs before walking into a dealer: how the year is
- * going, how it went last year, the rolling twelve, and what is still owed to
- * them — then the goal all of that is measured against.
+ * How the year is going: this year, the same days last year, the rolling
+ * twelve, and when they were last invoiced — then the goal all of that is
+ * measured against.
  *
  * Every figure comes pre-aggregated from public.v_account_summary — see
  * useAccountMetrics.ts. Nothing here sums a fact table.
+ *
+ * The open-orders tile, "Last order" and the ordering-rhythm sentence used
+ * to live here as well, and the page printed each of them two or three
+ * times. They are pre-call facts, so they now live once, in the Before you
+ * call card under the header.
  *
  * AccountGoalPanel sits OUTSIDE the AsyncState below on purpose: it owns its
  * own query and its own empty state, and an account with no ERP history yet
@@ -30,14 +31,10 @@ import {
  */
 const props = defineProps<{ customerKey: string }>()
 
-/* The stats that name a document are doors to it: AccountView catches these
-   and expands/scrolls the orders or shipments card. StatTile itself stays a
-   dumb display block — the button wrapper lives here. */
-const emit = defineEmits<{
-  (e: 'show-orders'): void
-  (e: 'show-last-order'): void
-  (e: 'show-last-invoice'): void
-}>()
+/* "Last invoice" is a door to the shipments card: AccountView catches this
+   and expands/scrolls it. StatTile itself stays a dumb display block — the
+   button wrapper lives here. */
+const emit = defineEmits<{ (e: 'show-last-invoice'): void }>()
 
 const query = useAccountSummary(toRef(props, 'customerKey'))
 const summary = computed(() => query.data.value ?? null)
@@ -58,28 +55,18 @@ const ytdTone = computed<'default' | 'alert'>(() =>
   deltaPct.value != null && deltaPct.value <= -30 ? 'alert' : 'default',
 )
 
+/** "Oct 1", or "Mar 2024" when it was not this year — short enough for a
+    tile at half a phone's width, where "11 days ago" wrapped. */
+function tileDate(value: string): string {
+  const d = parseISO(value)
+  return format(d, isThisYear(d) ? 'MMM d' : 'MMM yyyy')
+}
+
 const ytdSub = computed(() => {
   const s = summary.value
   if (!s) return ''
   if (!s.revenue_prior_ytd) return 'No revenue this time last year'
   return `${deltaLabel(deltaPct.value)} vs ${money(s.revenue_prior_ytd)} last year`
-})
-
-/**
- * The account's own ordering rhythm (public.account_signals, migration 019).
- * Its own query and its own absence: an account with no signal row — new,
- * inactive, or no activity in 24 months — simply renders nothing extra, and
- * the card is what it was before.
- */
-const signals = useAccountSignals(toRef(props, 'customerKey'))
-const cadence = computed(() => cadenceSentence(signals.data.value ?? null))
-const overdue = computed(() => isOverdueForCadence(signals.data.value ?? null))
-
-const openOrdersSub = computed(() => {
-  const s = summary.value
-  if (!s || !s.open_order_count) return 'Nothing on backlog'
-  const qty = s.backlog_qty ? ` · ${count(Math.round(s.backlog_qty))} units` : ''
-  return `${money(s.open_order_value)} open${qty}`
 })
 </script>
 
@@ -88,7 +75,9 @@ const openOrdersSub = computed(() => {
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
-      :empty="!query.isPending.value && !query.error.value && !summary"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
+      :empty="!query.isPending.value && !summary"
       empty-title="No ERP history"
       empty-body="This account has no invoice or order lines in the ERP yet."
       :rows="2"
@@ -111,80 +100,29 @@ const openOrdersSub = computed(() => {
           :value="money(summary.revenue_trailing_12m)"
           sub="Rolling, to today"
         />
-        <!-- h-full on both button and tile: the button is the grid item now,
-             and a content-height tile inside it would leave a bare band of
-             the gap color under this cell only. Hover goes on the tile —
-             its opaque bg-surface would paint over a button hover. -->
+        <!-- The date big and short, the plain-English recency right under
+             it — persona #1 reads "23 days ago" faster than a date. h-full on
+             both button and tile: the button is the grid item, and a
+             content-height tile inside it would leave a bare band of the gap
+             color under this cell only. Hover goes on the tile — its opaque
+             bg-surface would paint over a button hover. Plain text when
+             there is no invoice to show. -->
         <button
+          v-if="summary.last_invoice_date"
           type="button"
           class="block h-full w-full text-left"
-          title="Show the open orders"
-          @click="emit('show-orders')"
+          title="Show recent shipments"
+          @click="emit('show-last-invoice')"
         >
           <StatTile
             class="h-full transition-colors hover:bg-canvas"
-            label="Open orders"
-            :value="count(summary.open_order_count)"
-            :sub="openOrdersSub"
+            label="Last invoice"
+            :value="tileDate(summary.last_invoice_date)"
+            :sub="daysAgo(summary.last_invoice_date)"
           />
         </button>
+        <StatTile v-else label="Last invoice" value="never" sub="Nothing invoiced yet" />
       </div>
-
-      <!-- Recency in plain English first; persona #1 reads "23 days ago"
-           faster than a date, and the date is right there for the one rep who
-           wants it. -->
-      <dl
-        v-if="summary"
-        class="border-line mt-4 grid grid-cols-1 gap-2 border-t pt-3 text-[13px] sm:grid-cols-2"
-      >
-        <div class="flex items-baseline gap-2">
-          <dt class="text-muted">Last order</dt>
-          <dd class="text-ink font-medium">
-            <button
-              type="button"
-              class="underline decoration-dotted underline-offset-2"
-              title="Show the most recent order"
-              @click="emit('show-last-order')"
-            >
-              {{ daysAgo(summary.last_order_date) }}
-            </button>
-            <span v-if="summary.last_order_date" class="text-muted font-normal">
-              ({{ shortDate(summary.last_order_date) }})
-            </span>
-          </dd>
-        </div>
-        <div class="flex items-baseline gap-2">
-          <dt class="text-muted">Last invoice</dt>
-          <dd class="text-ink font-medium">
-            <button
-              type="button"
-              class="underline decoration-dotted underline-offset-2"
-              title="Show recent shipments"
-              @click="emit('show-last-invoice')"
-            >
-              {{ daysAgo(summary.last_invoice_date) }}
-            </button>
-            <span v-if="summary.last_invoice_date" class="text-muted font-normal">
-              ({{ shortDate(summary.last_invoice_date) }})
-            </span>
-          </dd>
-        </div>
-      </dl>
-
-      <!--
-        Their own ordering rhythm, from the nightly signals. Sits directly
-        under "Last order" because it is the sentence that gives that date
-        meaning: 60 days is nothing for an annual buyer and an emergency for
-        a weekly one. Renders only when there is something true to say —
-        cadenceSentence() returns null unless the rhythm is confident.
-      -->
-      <p
-        v-if="cadence"
-        class="mt-2 text-[13px]"
-        :class="overdue ? 'text-accent font-semibold' : 'text-muted'"
-      >
-        {{ cadence }}
-      </p>
     </AsyncState>
 
     <AccountGoalPanel :customer-key="customerKey" class="mt-4" />

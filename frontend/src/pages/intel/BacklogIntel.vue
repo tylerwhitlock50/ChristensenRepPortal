@@ -108,6 +108,8 @@ const csvColumns: CsvColumn<BacklogSkuRow>[] = [
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"
+      :has-data="query.data.value !== undefined"
+      :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
       empty-title="No backorders"
       empty-body="Nothing in your territory is waiting on stock right now."

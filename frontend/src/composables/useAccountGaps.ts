@@ -49,7 +49,7 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /**
  * `limit` is how many of the ranked suggestions come back — 25 fits the
@@ -99,16 +99,39 @@ export function useAccountSkuGaps(customerKey: MaybeRef<string>, limit = 25) {
   })
 }
 
+/** "Used to carry it" means not bought in about this long. */
+export const LAPSED_AFTER_MONTHS = 12
+
+/**
+ * True when the dealer bought this before but not in the last
+ * LAPSED_AFTER_MONTHS. `bought_before` alone means "any purchase in four
+ * years" (036), which includes last month — calling that "lapsed" told a
+ * rep a dealer had dropped a gun they reordered three weeks ago. No date
+ * counts as lapsed: the RPC only omits it when there is no purchase to date.
+ */
+export function isLapsedGap(
+  row: Pick<SkuGapRow, 'bought_before' | 'last_bought_date'>,
+  today: Date = new Date(),
+): boolean {
+  if (!row.bought_before) return false
+  if (!row.last_bought_date) return true
+  const cutoff = new Date(today)
+  cutoff.setMonth(cutoff.getMonth() - LAPSED_AFTER_MONTHS)
+  return row.last_bought_date < cutoff.toISOString().slice(0, 10)
+}
+
 /**
  * The sentence a rep can say out loud, which is the whole point of the card.
- * Two shapes, because "never carried it" and "used to carry it" are different
- * conversations and blurring them would make both weaker.
+ * Three shapes, because "never carried it", "used to carry it" and "bought
+ * it this year" are different conversations and blurring them would make
+ * all of them weaker.
  *
  * Pure and exported so the wording can be reasoned about without a DB.
  */
-export function gapPitch(row: SkuGapRow): string {
+export function gapPitch(row: SkuGapRow, today: Date = new Date()): string {
   const dealers = `${row.dealer_count} dealer${row.dealer_count === 1 ? '' : 's'}`
-  return row.bought_before
+  if (!row.bought_before) return `Stocked by ${dealers} · never carried here`
+  return isLapsedGap(row, today)
     ? `Stocked by ${dealers} · they used to carry it`
-    : `Stocked by ${dealers} · never carried here`
+    : `Stocked by ${dealers} · bought here in the last year`
 }

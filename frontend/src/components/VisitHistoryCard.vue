@@ -29,9 +29,10 @@ const props = withDefaults(
 )
 
 const key = computed(() => props.customerKey)
-const { data, isPending, error, refetch } = useAccountVisits(key, {
-  limit: props.limit,
-})
+const { data, dataUpdatedAt, isPending, error, refetch } = useAccountVisits(
+  key,
+  { limit: props.limit },
+)
 
 const visits = computed<Visit[]>(() => data.value ?? [])
 
@@ -79,6 +80,8 @@ function ratings(visit: Visit): Rating[] {
     <AsyncState
       :loading="isPending"
       :error="error"
+      :has-data="data !== undefined"
+      :updated-at="dataUpdatedAt"
       :empty="visits.length === 0"
       empty-title="No surveys yet"
       empty-body="Log one on your next stop — it takes under a minute."

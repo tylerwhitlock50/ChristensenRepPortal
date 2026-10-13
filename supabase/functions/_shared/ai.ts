@@ -61,6 +61,19 @@ export async function sha256Hex(input: string): Promise<string> {
  * A relation that is not deployed yet (the views land in their own
  * migrations) — the ONE kind of failure a context build tolerates.
  */
+/**
+ * True for a model call that came back — and was billed — but with nothing
+ * usable: cut off at the token ceiling, empty, or a refusal. Both callOpenAI
+ * implementations (this file's and aiSummary.ts's) throw these codes only
+ * after OpenAI answered 200. The caller still ledgers the call in
+ * ai_usage_events, or a reply that keeps getting cut off is paid for on
+ * every Regenerate press without ever counting toward the daily cap.
+ */
+export function wasBilled(err: unknown): boolean {
+  return err instanceof HttpError &&
+    (err.code === 'ai_truncated' || err.code === 'ai_empty' || err.code === 'ai_refused')
+}
+
 // deno-lint-ignore no-explicit-any
 export function isMissingRelation(error: any): boolean {
   const code = String(error?.code ?? '')
@@ -121,10 +134,16 @@ type OpenAIResponse = {
  * One chat completion. The system prompt must be the FIRST message and
  * byte-identical across calls of the same action so OpenAI's automatic
  * prefix caching engages (needs ~1024+ tokens; watch cached_tokens in logs).
+ *
+ * `responseFormat` is passed through as OpenAI's `response_format` (a strict
+ * json_schema, as aiSummary.ts uses); the reply is still returned as text
+ * for the caller to parse, because only the caller knows what a usable
+ * fallback looks like when it is not JSON.
  */
 export async function callOpenAI(
   systemPrompt: string,
   userMessage: string,
+  responseFormat?: Record<string, unknown>,
 ): Promise<string> {
   const apiKey = Deno.env.get('OPENAI_API_KEY')
   if (!apiKey) {
@@ -139,6 +158,7 @@ export async function callOpenAI(
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ],
+    ...(responseFormat ? { response_format: responseFormat } : {}),
   }
 
   let res: Response

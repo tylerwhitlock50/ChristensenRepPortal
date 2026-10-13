@@ -111,11 +111,19 @@ export function useNeedsAttention(options?: { enabled?: MaybeRef<boolean> }) {
   })
 }
 
-export function useAccountRecommendations(customerKey: MaybeRef<string>) {
+/**
+ * `enabled` lets the account page skip this read while
+ * feature.recommendations is off: nothing on the page shows the rows then,
+ * and every account open was paying for them anyway.
+ */
+export function useAccountRecommendations(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useQuery({
     queryKey: computed(() => qk.account.recommendations(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     queryFn: async (): Promise<Recommendation[]> => {
       const { data, error } = await supabase
         .from('recommendations')

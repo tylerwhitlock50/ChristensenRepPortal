@@ -253,6 +253,8 @@ function rangeLabel(list: PriceListRow): string {
         <AsyncState
           :loading="filesQuery.isLoading.value"
           :error="filesQuery.error.value"
+          :has-data="filesQuery.data.value !== undefined"
+          :updated-at="filesQuery.dataUpdatedAt.value"
           :empty="(filesQuery.data.value ?? []).length === 0"
           empty-title="No sheets published"
           empty-body="Publish the approved Excel sheet for each customer type below."
@@ -342,6 +344,8 @@ function rangeLabel(list: PriceListRow): string {
         <AsyncState
           :loading="listsQuery.isLoading.value"
           :error="listsQuery.error.value"
+          :has-data="listsQuery.data.value !== undefined"
+          :updated-at="listsQuery.dataUpdatedAt.value"
           :empty="(listsQuery.data.value ?? []).length === 0"
           empty-title="No price lists yet"
           empty-body="Create the general list for each customer type, then upload its items."

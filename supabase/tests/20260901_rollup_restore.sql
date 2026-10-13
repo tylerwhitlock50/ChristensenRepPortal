@@ -8,6 +8,11 @@
   home of every window, so this checks the body against the catalog rather
   than trusting whoever last edited it.
 
+  Since 20261013150002 each table is cleared with DELETE, not TRUNCATE:
+  TRUNCATE's ACCESS EXCLUSIVE lock held every reader of the rollups (the
+  Overview, Accounts, the account header, goals) until the refresh
+  committed. T1 now requires the DELETE and refuses any TRUNCATE.
+
   Read-only; safe on prod.
 
       psql "$DATABASE_URL" -f supabase/tests/20260901_rollup_restore.sql
@@ -22,18 +27,35 @@ declare
   c         record;
   insert_at int;
   seg       text;
+  lock_stmt text;
 begin
-  -- T1: every erp.agg_* table is truncated by the body.
+  -- T1: every erp.agg_* table is cleared by the body — with DELETE, which
+  -- readers do not wait on, never with TRUNCATE (20261013150002).
+  if body ~* '\mtruncate\M' then
+    raise exception 'T1 FAIL: refresh_territory_rollups() still truncates — use delete from, see 20261013150002';
+  end if;
+
+  -- T1b: one refresh at a time — every rollup is locked SHARE ROW
+  -- EXCLUSIVE up front (20261013150002), or two overlapping runs collide
+  -- on the primary keys.
+  lock_stmt := substring(body from '(?i)lock\s+table\s+[^;]*?in\s+share\s+row\s+exclusive\s+mode');
+  if lock_stmt is null then
+    raise exception 'T1b FAIL: refresh_territory_rollups() takes no share row exclusive lock on the rollups';
+  end if;
+
   for t in
     select tablename from pg_tables
     where schemaname = 'erp' and tablename like 'agg\_%' order by 1
   loop
-    if body !~* ('truncate\s+erp\.' || t.tablename || '\s*;') then
-      raise exception 'T1 FAIL: refresh_territory_rollups() never truncates erp.%', t.tablename;
+    if lock_stmt !~* ('erp\.' || t.tablename || '\M') then
+      raise exception 'T1b FAIL: the refresh does not lock erp.%', t.tablename;
+    end if;
+    if body !~* ('delete\s+from\s+erp\.' || t.tablename || '\s*;') then
+      raise exception 'T1 FAIL: refresh_territory_rollups() never clears erp.% (expected: delete from erp.%;)', t.tablename, t.tablename;
     end if;
 
     -- T2: every non-defaulted column of that table appears in the insert
-    -- column list that follows its truncate. refreshed_at-style columns
+    -- column list that follows its delete. refreshed_at-style columns
     -- with a default are allowed to be omitted.
     insert_at := position(('insert into erp.' || t.tablename) in body);
     if insert_at = 0 then

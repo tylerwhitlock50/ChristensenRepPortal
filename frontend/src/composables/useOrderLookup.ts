@@ -1,7 +1,12 @@
 import { computed, unref, type MaybeRef } from 'vue'
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, type QueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import {
+  accountMetricsKeys,
+  type AccountOrderLineRow,
+} from '@/composables/useAccountMetrics'
+import type { StatusLine } from '@/lib/orderStatusMessage'
 // useOverview's variant, not useAccountMetrics': this is an RPC, and a
 // missing function is PGRST202, which only that one recognizes.
 import { isViewMissing } from '@/composables/useOverview'
@@ -137,4 +142,29 @@ export function statusSentence(row: OrderLookupRow): string {
   }
   if (row.last_ship_date) return 'Shipped complete'
   return 'Nothing open'
+}
+
+/* ---- one order's lines, from a lookup row ---------------------------------
+   The lines themselves come from useAccountMetrics' useAccountOrderLines —
+   the same query, key and cache as the account page's drill-in, so a rep
+   who opened the lines in Lookup and then the account sees them instantly.
+   They carry each line's tracking numbers (20261013150000; null on a
+   database without the column), so per-line links need no second read.
+------------------------------------------------------------------------- */
+
+/**
+ * Whatever is already cached for one order — the lines (with their
+ * tracking) if the rep opened them, else null. "Send status" reads this rather than
+ * fetching: the share sheet must open inside the tap, with nothing awaited.
+ */
+export function cachedOrderLines(
+  client: QueryClient,
+  customerKey: string,
+  orderId: string,
+): StatusLine[] | null {
+  const lines = client.getQueryData<AccountOrderLineRow[]>(
+    accountMetricsKeys.orderLines(customerKey, orderId),
+  )
+  if (!lines || lines.length === 0) return null
+  return lines
 }

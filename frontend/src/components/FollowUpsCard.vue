@@ -110,6 +110,8 @@ function taskAccount(task: Task): string {
         <AsyncState
           :loading="query.isPending.value"
           :error="query.error.value"
+          :has-data="query.data.value !== undefined"
+          :updated-at="query.dataUpdatedAt.value"
           :empty="tasks.length === 0"
           empty-title="Nothing pending"
           empty-body="Add a follow-up above when something needs a nudge."

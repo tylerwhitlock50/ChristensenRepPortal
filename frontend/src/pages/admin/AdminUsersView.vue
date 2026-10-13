@@ -55,7 +55,7 @@ const columns: ColumnDef<AdminProfile, any>[] = [
     accessorFn: (r) => r.rep_group_vendor_id ?? '',
     header: 'Rep group',
   },
-  { id: 'last_login', accessorFn: (r) => lastLoginByUser.value[r.user_id] ?? '', header: 'Last login' },
+  { id: 'last_login', accessorFn: (r) => lastLoginByUser.value[r.user_id] ?? '', header: 'Last active' },
   { id: 'manage', header: '', enableSorting: false, accessorFn: () => '' },
 ]
 
@@ -337,6 +337,8 @@ async function setActive(active: boolean) {
       <AsyncState
         :loading="profiles.isPending.value"
         :error="profiles.error.value"
+        :has-data="profiles.data.value !== undefined"
+        :updated-at="profiles.dataUpdatedAt.value"
         :empty="(profiles.data.value?.length ?? 0) === 0"
         empty-title="No users yet"
         empty-body="Create the first one above."
@@ -393,7 +395,7 @@ async function setActive(active: boolean) {
                   {{ row.email || '—' }} · {{ row.role }}
                 </p>
                 <p class="text-muted mt-0.5 text-[13px]">
-                  {{ row.sales_rep_key || 'No rep code' }} · Last login
+                  {{ row.sales_rep_key || 'No rep code' }} · Last active
                   {{ daysAgo(lastLoginByUser[row.user_id] ?? null) }}
                 </p>
               </div>

@@ -60,7 +60,7 @@ const columns: ColumnDef<RepSummary, any>[] = [
   {
     id: 'last_login_at',
     accessorKey: 'last_login_at',
-    header: 'Last login',
+    header: 'Last active',
     sortingFn: byDateNullsFirst,
   },
 ]
@@ -73,7 +73,7 @@ function onExport() {
     { key: 'overdue_recommendations', header: 'Overdue Recommendations' },
     { key: 'actions_last_30d', header: 'Actions Last 30 Days' },
     { key: 'last_action_date', header: 'Last Action Date' },
-    { key: 'last_login_at', header: 'Last Login' },
+    { key: 'last_login_at', header: 'Last Active' },
     { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
   ]
   exportCsv('rep-execution', visibleRows.value, csvColumns)
@@ -97,6 +97,8 @@ function onExport() {
     <AsyncState
       :loading="reps.isPending.value"
       :error="reps.error.value"
+      :has-data="reps.data.value !== undefined"
+      :updated-at="reps.dataUpdatedAt.value"
       :empty="(reps.data.value?.length ?? 0) === 0"
       empty-title="No reps yet"
       empty-body="Create users in Supabase Auth, then set their sales_rep_key on the profile."
@@ -167,7 +169,7 @@ function onExport() {
                 {{ count(row.actions_last_30d) }} actions
               </p>
               <p class="text-muted mt-0.5 text-[13px]">
-                Last login {{ daysAgo(row.last_login_at) }}
+                Last active {{ daysAgo(row.last_login_at) }}
               </p>
             </div>
             <AppBadge v-if="(row.overdue_recommendations ?? 0) > 0" tone="late">
