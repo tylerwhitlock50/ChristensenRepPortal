@@ -42,12 +42,15 @@ const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').t
 
 // A PO box is where the mail goes, not where the shop is.
 const PO_BOX = /^p\.?\s*o\.?\s*box\b|^post\s+office\s+box\b/i
+// "Suite 4", "Unit B", "#12" on their own: kept beside a street, but not a
+// street — a PO box plus a suite line has nowhere to drive to.
+const UNIT_ONLY = /^((suite|ste|unit|apt|bldg|building|floor|fl|room|rm)\b\.?|#)\s*[\w-]*$/i
 
 /**
  * One line, "123 Main St, Suite 4, Boise, ID 83702", or null when there is
- * no street to drive to. Needs a street line that is not a PO box, plus
- * either city and state or a zip — a bare city would drop a pin in the
- * middle of town.
+ * no street to drive to. Needs a street line that is not a PO box or a bare
+ * suite / unit, plus either city and state or a zip — a bare city would drop
+ * a pin in the middle of town.
  */
 export function formatAddress(a: StreetAddress | null | undefined): string | null {
   if (!a) return null
@@ -55,7 +58,7 @@ export function formatAddress(a: StreetAddress | null | undefined): string | nul
   const city = clean(a.city)
   const state = clean(a.state)
   const zip = clean(a.zip)
-  if (street.length === 0) return null
+  if (!street.some((s) => !UNIT_ONLY.test(s))) return null
   if (!(city && state) && !zip) return null
   const stateZip = [state, zip].filter(Boolean).join(' ')
   return [...street, city, stateZip].filter(Boolean).join(', ')

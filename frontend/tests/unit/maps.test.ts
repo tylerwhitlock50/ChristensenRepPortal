@@ -52,6 +52,10 @@ t(
   formatAddress({ ...shop, address1: 'PO Box 55', address2: '9 Elm Ave' }),
   '9 Elm Ave, Boise, ID 83702',
 )
+t('PO box plus only a suite line → null', formatAddress({ ...shop, address1: 'PO Box 55', address2: 'Suite 4' }), null)
+t('a suite line alone → null', formatAddress({ ...shop, address1: '#12' }), null)
+t('a one-word line that only starts like a unit is still a line', formatAddress({ ...shop, address1: 'Stevens Plaza 9' }), 'Stevens Plaza 9, Boise, ID 83702')
+t('a suite beside a street is kept', formatAddress({ ...shop, address2: 'Unit B' }), '123 Main St, Unit B, Boise, ID 83702')
 t('null', formatAddress(null), null)
 
 /* --- directionsUrl -------------------------------------------------------- */
