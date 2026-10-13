@@ -1,16 +1,28 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { refDebounced } from '@vueuse/core'
+import { useQueryClient } from '@tanstack/vue-query'
 import {
   MIN_LOOKUP_LENGTH,
+  cachedOrderLines,
   matchLabel,
   statusSentence,
   useOrderLookup,
+  type OrderLookupRow,
 } from '@/composables/useOrderLookup'
+import { useSessionStore } from '@/stores/session'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import LookupOrderLines from '@/components/LookupOrderLines.vue'
 import { count, money, shortDate } from '@/lib/format'
+import {
+  orderStatusMessage,
+  senderName,
+  shareOrCopy,
+  trackingList,
+  upsTrackUrl,
+} from '@/lib/orderStatusMessage'
 
 /**
  * "Where's my order?" — the answer, from a number.
@@ -20,12 +32,19 @@ import { count, money, shortDate } from '@/lib/format'
  * the rep to know which account it belongs to first, which is exactly the
  * thing they are trying to work out. This page takes any of the three.
  *
+ * Each result then answers the follow-ups without leaving the page: its
+ * lines open in place ("which guns are still open?"), "Send status" hands
+ * the dealer-ready answer to the phone's share sheet, and "Open in account"
+ * lands on that order's lines on the account page.
+ *
  * Deep-linkable (?q=) so a rep can send a colleague the lookup, not just the
  * answer.
  */
 
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
+const queryClient = useQueryClient()
 
 const term = ref(typeof route.query.q === 'string' ? route.query.q : '')
 // The rep is typing a number off a piece of paper — every keystroke would
@@ -40,17 +59,38 @@ watch(debounced, (q) => {
   void router.replace({ query: q.trim() ? { q: q.trim() } : {} })
 })
 
-/** UPS is the only carrier; the number goes straight to their tracking page. */
-function upsTrackUrl(trackingNumber: string): string {
-  return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber.trim())}`
+const rowKey = (row: OrderLookupRow) => `${row.customer_key}-${row.order_id}`
+
+/* Which results have their lines open. Several at once is fine — a dealer
+   with two POs in flight asks about both. */
+const open = reactive(new Set<string>())
+function toggleLines(row: OrderLookupRow) {
+  const k = rowKey(row)
+  if (open.has(k)) open.delete(k)
+  else open.add(k)
 }
 
-/** A row can carry several parcels' numbers, comma-joined by the RPC. */
-function trackingList(value: string | null): string[] {
-  return (value ?? '')
-    .split(',')
-    .map((v) => v.trim())
-    .filter(Boolean)
+/* ---- Send status ---------------------------------------------------------
+   The share sheet on a phone, the clipboard elsewhere. The lines are used
+   when they are already loaded (the rep opened them); nothing is fetched
+   first, because Safari only opens the share sheet inside the tap. */
+const toast = ref('')
+let toastTimer: ReturnType<typeof setTimeout> | undefined
+function say(text: string) {
+  toast.value = text
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = ''), 2500)
+}
+onBeforeUnmount(() => clearTimeout(toastTimer))
+
+async function sendStatus(row: OrderLookupRow) {
+  const text = orderStatusMessage(row, {
+    lines: cachedOrderLines(queryClient, row.customer_key, row.order_id),
+    from: senderName(session.displayName),
+  })
+  const outcome = await shareOrCopy(text)
+  if (outcome === 'copied') say('Copied. Paste it into a text to the dealer.')
+  else if (outcome === 'failed') say("Couldn't copy on this device.")
 }
 </script>
 
@@ -99,7 +139,7 @@ function trackingList(value: string | null): string[] {
       @retry="refetch()"
     >
       <ul class="divide-line border-line bg-surface divide-y border">
-        <li v-for="row in rows" :key="`${row.customer_key}-${row.order_id}`" class="p-4">
+        <li v-for="row in rows" :key="rowKey(row)" class="p-4">
           <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <RouterLink
               :to="{ name: 'account', params: { customerKey: row.customer_key } }"
@@ -165,6 +205,57 @@ function trackingList(value: string | null): string[] {
           <p v-if="matchLabel(row.matched_on)" class="text-muted mt-2 text-xs">
             {{ matchLabel(row.matched_on) }}
           </p>
+
+          <!-- Three equal columns at 390px; each is a 48px tap target. -->
+          <div class="mt-3 grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              class="tap-target font-label border-line-2 text-ink hover:border-ink inline-flex items-center justify-center gap-1 rounded-[2px] border px-1.5 text-[13px] font-semibold tracking-[0.08em] uppercase"
+              :aria-expanded="open.has(rowKey(row))"
+              :aria-controls="`lines-${rowKey(row)}`"
+              @click="toggleLines(row)"
+            >
+              {{ open.has(rowKey(row)) ? 'Hide lines' : 'Show lines' }}
+              <svg
+                class="size-4 shrink-0 transition-transform"
+                :class="open.has(rowKey(row)) ? 'rotate-180' : ''"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="tap-target font-label border-ink text-ink hover:bg-ink hover:text-canvas inline-flex items-center justify-center rounded-[2px] border-[1.5px] px-1.5 text-[13px] font-semibold tracking-[0.08em] uppercase"
+              :aria-label="`Send the status of order ${row.order_id} to the dealer`"
+              @click="sendStatus(row)"
+            >
+              Send status
+            </button>
+            <RouterLink
+              :to="{
+                name: 'account',
+                params: { customerKey: row.customer_key },
+                query: { order: row.order_id },
+              }"
+              class="tap-target font-label border-line-2 text-ink hover:border-ink inline-flex items-center justify-center rounded-[2px] border px-1.5 text-center text-[13px] font-semibold tracking-[0.08em] uppercase"
+              :aria-label="`Open order ${row.order_id} on the account page`"
+            >
+              Open in account
+            </RouterLink>
+          </div>
+
+          <LookupOrderLines
+            v-if="open.has(rowKey(row))"
+            :id="`lines-${rowKey(row)}`"
+            :order="row"
+          />
         </li>
       </ul>
 
@@ -175,5 +266,17 @@ function trackingList(value: string | null): string[] {
         Showing the 25 newest matches — narrow the search to see older ones
       </p>
     </AsyncState>
+
+    <!-- "Send status" fell back to the clipboard. Above the phone's bottom
+         bar; bottom-right from md up. The live region is always there so a
+         screen reader hears the message when it appears; it takes no taps. -->
+    <div
+      role="status"
+      class="pointer-events-none fixed inset-x-0 bottom-[calc(66px+env(safe-area-inset-bottom))] z-40 px-4 pb-3 md:inset-x-auto md:right-4 md:bottom-4 md:w-96 md:px-0 md:pb-0"
+    >
+      <p v-if="toast" class="bg-ink text-canvas px-4 py-3 text-[15px] leading-snug shadow-lg">
+        {{ toast }}
+      </p>
+    </div>
   </div>
 </template>
