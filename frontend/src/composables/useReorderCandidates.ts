@@ -6,13 +6,17 @@ import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /**
  * "Bought before and in stock now" — public.report_reorder_candidates,
- * migration 20261013100000.
+ * migration 20261013100000, recency rule from 20261013140002.
  *
  * The account's own repeat buys (erp.agg_sku_month, 36 months) that we can
  * ship today, each with its buying rhythm: last buy month and quantity, how
  * many months it was bought in, the median gap between buys, and the month
- * the next buy is expected. `is_due` once that month has arrived. Due rows
- * come first. Finished guns only, same screens as the SKU-gaps card.
+ * the next buy is expected. `is_due` once that month has arrived — and,
+ * once 20261013140002 is applied, only while the part was last bought
+ * within 24 months and is at most max(2 × median gap, 3) months past its
+ * expected month; lapsed parts sort after every current one. Before that
+ * migration `is_due` has no upper bound. Due rows come first. Finished guns
+ * only, same screens as the SKU-gaps card.
  *
  * SECURITY INVOKER: RLS on agg_sku_month (view-as aware) is the scope, so
  * an account outside the caller's book simply returns no rows.
