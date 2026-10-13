@@ -96,7 +96,11 @@ create policy "update own ai feedback" on public.ai_feedback
   using (user_id = (select auth.uid()))
   with check (user_id = (select auth.uid()));
 
-revoke all on public.ai_feedback from anon, public;
+-- authenticated too: the platform's default privileges hand it ALL on a new
+-- public table, and the column grant below means nothing next to a
+-- table-wide UPDATE (it would let a vote's surface or subject be rewritten
+-- after the insert check). Same shape as support_messages (20260908).
+revoke all on public.ai_feedback from anon, public, authenticated;
 grant select, insert on public.ai_feedback to authenticated;
 -- A changed mind or an added note; the rest of the row is the record.
 grant update (verdict, note) on public.ai_feedback to authenticated;
