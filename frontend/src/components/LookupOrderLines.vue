@@ -70,7 +70,9 @@ const textNote = computed(() => {
   if (reachQuery.isPending.value || reachQuery.error.value) return ''
   const b = best.value
   if (!b?.contact) return 'No buyer number on file to text.'
-  if (b.reason === 'do-not-call') {
+  // The flag, not the rank: a rep-entered primary keeps its 'rep-primary'
+  // kind even when it is flagged do-not-call.
+  if (b.contact.do_not_call === true) {
     return `${buyerName.value} is marked do not call, so no text either.`
   }
   if (!textHref.value) return `No number on file for ${buyerName.value}.`
