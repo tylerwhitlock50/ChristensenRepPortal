@@ -23,7 +23,8 @@ functions/
 │   ├── cors.ts              CORS headers, preflight, json()/fail()
 │   ├── supabase.ts          userClient() vs serviceClient(), HttpError
 │   ├── accountContext.ts    the context payload + hashing, shared by both AI paths
-│   └── aiSummary.ts         the model call, cost gates, generate-or-cache decision
+│   ├── aiSummary.ts         the model call, cost gates, generate-or-cache decision
+│   └── contacts.ts          contact ranking — a parity-tested copy of the frontend's
 ├── ai-account-summary/
 │   ├── index.ts             the flow in TECH_STACK §5.1, in order
 │   └── prompt.ts            THE prompt — its own versioned module (see below)
@@ -35,8 +36,17 @@ functions/
 │   └── index.ts
 └── mcp/
     ├── index.ts             MCP over stateless Streamable HTTP
-    ├── tools.ts             sixteen read-only tools over the security_invoker views
+    ├── tools.ts             read-only tools over the security_invoker views
+    ├── prompts.ts           three ready-made MCP prompts
     └── README.md            deploy, secrets, and how a rep connects Claude
+```
+
+Unit tests (pure functions, no network or database) sit next to the code as
+`*.test.ts` and are not part of any function's import graph, so they never
+ship:
+
+```bash
+deno test --allow-env supabase/functions/
 ```
 
 `accountContext.ts` and `aiSummary.ts` exist so the interactive and batch paths

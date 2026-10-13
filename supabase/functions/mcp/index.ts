@@ -34,6 +34,7 @@
 import { HttpError } from '../_shared/supabase.ts'
 import { callerClient, extractToken, resolveCaller } from '../_shared/mcpAuth.ts'
 import { describeTool, ToolError, TOOLS, TOOLS_BY_NAME } from './tools.ts'
+import { getPrompt, listPrompts, PromptError } from './prompts.ts'
 
 const SERVER_NAME = 'christensen-rep-portal'
 const SERVER_VERSION = '1.0.0'
@@ -65,7 +66,9 @@ Typical path: \`get_territory_summary\` for the shape of the book →
 \`list_territory_accounts\` to rank → \`search_accounts\` to resolve a name to a
 customer_key → \`get_account\` for the full picture → \`get_account_sku_sales\`,
 \`list_orders\`, \`list_backlog\` for detail. \`get_sales_summary\` answers
-"this month / last month / trend" at monthly grain.
+"this month / last month / trend" at monthly grain. For "who should I call
+about this product", \`find_dealers_for_sku\`; for who to ask for at a
+dealer, \`list_contacts\` (its \`best_contact\`, not the ERP "primary").
 
 Figures are US dollars and calendar-year to date. Goal pace is seasonal, not
 straight-line, so an account behind on days can still be on pace.
@@ -141,7 +144,7 @@ async function dispatch(
       const version = SUPPORTED_PROTOCOLS.includes(asked) ? asked : SUPPORTED_PROTOCOLS[0]
       return rpcResult(id, {
         protocolVersion: version,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: {
           name: SERVER_NAME,
           title: 'Christensen Rep Portal',
@@ -155,18 +158,31 @@ async function dispatch(
       return rpcResult(id, {})
 
     case 'tools/list':
-      // No pagination: twenty tools fit in one response, and a nextCursor
+      // No pagination: two dozen tools fit in one response, and a nextCursor
       // nobody needs is a round trip every client pays on every connect.
       return rpcResult(id, { tools: TOOLS.map(describeTool) })
 
-    // Declared in neither direction, but clients probe them on connect and an
-    // empty list is a friendlier answer than "method not found".
+    // Not offered, but clients probe them on connect and an empty list is a
+    // friendlier answer than "method not found".
     case 'resources/list':
       return rpcResult(id, { resources: [] })
     case 'resources/templates/list':
       return rpcResult(id, { resourceTemplates: [] })
+    // Three ready-made questions (mcp/prompts.ts). They read nothing
+    // themselves; every number still comes from the tools.
     case 'prompts/list':
-      return rpcResult(id, { prompts: [] })
+      return rpcResult(id, { prompts: listPrompts() })
+
+    case 'prompts/get': {
+      const name = String((params as { name?: unknown }).name ?? '')
+      const args = (params as { arguments?: unknown }).arguments as Record<string, unknown> | undefined
+      try {
+        return rpcResult(id, getPrompt(name, args))
+      } catch (error) {
+        if (error instanceof PromptError) return rpcError(id, RPC.INVALID_PARAMS, error.message)
+        throw error
+      }
+    }
 
     case 'tools/call': {
       const name = String((params as { name?: unknown }).name ?? '')
