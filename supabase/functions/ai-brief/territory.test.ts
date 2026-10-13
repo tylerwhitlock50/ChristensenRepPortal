@@ -182,6 +182,20 @@ Deno.test('a reply that is not JSON is kept as prose, with no items', () => {
   assert(out.content.includes('Flat year'), 'prose kept')
 })
 
+Deno.test('JSON cut off at the token ceiling is an error, never stored as prose', () => {
+  const full = JSON.stringify({
+    content: 'HEADLINES\n• Territory up 8%\n\nA steady month.',
+    headlines: [{ text: 'Territory up 8%', customer_key: null }],
+  })
+  let threw = false
+  try {
+    parseBriefOutput(full.slice(0, 40), {})
+  } catch {
+    threw = true
+  }
+  assert(threw, 'a truncated object throws instead of becoming the brief')
+})
+
 Deno.test('JSON with no content is an error, not an empty brief', () => {
   let threw = false
   try {

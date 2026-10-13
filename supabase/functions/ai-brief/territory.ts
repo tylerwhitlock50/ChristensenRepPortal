@@ -440,7 +440,8 @@ export type BriefItems = { headlines: BriefHeadline[] }
  * becomes null, and the headline renders without a chip.
  *
  * A reply that is not JSON at all (strict json_schema makes that close to
- * impossible) is kept as prose with no items rather than thrown away.
+ * impossible) is kept as prose with no items rather than thrown away; one
+ * that starts as JSON and does not parse (cut off) is an error.
  */
 export function parseBriefOutput(
   text: string,
@@ -450,6 +451,17 @@ export function parseBriefOutput(
   try {
     parsed = JSON.parse(text)
   } catch {
+    // Half a JSON object is a reply cut off at the token ceiling, not
+    // prose: stored, the rep would read `{"content":"HEADLINES\n• …` on the
+    // Overview until tomorrow. Fail it — the card keeps the last brief.
+    if (text.trimStart().startsWith('{')) {
+      console.error('openai returned unparseable JSON (truncated?)', text.length)
+      throw new HttpError(
+        502,
+        'ai_truncated',
+        'The brief came back cut off. Try again in a moment.',
+      )
+    }
     console.warn('openai returned non-JSON under json_schema; using it as prose')
     return { content: text.trim(), items: null }
   }
