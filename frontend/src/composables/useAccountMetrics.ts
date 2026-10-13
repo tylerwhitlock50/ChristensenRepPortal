@@ -221,7 +221,7 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
 }
 
 // The ETL lands erp once a night, so these are safe to hold for a while.
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /* -------------------------------------------------------------- queries */
 

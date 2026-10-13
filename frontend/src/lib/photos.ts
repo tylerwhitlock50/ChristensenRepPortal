@@ -16,7 +16,6 @@
  * mode we want, but it means the customer key is not cosmetic.
  */
 
-import imageCompression from 'browser-image-compression'
 import { supabase } from '@/lib/supabase'
 import type { Tables } from '@/types/database.types'
 import type { PhotoCategory } from '@/types/domain'
@@ -63,6 +62,12 @@ export async function compressPhoto(file: File): Promise<File> {
 
   let out: File
   try {
+    // Loaded on the first photo, not with the app: this module is reachable
+    // from the header's sync badge on every screen (via the submit queue),
+    // and the compressor alone was a fifth of the JS every rep downloaded
+    // to open the Overview. If it can't load (no signal, first photo of the
+    // day), the catch below uploads the original, as for any failure here.
+    const { default: imageCompression } = await import('browser-image-compression')
     out = await imageCompression(file, {
       maxSizeMB: PHOTO_TARGET_MB,
       maxWidthOrHeight: PHOTO_MAX_DIMENSION,

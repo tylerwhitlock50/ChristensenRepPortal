@@ -121,7 +121,7 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
 }
 
 // Refreshed once a night by the ETL; same holding period as the other ERP reads.
-const ERP_STALE_TIME = 10 * 60_000
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /* -------------------------------------------------------------- queries */
 

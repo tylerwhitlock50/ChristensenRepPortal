@@ -81,14 +81,18 @@ export function useMyTasks() {
  *
  * `enabled` is what makes that true. Without a user id the filter is empty, and
  * for an admin an empty filter IS the company-wide select.
+ *
+ * `options.enabled` lets the shell switch the badge off while feature.tasks
+ * is: with no Tasks tab there is nothing to badge, and the request was being
+ * paid on every boot.
  */
-export function useMyDueTasks() {
+export function useMyDueTasks(options: { enabled?: MaybeRef<boolean> } = {}) {
   const session = useSessionStore()
   const userId = computed(() => session.user?.id ?? '')
 
   return useQuery({
     queryKey: computed(() => taskKeys.due(userId.value)),
-    enabled: computed(() => !!userId.value),
+    enabled: computed(() => !!userId.value && unref(options.enabled ?? true)),
     staleTime: 60_000,
     queryFn: async (): Promise<{ due: number; overdue: number }> => {
       const now = today()
