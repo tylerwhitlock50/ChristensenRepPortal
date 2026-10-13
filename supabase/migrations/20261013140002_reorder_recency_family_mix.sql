@@ -30,7 +30,10 @@
   product family over the SAME months of both years: January through
   p_through_month, and January through the same month a year earlier. The
   caller passes the last COMPLETE month, so no partial month is compared
-  with a whole one.
+  with a whole one. revenue_after_period is what the family invoiced AFTER
+  p_through_month (normally the current, partial month): never compared,
+  only there so a family bought last week is not called "stopped" because
+  the window ends at the last complete month.
 
   3. An index for "who bought this SKU"
   -------------------------------------
@@ -221,6 +224,10 @@ grant execute on function public.report_reorder_candidates(text, int)
 --------------------------------------------------------------------------
 -- 2. Product-family mix over the same months of two years.
 --------------------------------------------------------------------------
+-- Dropped first: an earlier draft of this file returned one column fewer,
+-- and CREATE OR REPLACE cannot change a function's OUT columns.
+drop function if exists public.report_account_family_mix(text, date);
+
 create or replace function public.report_account_family_mix(
     p_customer_key   text,
     p_through_month  date default null
@@ -234,7 +241,8 @@ returns table (
     period_start    date,
     period_end      date,
     prior_start     date,
-    prior_end       date
+    prior_end       date,
+    revenue_after_period numeric
 )
 language sql
 stable
@@ -269,27 +277,27 @@ as $$
         cross join w
         where m.customer_key = p_customer_key
           and m.sales_month >= w.prior_start
-          and m.sales_month <= w.period_end
           and coalesce(nullif(btrim(p.product_family), ''), 'N/A') <> 'N/A'
     )
     select
         r.family,
-        coalesce(sum(r.revenue) filter (where r.sales_month >= w.period_start), 0),
-        coalesce(sum(r.qty)     filter (where r.sales_month >= w.period_start), 0),
+        coalesce(sum(r.revenue) filter (where r.sales_month between w.period_start and w.period_end), 0),
+        coalesce(sum(r.qty)     filter (where r.sales_month between w.period_start and w.period_end), 0),
         coalesce(sum(r.revenue) filter (where r.sales_month <= w.prior_end), 0),
         coalesce(sum(r.qty)     filter (where r.sales_month <= w.prior_end), 0),
         w.period_start,
         w.period_end,
         w.prior_start,
-        w.prior_end
+        w.prior_end,
+        coalesce(sum(r.revenue) filter (where r.sales_month > w.period_end), 0)
     from rows_in r
     cross join w
     group by r.family, w.period_start, w.period_end, w.prior_start, w.prior_end
-    having coalesce(sum(r.revenue) filter (where r.sales_month >= w.period_start), 0) <> 0
+    having coalesce(sum(r.revenue) filter (where r.sales_month between w.period_start and w.period_end), 0) <> 0
         or coalesce(sum(r.revenue) filter (where r.sales_month <= w.prior_end), 0) <> 0
     order by
         greatest(
-            coalesce(sum(r.revenue) filter (where r.sales_month >= w.period_start), 0),
+            coalesce(sum(r.revenue) filter (where r.sales_month between w.period_start and w.period_end), 0),
             coalesce(sum(r.revenue) filter (where r.sales_month <= w.prior_end), 0)
         ) desc,
         r.family;
@@ -298,8 +306,10 @@ $$;
 comment on function public.report_account_family_mix(text, date) is
   'One account''s invoiced revenue and units by product family over the SAME '
   'months of two years: Jan..p_through_month (default: last complete month) '
-  'and Jan..that month a year earlier. Families with no real value (blank, '
-  'N/A) are left out. Feeds the AI account brief''s product mix. SECURITY '
+  'and Jan..that month a year earlier, plus revenue_after_period (what the '
+  'family invoiced after p_through_month — the current partial month — '
+  'never compared, so a recent buy is not read as "stopped"). Families with '
+  'no real value (blank, N/A) are left out. Feeds the AI account brief''s product mix. SECURITY '
   'INVOKER over erp.agg_sku_month RLS — service_role (the nightly batch) and '
   'the account''s rep read the same rows.';
 

@@ -23,10 +23,12 @@ import {
   canonical,
   type ContextInputs,
   fetchContextInputs,
+  fetchRevenueByMonth,
   monthStart,
   promptPayload,
   sha256Hex,
   summariseMix,
+  summariseRevenue,
 } from './accountContext.ts'
 
 function assert(ok: unknown, what: string): void {
@@ -227,7 +229,7 @@ Deno.test('a family is "stopped" only when the same-window comparison says so', 
   assertEquals(small.stopped_families, [], 'a one-off $600 last year is not a stopped family')
 })
 
-Deno.test('stock quantity never reaches the hash; "covers the last order" does', () => {
+Deno.test('stock never reaches the hash: neither the quantity nor "covers the last order"', () => {
   const a = assembleContext(inputs(), OCT_13)
   const restocked = inputs()
   restocked.reorders = [{ ...restocked.reorders[0], ats_qty: 38 }]
@@ -236,11 +238,80 @@ Deno.test('stock quantity never reaches the hash; "covers the last order" does',
   assertEquals(a.context.in_stock_reorders[0].due_now, true, 'due flag carried')
   const short = inputs()
   short.reorders = [{ ...short.reorders[0], ats_qty: 2 }]
-  assertEquals(
-    assembleContext(short, OCT_13).context.in_stock_reorders[0].stock_covers_last_order,
-    false,
-    'stock below their last order size is',
+  const c = assembleContext(short, OCT_13)
+  assertEquals(a.context, c.context, 'stock dropping below their last order size is not news either')
+  assertEquals(a.asOf.stock_covers_last_order, ['MESA-65CM-22'], '40 covers an order of 6 (as of today)')
+  assertEquals(c.asOf.stock_covers_last_order, [], '2 does not')
+})
+
+Deno.test('revenue_summary compares whole months only', () => {
+  // $10,000 every month for two years, and $1,000 so far this month.
+  const series = []
+  for (let i = 24; i >= 1; i--) {
+    series.push({ month: monthStart(OCT_13, i).slice(0, 7), revenue: 10_000 })
+  }
+  series.push({ month: '2026-10', revenue: 1_000 })
+  const summary = summariseRevenue(series, OCT_13)
+  assertEquals(summary, {
+    through_month: '2026-09',
+    trailing_12m_revenue: 120_000,
+    prior_12m_revenue: 120_000,
+    change_pct: 0,
+    months_with_revenue: 24,
+  }, 'a flat dealer reads flat on the 13th, not down 8%')
+
+  const fixtureInputs = inputs()
+  fixtureInputs.revenue = { series, source: 'view' }
+  const { context } = assembleContext(fixtureInputs, OCT_13)
+  assertEquals(context.revenue_by_month.length, 24, 'the model is still shown 24 months')
+  assertEquals(context.revenue_by_month[0].month, '2024-11', 'the extra month only feeds the summary')
+})
+
+Deno.test('a family bought since the mix window closed is not "stopped"', () => {
+  const rows = inputs().mix.map((r) =>
+    r.product_family === 'Ridgeline' ? { ...r, revenue_after_period: 8_000 } : r
   )
+  assertEquals(summariseMix(rows)!.stopped_families, [], 'Ridgeline was bought this month')
+})
+
+Deno.test('the revenue series falls back to fact lines only when the view is missing', async () => {
+  const stub = (viewError: unknown) => {
+    const calls: string[] = []
+    const chain = (label: string, result: unknown): unknown =>
+      new Proxy({}, {
+        get(_t, prop) {
+          if (prop === 'then') return (resolve: (v: unknown) => void) => resolve(result)
+          return (...args: unknown[]) => {
+            calls.push(`${label}.${String(prop)}(${JSON.stringify(args)})`)
+            return chain(label, result)
+          }
+        },
+      })
+    const client = {
+      from: (name: string) => chain(name, { data: null, error: viewError }),
+      schema: () => ({
+        from: (name: string) => chain(`erp.${name}`, { data: [{ invoice_date: '2026-09-02', revenue: 500 }], error: null }),
+      }),
+    }
+    return { client: client as unknown as SupabaseClient, calls }
+  }
+
+  const missing = stub({ code: 'PGRST205', message: "Could not find the table 'public.v_account_revenue_monthly'" })
+  const viaFacts = await fetchRevenueByMonth(missing.client, 'C1001', OCT_13)
+  assertEquals(viaFacts.source, 'fact_lines', 'a view that is not deployed yet falls back')
+  assert(
+    missing.calls.some((c) => c === 'erp.fact_invoice_line.not(["is_memo","is",true])'),
+    'the fallback leaves memo lines out, as the view does',
+  )
+
+  const timedOut = stub({ code: '57014', message: 'canceling statement due to statement timeout' })
+  let threw = false
+  try {
+    await fetchRevenueByMonth(timedOut.client, 'C1001', OCT_13)
+  } catch {
+    threw = true
+  }
+  assert(threw, 'any other view error throws instead of hashing a different computation')
 })
 
 /*----------------------------------------------------------------------------
@@ -288,6 +359,14 @@ Deno.test('the same queries run on any day of the month (month-anchored windows)
   const flat = JSON.stringify(a.log)
   assert(flat.includes('"2025-10-01"'), 'orders window starts on a month boundary')
   assert(flat.includes('"p_through_month":"2026-09-01"'), 'mix runs through the last complete month')
+  assert(
+    flat.includes('["from:v_account_revenue_monthly","gte",["month","2024-10-01"]]'),
+    'revenue reads 24 whole months plus this one',
+  )
+  assert(
+    flat.includes('["from:erp.fact_shipment_line","order",["ship_date",{"ascending":false,"nullsFirst":false}]]'),
+    'the last ship date sorts NULL (sentinel) dates last',
+  )
 })
 
 Deno.test('monthStart crosses the year boundary', () => {

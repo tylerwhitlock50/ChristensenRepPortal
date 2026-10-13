@@ -359,6 +359,7 @@ values ('IA-MESA',  'IA-MESA',  'Mesa',     'FINISHED',  'Mesa',      '308 WIN')
 --   Ridgeline 2026-03 $0 net | 2025-02 $4,000   (never this period → stopped)
 --             2025-11 $9,000 is outside the prior window (the old YTD-vs-
 --             full-year comparison counted it)
+--             2026-04 $800 is after p_through: only in revenue_after_period
 --   Traverse  2026-04 $5,000 is after p_through → not counted
 --   Component $50,000 — no real family, left out
 insert into erp.agg_sku_month (customer_key, part_key, sales_month, revenue, qty, invoice_count)
@@ -368,6 +369,7 @@ values ('IA-A1', 'IA-MESA',  '2026-02-01', 3000, 3, 1),
        ('IA-A1', 'IA-RIDGE', '2025-02-01', 4000, 2, 1),
        ('IA-A1', 'IA-RIDGE', '2025-11-01', 9000, 5, 1),
        ('IA-A1', 'IA-TRAV',  '2026-04-01', 5000, 2, 1),
+       ('IA-A1', 'IA-RIDGE', '2026-04-01',  800, 1, 1),
        ('IA-A1', 'IA-COMP',  '2026-01-01', 50000, 100, 1),
        ('IA-B1', 'IA-MESA',  '2026-02-01', 7000, 7, 1);
 
@@ -379,6 +381,13 @@ select pg_temp.assert(
      from public.report_account_family_mix('IA-A1', '2026-03-01'))
   = array[('Mesa', 3000, 3, 2000, 2)::text, ('Ridgeline', 0, 0, 4000, 2)::text],
   'same months both years; nothing after p_through; no component family');
+
+select pg_temp.assert(
+  (select array_agg((product_family, revenue_after_period)::text order by product_family)
+     from public.report_account_family_mix('IA-A1', '2026-03-01'))
+  = array[('Mesa', 0)::text, ('Ridgeline', 800)::text],
+  'revenue_after_period: what a family bought after p_through (Ridgeline in '
+  'April), so a recent buy is never read as stopped');
 
 select pg_temp.assert(
   (select (period_start, period_end, prior_start, prior_end)::text

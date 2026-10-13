@@ -192,15 +192,23 @@ export type MonthlyRevenue = { month: string; revenue: number }
  * thousands of rows shipped to a phone. When the view lands, this function
  * silently starts using it — nothing to change here.
  *
- * The window starts on a month boundary (24 months including this one), so
- * it does not shift under an unchanged account from one day to the next.
+ * The window starts on a month boundary, so it does not shift under an
+ * unchanged account from one day to the next: MONTHS_OF_HISTORY whole
+ * months plus this one, so summariseRevenue() can compare the last twelve
+ * COMPLETE months with the twelve before them (the model is shown the
+ * newest MONTHS_OF_HISTORY of them, see assembleContext).
+ *
+ * Only a view that is not deployed yet falls back to the fact lines. Any
+ * other error (a timeout, a permission problem) throws like every other
+ * context read: the fallback is a different computation, and a hash built
+ * on it for one request would look "changed" and pay for a regeneration.
  */
 export async function fetchRevenueByMonth(
   client: SupabaseClient,
   customerKey: string,
   today = new Date(),
 ): Promise<{ series: MonthlyRevenue[]; source: 'view' | 'fact_lines' }> {
-  const since = monthStart(today, MONTHS_OF_HISTORY - 1)
+  const since = monthStart(today, MONTHS_OF_HISTORY)
 
   const viaView = await client
     .from('v_account_revenue_monthly')
@@ -208,7 +216,12 @@ export async function fetchRevenueByMonth(
     .eq('customer_key', customerKey)
     .gte('month', since)
     .order('month', { ascending: true })
-    .limit(MONTHS_OF_HISTORY)
+    .limit(MONTHS_OF_HISTORY + 1)
+
+  if (viaView.error && !isMissingRelation(viaView.error)) {
+    console.error('context query failed: v_account_revenue_monthly', viaView.error)
+    throw contextUnavailable()
+  }
 
   if (!viaView.error && viaView.data) {
     return {
@@ -220,11 +233,13 @@ export async function fetchRevenueByMonth(
     }
   }
 
+  // Memo lines out, as agg_customer_month (the view's source) leaves them.
   const viaFacts = await erp(client)
     .from('fact_invoice_line')
     .select('invoice_date, revenue')
     .eq('customer_key', customerKey)
     .gte('invoice_date', since)
+    .not('is_memo', 'is', true)
     .order('invoice_date', { ascending: true })
     .limit(10_000)
 
@@ -238,7 +253,7 @@ export async function fetchRevenueByMonth(
 
   const series = Array.from(buckets.entries())
     .sort(([a], [b]) => (a < b ? -1 : 1))
-    .slice(-MONTHS_OF_HISTORY)
+    .slice(-(MONTHS_OF_HISTORY + 1))
     .map(([month, revenue]) => ({ month, revenue: round(revenue) }))
 
   return { series, source: 'fact_lines' }
@@ -254,17 +269,22 @@ export async function fetchRevenueByMonth(
  * window, so prior_12m_revenue is 0 and change_pct is null. With 18 present
  * months it reports a large fake swing on a flat account.
  *
- * prompt.ts tells the model these fields are literally the trailing twelve
- * months and the twelve before that, so a wrong number here becomes a
- * confident false statement in a rep's briefing.
+ * prompt.ts tells the model these fields are literally the twelve months
+ * through `through_month` and the twelve before that, so a wrong number here
+ * becomes a confident false statement in a rep's briefing.
+ *
+ * WHOLE months only: the current month is still being invoiced, so a
+ * window that included it compared eleven and a bit months with twelve and
+ * read every flat account as down (by up to a twelfth early in the month).
+ * The windows end at last month; they still move once a month, not daily.
  */
 export function summariseRevenue(series: MonthlyRevenue[], today = new Date()) {
   const byMonth = new Map(series.map((r) => [r.month.slice(0, 7), r.revenue]))
 
-  // 24 calendar-month keys ending with the current month, newest first.
+  // 24 calendar-month keys ending with LAST month, newest first.
   const monthKeys: string[] = []
   const cursor = new Date(
-    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1),
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1),
   )
   for (let i = 0; i < 24; i++) {
     monthKeys.push(cursor.toISOString().slice(0, 7))
@@ -280,10 +300,11 @@ export function summariseRevenue(series: MonthlyRevenue[], today = new Date()) {
     prior > 0 ? Math.round(((trailing - prior) / prior) * 100) : null
 
   return {
+    through_month: monthKeys[0],
     trailing_12m_revenue: trailing,
     prior_12m_revenue: prior,
     change_pct: changePct,
-    months_with_revenue: series.filter((r) => r.revenue > 0).length,
+    months_with_revenue: monthKeys.filter((k) => (byMonth.get(k) ?? 0) > 0).length,
   }
 }
 
@@ -353,12 +374,22 @@ function summariseBuyingPatterns(
  * Product mix by family over the SAME months of both years, from
  * report_account_family_mix(). "Stopped" is decided here, deterministically,
  * so the model never infers it from two numbers it might misread: a family
- * is stopped only when it had real revenue in last year's window and none
- * in this year's.
+ * is stopped only when it had real revenue in last year's window, none in
+ * this year's, and none since the window closed — the window ends at the
+ * last complete month, so without `revenue_after_period` a family bought
+ * last week read as stopped.
  */
 export function summariseMix(mixRows: Row[]) {
   if (mixRows.length === 0) return null
   const first = mixRows[0]
+  // Not part of the comparison (and not in the context): only the stopped
+  // test reads it. Absent on an earlier draft of 20261013140002 → 0.
+  const boughtSince = new Map<string, number>(
+    mixRows.map((r) => [
+      String(r.product_family ?? '').trim() || '(none)',
+      Number(r.revenue_after_period ?? 0),
+    ]),
+  )
   const families = mixRows
     .map((r) => ({
       family: String(r.product_family ?? '').trim() || '(none)',
@@ -380,6 +411,7 @@ export function summariseMix(mixRows: Row[]) {
     families: families.slice(0, 8),
     stopped_families: families
       .filter((f) => f.revenue_same_period_last_year >= STOPPED_FAMILY_MIN && f.revenue_this_period <= 0)
+      .filter((f) => !((boughtSince.get(f.family) ?? 0) > 0))
       .map((f) => f.family),
     new_families: families
       .filter((f) => f.revenue_this_period >= STOPPED_FAMILY_MIN && f.revenue_same_period_last_year <= 0)
@@ -530,11 +562,13 @@ export async function fetchContextInputs(
       p_through_month: mixThrough,
     }),
 
+    // NULLS LAST: a 19000101 sentinel key makes ship_date NULL, and
+    // Postgres sorts NULL first on a descending sort by default.
     erp(client)
       .from('fact_shipment_line')
       .select('ship_date')
       .eq('customer_key', customerKey)
-      .order('ship_date', { ascending: false })
+      .order('ship_date', { ascending: false, nullsFirst: false })
       .order('packlist_id', { ascending: true })
       .order('line_num', { ascending: true })
       .limit(1),
@@ -704,6 +738,11 @@ export function assembleContext(input: ContextInputs, today = new Date()) {
   const lastAction = actionRows[0]
   const visit = input.visit
 
+  // The series reaches one month further back than the model is shown, for
+  // revenue_summary's whole-month windows (see fetchRevenueByMonth).
+  const seriesFrom = monthStart(today, MONTHS_OF_HISTORY - 1).slice(0, 7)
+  const shownSeries = input.revenue.series.filter((r) => r.month.slice(0, 7) >= seriesFrom)
+
   const context = {
     account: {
       name: customer.customer_name ?? null,
@@ -719,11 +758,11 @@ export function assembleContext(input: ContextInputs, today = new Date()) {
     },
     goal,
     revenue_ytd: revenueYtd,
-    revenue_by_month: input.revenue.series,
+    revenue_by_month: shownSeries,
     revenue_summary: summariseRevenue(input.revenue.series, today),
     buying_patterns: {
       orders_since: input.ordersSince,
-      ...summariseBuyingPatterns(orders, input.revenue.series),
+      ...summariseBuyingPatterns(orders, shownSeries),
       mix: summariseMix(input.mix),
     },
     orders: {
@@ -744,8 +783,9 @@ export function assembleContext(input: ContextInputs, today = new Date()) {
       production_date: b.earliest_desired_ship_date ?? null,
     })),
     // Stock QUANTITY is left out on purpose: it moves daily and would make
-    // an unchanged account hash "changed"; "covers their last order" moves
-    // only when it matters.
+    // an unchanged account hash "changed". So is whether today's stock
+    // covers their last order (as_of_today.stock_covers_last_order): it
+    // flips whenever stock crosses that size, with no news from the dealer.
     in_stock_reorders: input.reorders.map((r) => ({
       part: r.part_id ?? r.part_key ?? null,
       description: r.part_description ?? null,
@@ -758,7 +798,6 @@ export function assembleContext(input: ContextInputs, today = new Date()) {
         r.median_months_between_buys == null ? null : Number(r.median_months_between_buys),
       next_buy_expected_month: r.expected_next_month ? String(r.expected_next_month).slice(0, 7) : null,
       due_now: r.is_due === true,
-      stock_covers_last_order: Number(r.ats_qty ?? 0) >= Number(r.last_qty ?? 0),
     })),
     shipments: {
       last_ship_date: input.lastShipDate,
@@ -827,6 +866,11 @@ export function assembleContext(input: ContextInputs, today = new Date()) {
     backlog_lines_past_promise: context.backlog_lines.filter(
       (b) => b.promise_date && String(b.promise_date) < todayIso,
     ).length,
+    // The in_stock_reorders parts whose stock today would cover an order
+    // the size of their last one.
+    stock_covers_last_order: input.reorders
+      .filter((r) => Number(r.ats_qty ?? 0) >= Number(r.last_qty ?? 0))
+      .map((r) => r.part_id ?? r.part_key ?? null),
   }
 
   return { context, asOf }
