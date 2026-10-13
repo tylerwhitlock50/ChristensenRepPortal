@@ -1,8 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useId, watch } from 'vue'
-import { useForm } from 'vee-validate'
-import { toTypedSchema } from '@vee-validate/zod'
-import { z } from 'zod'
+import { computed, ref, shallowRef, watch } from 'vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import { useSessionStore } from '@/stores/session'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
@@ -12,8 +9,6 @@ import {
   paceBasisLabel,
   paceLabel,
   useAccountGoal,
-  useRemoveAccountGoal,
-  useSetAccountGoal,
 } from '@/composables/useAccountGoals'
 import { money, shortDate } from '@/lib/format'
 
@@ -54,106 +49,38 @@ const erpGoal = computed(
 )
 
 /* ---- inline editor ------------------------------------------------------ */
+
+/**
+ * The form (and zod + vee-validate with it, about half of the account
+ * page's code) downloads on the first tap of Edit or Set a goal, not with
+ * the page. Most visits to an account never open it. Loaded by hand rather
+ * than through defineAsyncComponent, whose failed load sticks for the life
+ * of the page: here a tap after the signal comes back simply tries again.
+ */
+type GoalFormComponent = (typeof import('@/components/AccountGoalForm.vue'))['default']
+const GoalForm = shallowRef<GoalFormComponent | null>(null)
 const editing = ref(false)
-const confirmingRemove = ref(false)
-const uid = useId()
+const formUnavailable = ref(false)
 
-const save = useSetAccountGoal()
-const remove = useRemoveAccountGoal()
-const serverError = ref('')
-
-/**
- * Reps type "85,000" and "$85k" as readily as "85000". Strip the money
- * punctuation before validating rather than rejecting a number the rep
- * plainly meant — this is the field they'll fill in standing at a counter.
- */
-function parseAmount(raw: string): number | null {
-  const cleaned = raw.replace(/[$,\s]/g, '').replace(/k$/i, '000')
-  if (!cleaned) return null
-  const n = Number(cleaned)
-  return Number.isFinite(n) ? n : null
-}
-
-const schema = toTypedSchema(
-  z.object({
-    amount: z
-      .string()
-      .trim()
-      .min(1, 'Enter a dollar amount')
-      .refine((v) => parseAmount(v) != null, "That doesn't look like an amount")
-      .refine((v) => (parseAmount(v) ?? 0) > 0, 'A goal has to be more than zero')
-      .refine(
-        (v) => (parseAmount(v) ?? 0) < 1_000_000_000,
-        'That is larger than this account could plausibly buy',
-      ),
-    note: z.string().trim().max(500, 'Keep the note under 500 characters'),
-  }),
-)
-
-const { defineField, errors, handleSubmit, isSubmitting, resetForm } = useForm({
-  validationSchema: schema,
-  initialValues: { amount: '', note: '' },
-})
-
-const [amount, amountAttrs] = defineField('amount')
-const [note, noteAttrs] = defineField('note')
-
-/**
- * Seeds the form when the panel opens: the existing goal, or the ERP's number
- * as a starting point. A rep who agrees with the ERP figure should be able to
- * commit to it in one tap rather than retyping it.
- */
-function startEdit() {
-  const seed = goal.value?.target_amount ?? erpGoal.value ?? null
-  resetForm({
-    values: {
-      amount: seed != null ? String(Math.round(seed)) : '',
-      note: goal.value?.note ?? '',
-    },
-  })
-  serverError.value = ''
-  confirmingRemove.value = false
+async function startEdit() {
+  formUnavailable.value = false
   editing.value = true
-}
-
-function cancelEdit() {
-  editing.value = false
-  serverError.value = ''
+  if (GoalForm.value) return
+  try {
+    GoalForm.value = (await import('@/components/AccountGoalForm.vue')).default
+  } catch {
+    editing.value = false
+    formUnavailable.value = true
+  }
 }
 
 // Navigating between accounts reuses this component; a half-typed goal must
-// not follow the rep to the next dealer.
+// not follow the rep to the next dealer. Closing unmounts the form, which
+// drops whatever was typed.
 watch(key, () => {
   editing.value = false
-  confirmingRemove.value = false
-  serverError.value = ''
+  formUnavailable.value = false
 })
-
-const onSubmit = handleSubmit(async (values) => {
-  const targetAmount = parseAmount(values.amount)
-  if (targetAmount == null) return
-  serverError.value = ''
-  try {
-    await save.mutateAsync({
-      customerKey: props.customerKey,
-      values: { targetAmount, periodYear: year, note: values.note },
-    })
-    editing.value = false
-  } catch (e) {
-    serverError.value = (e as Error).message || 'Could not save that goal.'
-  }
-})
-
-async function confirmRemove() {
-  serverError.value = ''
-  try {
-    await remove.mutateAsync({ customerKey: props.customerKey, periodYear: year })
-    confirmingRemove.value = false
-    editing.value = false
-  } catch (e) {
-    serverError.value = (e as Error).message || 'Could not remove that goal.'
-  }
-}
 
 /* ---- display ------------------------------------------------------------ */
 
@@ -274,100 +201,22 @@ const setByLine = computed(() => {
       </AppButton>
     </template>
 
+    <p v-if="formUnavailable" role="alert" class="text-muted mt-2 text-sm">
+      Couldn't open the goal editor. Check your signal and tap again.
+    </p>
+
     <!-- Inline editor -->
-    <form
-      v-if="editing"
-      class="border-line bg-canvas mt-3 rounded-[2px] border p-4"
-      novalidate
-      @submit="onSubmit"
-    >
-      <div class="space-y-3">
-        <div>
-          <label :for="`${uid}-amount`" class="text-ink-2 mb-1 block text-sm font-medium">
-            {{ year }} revenue goal
-          </label>
-          <div class="flex items-center gap-2">
-            <span class="u-display text-ink-2 text-xl">$</span>
-            <input
-              :id="`${uid}-amount`"
-              v-model="amount"
-              v-bind="amountAttrs"
-              type="text"
-              inputmode="decimal"
-              autocomplete="off"
-              spellcheck="false"
-              enterkeyhint="done"
-              placeholder="85,000"
-              class="tap-target border-line-2 bg-surface focus:border-brand w-full rounded-[2px] border px-3 py-2 text-base tabular-nums outline-none"
-              :aria-invalid="!!errors.amount || undefined"
-              :aria-describedby="errors.amount ? `${uid}-amount-err` : undefined"
-            />
-          </div>
-          <p v-if="errors.amount" :id="`${uid}-amount-err`" class="text-danger mt-1 text-sm">
-            {{ errors.amount }}
-          </p>
-          <p v-else-if="erpGoal != null" class="text-muted mt-1 text-[13px]">
-            The ERP has {{ money(erpGoal) }} for this account.
-          </p>
-        </div>
-
-        <div>
-          <label :for="`${uid}-note`" class="text-ink-2 mb-1 block text-sm font-medium">
-            Why this number <span class="text-muted font-normal">(optional)</span>
-          </label>
-          <textarea
-            :id="`${uid}-note`"
-            v-model="note"
-            v-bind="noteAttrs"
-            rows="2"
-            placeholder="Adding the ATV line in Q2 — owner committed to a spring order."
-            class="border-line-2 bg-surface focus:border-brand w-full rounded-[2px] border p-3 text-base outline-none"
-            :aria-invalid="!!errors.note || undefined"
-            :aria-describedby="errors.note ? `${uid}-note-err` : undefined"
-          />
-          <p v-if="errors.note" :id="`${uid}-note-err`" class="text-danger mt-1 text-sm">
-            {{ errors.note }}
-          </p>
-        </div>
-      </div>
-
-      <p v-if="serverError" role="alert" class="text-danger mt-3 text-sm">
-        {{ serverError }}
-      </p>
-
-      <div class="mt-4 flex flex-wrap gap-2">
-        <AppButton type="submit" :loading="isSubmitting">
-          {{ goal ? 'Save goal' : 'Set goal' }}
-        </AppButton>
-        <AppButton variant="ghost" @click="cancelEdit">Cancel</AppButton>
-        <AppButton
-          v-if="goal && !isErpGoal && !confirmingRemove"
-          variant="ghost"
-          class="ml-auto"
-          @click="confirmingRemove = true"
-        >
-          Remove
-        </AppButton>
-      </div>
-
-      <!-- Confirm in place. Removing a goal loses the note and the history of
-           what was committed to, so it asks once. -->
-      <div v-if="confirmingRemove" class="border-line mt-3 border-t pt-3">
-        <p class="text-ink-2 text-sm">
-          Remove the {{ year }} goal for this account? Reporting falls back to
-          the ERP's number.
-        </p>
-        <div class="mt-2 flex gap-2">
-          <AppButton
-            variant="danger"
-            :loading="remove.isPending.value"
-            @click="confirmRemove"
-          >
-            Remove goal
-          </AppButton>
-          <AppButton variant="ghost" @click="confirmingRemove = false">Keep it</AppButton>
-        </div>
-      </div>
-    </form>
+    <template v-if="editing">
+      <component
+        :is="GoalForm"
+        v-if="GoalForm"
+        :customer-key="customerKey"
+        :year="year"
+        :goal="goal"
+        :erp-goal="erpGoal"
+        @close="editing = false"
+      />
+      <p v-else class="text-muted mt-3 text-sm">Opening…</p>
+    </template>
   </section>
 </template>
