@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { refDebounced, useMediaQuery } from '@vueuse/core'
 import type { ColumnDef } from '@tanstack/vue-table'
@@ -15,7 +15,7 @@ import {
 } from '@/composables/useAccounts'
 import { observeAccount, useTerritoryAccounts } from '@/composables/useOverview'
 import { useTerritorySignals } from '@/composables/useAccountSignals'
-import { useBestContacts } from '@/composables/useBestContacts'
+import { useBestContacts, type AccountReach } from '@/composables/useBestContacts'
 import { usePlan } from '@/composables/usePlan'
 import {
   currentGoalYear,
@@ -345,15 +345,40 @@ const planRows = computed(() => {
 })
 
 const planReach = useBestContacts(computed(() => (planMode.value ? planKeys.value : [])))
+// Un-starring changes the key set and refetches; the last answer still
+// covers every account left on the plan, so the Route button stays put
+// instead of blinking out and back. A newly starred account is not in it,
+// so nothing below shows until the fetch that includes it lands.
+const lastReach = shallowRef(new Map<string, AccountReach>())
+watch(
+  () => planReach.data.value,
+  (data) => {
+    if (data !== undefined) lastReach.value = planReach.byKey.value
+  },
+)
+const reachMap = computed(() =>
+  planReach.data.value !== undefined ? planReach.byKey.value : lastReach.value,
+)
+const reachReady = computed(
+  () => planKeys.value.length > 0 && planKeys.value.every((k) => reachMap.value.has(k)),
+)
 const routeStops = computed(() =>
   planKeys.value
-    .map((k) => planReach.byKey.value.get(k)?.address)
+    .map((k) => reachMap.value.get(k)?.address)
     .filter((a) => !!formatAddress(a)),
 )
-const routeUrl = computed(() => multiStopRouteUrl(routeStops.value))
+const routeUrl = computed(() => (reachReady.value ? multiStopRouteUrl(routeStops.value) : null))
 const missingAddresses = computed(() =>
-  planReach.data.value ? planKeys.value.length - routeStops.value.length : 0,
+  reachReady.value ? planKeys.value.length - routeStops.value.length : 0,
 )
+
+/** One tap would lose the day's plan; ask first. */
+function confirmClearPlan() {
+  const n = planCount.value
+  if (window.confirm(`Clear all ${n} starred ${n === 1 ? 'account' : 'accounts'} from your plan?`)) {
+    clearPlan()
+  }
+}
 
 function place(a: { sold_to_city: string | null; sold_to_state: string | null }) {
   return [humanize(a.sold_to_city), a.sold_to_state]
@@ -615,7 +640,7 @@ function goalAmounts(g: AccountGoalProgress): string {
     <section v-else-if="planMode" aria-label="My plan" class="space-y-2.5">
       <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p class="text-muted text-sm">Starred on this phone, in the order you starred them.</p>
-        <AppButton variant="ghost" @click="clearPlan()">Clear plan</AppButton>
+        <AppButton variant="ghost" @click="confirmClearPlan">Clear plan</AppButton>
       </div>
 
       <template v-if="routeUrl">
@@ -643,7 +668,7 @@ function goalAmounts(g: AccountGoalProgress): string {
           </template>
         </p>
       </template>
-      <p v-else-if="planReach.data.value" class="text-muted text-[13px]">
+      <p v-else-if="reachReady" class="text-muted text-[13px]">
         None of these has a street address on file to route to.
       </p>
 

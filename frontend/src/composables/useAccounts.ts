@@ -1,5 +1,5 @@
 import { computed, unref, type MaybeRef } from 'vue'
-import { useInfiniteQuery, useQuery } from '@tanstack/vue-query'
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, isSchemaNotExposed, supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
@@ -354,6 +354,9 @@ export function useAccountsByKeys(keys: MaybeRef<string[]>) {
   return useQuery({
     queryKey: computed(() => [...qk.me.accounts(), 'by-keys', list.value] as const),
     enabled: computed(() => list.value.length > 0),
+    // Un-starring one account changes the key; the rest stay on screen
+    // while it refetches instead of the whole list going back to skeletons.
+    placeholderData: keepPreviousData,
     staleTime: 10 * 60_000,
     queryFn: async (): Promise<AccountListRow[]> => {
       const run = (relation: 'v_account_list' | 'dim_customer') => {
