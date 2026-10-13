@@ -42,11 +42,19 @@ export type AccountContact = {
   display_name?: string | null
 }
 
-export function useNotes(customerKey: MaybeRef<string>) {
+/**
+ * Notes and the activity list below both take `enabled`: the account page
+ * renders them only while feature.actionLogging is on, and a read nobody
+ * sees should not be one of the requests a rep waits on in a parking lot.
+ */
+export function useNotes(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useQuery({
     queryKey: computed(() => qk.account.notes(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     queryFn: async (): Promise<Note[]> => {
       const { data, error } = await supabase
         .from('notes')
@@ -108,11 +116,14 @@ export function useContacts(customerKey: MaybeRef<string>) {
 }
 
 /** Visit/call/email history for the account — the "was this worked?" answer. */
-export function useAccountActions(customerKey: MaybeRef<string>) {
+export function useAccountActions(
+  customerKey: MaybeRef<string>,
+  options?: { enabled?: MaybeRef<boolean> },
+) {
   const key = computed(() => unref(customerKey))
   return useQuery({
     queryKey: computed(() => qk.account.activity(key.value)),
-    enabled: computed(() => !!key.value),
+    enabled: computed(() => !!key.value && (unref(options?.enabled) ?? true)),
     queryFn: async (): Promise<Action[]> => {
       const { data, error } = await supabase
         .from('actions')
