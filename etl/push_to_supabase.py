@@ -85,6 +85,15 @@ def post_load_http(call):
     Kept here rather than in pg_cron + pg_net because this is already the
     sanctioned nightly hook and it already knows every table loaded cleanly
     (TECH_STACK §4.2). A separate schedule is a second thing to drift.
+
+    `repeat_until_idle: N` (optional, views.yml) calls the function again
+    while its JSON reply reports `generated > 0`, at most N calls in all. It
+    exists for ai-summary-batch, which now does a small bounded slice per call
+    so each request stays well inside the Edge Function time limit; the
+    function skips what it already wrote, so each repeat picks up the next
+    accounts and a reply of `generated: 0` means there is nothing left worth
+    paying for. Without the key: one call, exactly as before. A failed call
+    ends the loop — the next night picks up the rest.
     """
     import json
     import urllib.error
@@ -98,22 +107,41 @@ def post_load_http(call):
               file=sys.stderr)
         return
 
-    body = json.dumps(call.get("body") or {}).encode()
-    req = urllib.request.Request(
-        f"{base}/functions/v1/{name}",
-        data=body,
-        headers={"content-type": "application/json", "x-batch-secret": secret},
-        method="POST",
-    )
     try:
-        # Generous: the batch makes a few dozen model calls before replying.
-        with urllib.request.urlopen(req, timeout=900) as res:
-            print(f"post_load_http: {name} -> {res.read().decode()[:400]}")
-    except urllib.error.HTTPError as exc:
-        print(f"post_load_http: {name} FAILED {exc.code} — {exc.read().decode()[:400]}",
-              file=sys.stderr)
-    except Exception as exc:
-        print(f"post_load_http: {name} FAILED — {exc}", file=sys.stderr)
+        max_calls = max(1, int(call.get("repeat_until_idle") or 1))
+    except (TypeError, ValueError):
+        max_calls = 1
+
+    body = json.dumps(call.get("body") or {}).encode()
+    for attempt in range(1, max_calls + 1):
+        req = urllib.request.Request(
+            f"{base}/functions/v1/{name}",
+            data=body,
+            headers={"content-type": "application/json", "x-batch-secret": secret},
+            method="POST",
+        )
+        label = name if max_calls == 1 else f"{name} [{attempt}/{max_calls}]"
+        try:
+            # Generous: a call makes up to a few dozen model calls before replying.
+            with urllib.request.urlopen(req, timeout=900) as res:
+                reply = res.read().decode()
+                print(f"post_load_http: {label} -> {reply[:400]}")
+        except urllib.error.HTTPError as exc:
+            print(f"post_load_http: {label} FAILED {exc.code} — {exc.read().decode()[:400]}",
+                  file=sys.stderr)
+            return
+        except Exception as exc:
+            print(f"post_load_http: {label} FAILED — {exc}", file=sys.stderr)
+            return
+
+        if attempt == max_calls:
+            break
+        try:
+            generated = int((json.loads(reply) or {}).get("generated") or 0)
+        except (ValueError, TypeError, AttributeError):
+            generated = 0
+        if generated <= 0:
+            break
 
 
 def log_job_run(pg, job_name, started_at, status, rows=None, error=None):
