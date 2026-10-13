@@ -678,6 +678,12 @@ watch(key, () => {
               <p v-if="buyer?.phone && buyer.do_not_call" class="mt-1 text-sm text-[#8E8A80]">
                 {{ buyer.phone }} · do not call
               </p>
+              <!-- A named contact with no number (a go-to the rep chose, an
+                   email-only buyer) is not "no buyer": say whose number is
+                   missing. -->
+              <p v-else-if="buyer" class="text-canvas mt-1 text-sm">
+                No number on file for {{ buyer.label }}
+              </p>
               <p v-else class="text-canvas mt-1 text-sm">No buyer number on file</p>
               <button
                 v-if="session.canWrite"
