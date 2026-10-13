@@ -7,11 +7,13 @@
  * Re-run it whenever favicon.svg changes, and commit the PNGs: they are
  * build inputs, not build outputs, so a Vercel build never needs a browser.
  *
- * Every icon is the mark on an ink tile (the header color, #12130F): iOS
- * paints a transparent apple-touch-icon black anyway, and Android crops a
- * maskable icon to whatever shape the launcher likes, so a full-bleed
- * background is the only thing that looks the same everywhere. The maskable
- * one keeps the mark inside the central 60% so no launcher shape clips it.
+ * favicon.svg is the whole icon: the header's orange tick and an "RP"
+ * monogram (drawn as paths, so no font is needed) on an ink tile, the
+ * header color #12130F, with its own margins. The standard icons draw it
+ * full-bleed. iOS paints a transparent apple-touch-icon black anyway, and
+ * Android crops a maskable icon to whatever shape the launcher likes, so the
+ * maskable one shrinks it onto more ink to keep the mark inside the central
+ * safe circle.
  */
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -24,10 +26,12 @@ const svg = readFileSync(join(pub, 'favicon.svg'), 'utf8')
 const INK = '#12130F'
 
 const icons = [
-  { file: 'pwa-192x192.png', size: 192, mark: 0.62 },
-  { file: 'pwa-512x512.png', size: 512, mark: 0.62 },
-  { file: 'pwa-maskable-512x512.png', size: 512, mark: 0.5 },
-  { file: 'apple-touch-icon-180x180.png', size: 180, mark: 0.62 },
+  { file: 'pwa-192x192.png', size: 192, mark: 1 },
+  { file: 'pwa-512x512.png', size: 512, mark: 1 },
+  { file: 'pwa-maskable-512x512.png', size: 512, mark: 0.84 },
+  { file: 'apple-touch-icon-180x180.png', size: 180, mark: 1 },
+  // The tab icon for browsers that skip an SVG favicon (older Safari).
+  { file: 'favicon-32x32.png', size: 32, mark: 1 },
 ]
 
 const browser = await chromium.launch({
