@@ -144,28 +144,36 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * Called once from main.ts before the app mounts, then kept current by
    * Supabase's auth listener (token refresh, sign-out in another tab).
+   *
+   * `onSession` runs the moment a stored session is known, before the
+   * profile round trip — main.ts uses it to start downloading the page the
+   * rep is opening while we wait on the database.
    */
-  async function init() {
+  async function init(opts: { onSession?: () => void } = {}) {
     const { data } = await supabase.auth.getSession()
     session.value = data.session
     if (session.value) {
-      try {
-        await loadProfile()
-      } catch {
-        // A profile read failure shouldn't wedge the app at a blank screen —
-        // the router guard will bounce to /login and the user can retry.
-        profile.value = null
-      }
+      opts.onSession?.()
+      // Side by side, not one after the other: acting_context needs only the
+      // JWT, not the profile, and on a morning open over LTE each of these
+      // is a full round trip the rep stares at a skeleton through.
+      await Promise.all([
+        loadProfile().catch(() => {
+          // A profile read failure shouldn't wedge the app at a blank screen —
+          // the router guard will bounce to /login and the user can retry.
+          profile.value = null
+        }),
+        // Before ready, not after: the router guard reads isAdmin, and an
+        // admin who reloads the page mid-view-as must not be waved through
+        // to /admin for the frame it takes this to resolve.
+        loadActingContext(),
+      ])
       // signIn() refuses a deactivated profile, but a rep deactivated while
       // their refresh token was still good lands here on the next reload
       // and would otherwise be treated as signed in until it expired.
       if (profile.value && !profile.value.active) {
         await signOut()
       }
-      // Before ready, not after: the router guard reads isAdmin, and an admin
-      // who reloads the page mid-view-as must not be waved through to /admin
-      // for the frame it takes this to resolve.
-      await loadActingContext()
     }
     ready.value = true
 
