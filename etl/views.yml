@@ -84,10 +84,17 @@ post_load_sql:
   # and the flag gate at the call site matches the recommendations pattern.
   - "select public.run_order_qc() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.orders' and s.enabled);"
 
-# Then pre-generate the briefings for the accounts that just floated to the top
-# of each rep's list. Needs SUPABASE_URL and AI_BATCH_SECRET in the ETL's
-# environment; skipped with a warning when they are absent, because a missing
-# summary must never fail a successful data load.
+# Then pre-generate the account briefings for the top of each rep's book (by
+# account_signals.score — no recommendation needed since 20261013140000).
+# Needs SUPABASE_URL and AI_BATCH_SECRET in the ETL's environment; skipped
+# with a warning when they are absent, because a missing summary must never
+# fail a successful data load.
+#
+# Small calls, repeated: each call pays for at most max_accounts briefings
+# (and stops starting new ones after ~75 s), so one request stays well inside
+# the Edge Function time limit. repeat_until_idle calls again while the reply
+# says generated > 0, up to 8 calls (120 briefings) a night.
 post_load_http:
   - function: ai-summary-batch
-    body: { per_rep: 5 }
+    body: { per_rep: 5, max_accounts: 15 }
+    repeat_until_idle: 8

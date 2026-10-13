@@ -121,10 +121,16 @@ type OpenAIResponse = {
  * One chat completion. The system prompt must be the FIRST message and
  * byte-identical across calls of the same action so OpenAI's automatic
  * prefix caching engages (needs ~1024+ tokens; watch cached_tokens in logs).
+ *
+ * `responseFormat` is passed through as OpenAI's `response_format` (a strict
+ * json_schema, as aiSummary.ts uses); the reply is still returned as text
+ * for the caller to parse, because only the caller knows what a usable
+ * fallback looks like when it is not JSON.
  */
 export async function callOpenAI(
   systemPrompt: string,
   userMessage: string,
+  responseFormat?: Record<string, unknown>,
 ): Promise<string> {
   const apiKey = Deno.env.get('OPENAI_API_KEY')
   if (!apiKey) {
@@ -139,6 +145,7 @@ export async function callOpenAI(
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ],
+    ...(responseFormat ? { response_format: responseFormat } : {}),
   }
 
   let res: Response

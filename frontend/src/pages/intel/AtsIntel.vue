@@ -4,8 +4,11 @@ import type { ColumnDef } from '@tanstack/vue-table'
 import { useAtsList, type AtsRow } from '@/composables/useIntel'
 import { isViewMissing, useTerritoryAccounts } from '@/composables/useOverview'
 import { useAccountSkuGaps } from '@/composables/useAccountGaps'
+import { useReorderCandidates } from '@/composables/useReorderCandidates'
 import AccountPicker from '@/components/AccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
+import SkuProspectsSheet from '@/components/SkuProspectsSheet.vue'
+import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
@@ -22,6 +25,9 @@ import { useFeatureFlags } from '@/composables/useAppSettings'
  * staging; committed = allocated open orders; backlog = all open demand;
  * ATS is signed, so negatives mean oversold. The upstream model does not
  * (yet) certify inbound supply or a next-available date.
+ *
+ * Reps see it as "In stock": "ATS" is the ERP's word, not theirs. Routes and
+ * names keep 'ats'.
  */
 const search = ref('')
 const query = useAtsList()
@@ -36,9 +42,29 @@ const allRows = computed(() => query.data.value ?? [])
    choosing an account costs one RPC and no book query.
 ------------------------------------------------------------------------- */
 const gapAccountKey = ref('')
+
+/**
+ * Two questions about one dealer, one toggle: what could they START
+ * carrying ("New to them" — the SKU-gap RPC's never-bought rows, which is
+ * all this page used to show), and what do they already buy that we can
+ * ship ("Reorders" — report_reorder_candidates, the account card's first
+ * list; on a database without it, the gap RPC's bought-before rows).
+ */
+const gapMode = ref<'new' | 'reorders'>('new')
+
+const reordersQuery = useReorderCandidates(
+  () => (gapMode.value === 'reorders' ? gapAccountKey.value : ''),
+  50,
+)
+const reordersFromGaps = computed(
+  () => gapMode.value === 'reorders' && reordersQuery.unavailable.value,
+)
 // 100, not the card's 25: this page lays the suggestions over the whole
 // catalog, and a rep scrolling a "gaps" list of 25 reads it as everything.
-const gapsQuery = useAccountSkuGaps(gapAccountKey, 100)
+const gapsQuery = useAccountSkuGaps(
+  computed(() => (gapMode.value === 'new' || reordersFromGaps.value ? gapAccountKey.value : '')),
+  100,
+)
 const accountsQuery = useTerritoryAccounts()
 
 const accounts = computed(() =>
@@ -65,10 +91,38 @@ const gapAccountName = computed(() => {
  */
 const gapKeys = computed(() => {
   if (!gapAccountKey.value) return null
+  if (gapMode.value === 'reorders' && !reordersFromGaps.value) {
+    if (reordersQuery.data.value === undefined) return null
+    return new Set(reordersQuery.rows.value.map((r) => r.part_key))
+  }
   const rowsOut = gapsQuery.data.value
   if (!rowsOut) return null
-  return new Set(rowsOut.filter((r) => !r.bought_before).map((r) => r.part_key))
+  const wantBought = gapMode.value === 'reorders'
+  return new Set(rowsOut.filter((r) => r.bought_before === wantBought).map((r) => r.part_key))
 })
+
+/** Reorders that are due now get a badge in the grid. */
+const dueKeys = computed(
+  () =>
+    new Set(
+      gapMode.value === 'reorders' && gapAccountKey.value
+        ? reordersQuery.rows.value.filter((r) => r.is_due).map((r) => r.part_key)
+        : [],
+    ),
+)
+
+/** The query behind the current account filter, for its status line. */
+const filterQuery = computed(() =>
+  gapMode.value === 'reorders' && !reordersFromGaps.value ? reordersQuery : gapsQuery,
+)
+
+/* "Who should I call?" — one sheet for the page, opened from any row. */
+const prospectPart = ref<AtsRow | null>(null)
+const prospectsOpen = ref(false)
+function whoToCall(row: AtsRow) {
+  prospectPart.value = row
+  prospectsOpen.value = true
+}
 
 const rows = computed(() =>
   gapKeys.value
@@ -85,6 +139,20 @@ const inStockOnly = ref(true)
 
 const displayRows = computed(() =>
   inStockOnly.value ? rows.value.filter((r) => r.ats_qty > 0) : rows.value,
+)
+
+/**
+ * DataGrid builds its rows once per sort/filter change, not when `data`
+ * changes (it reads TanStack's non-reactive options), so a grid whose rows
+ * shrink under it — the in-stock toggle, an account filter, Reorders —
+ * kept drawing the old rows. Remount it whenever the row set's definition
+ * changes; the search box survives (it is v-model'd from this page). See
+ * the integration notes: the real fix belongs in DataGrid.
+ */
+const gridKey = computed(
+  () =>
+    `${inStockOnly.value}|${gapAccountKey.value}|${gapMode.value}|` +
+    (gapKeys.value ? [...gapKeys.value].sort().join(',') : 'all'),
 )
 
 /** Feed-not-landed reads differently from a real failure. */
@@ -119,10 +187,11 @@ const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
     accessorKey: 'chambering',
     meta: { filter: 'select' },
   },
-  { id: 'ats_qty', header: 'ATS', accessorKey: 'ats_qty' },
+  { id: 'ats_qty', header: 'In stock', accessorKey: 'ats_qty' },
   { id: 'on_hand_qty', header: 'On hand', accessorKey: 'on_hand_qty' },
   { id: 'committed_qty', header: 'Committed', accessorKey: 'committed_qty' },
   { id: 'backlog_qty', header: 'Backlog', accessorKey: 'backlog_qty' },
+  { id: 'who', header: '', enableSorting: false } as ColumnDef<AtsRow, any>,
   ...(flags.orders.value
     ? [{ id: 'order', header: '', enableSorting: false } as ColumnDef<AtsRow, any>]
     : []),
@@ -136,7 +205,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
   { key: 'chambering', header: 'Chambering' },
   { key: 'barrel_length', header: 'Barrel' },
   { key: 'upc', header: 'UPC' },
-  { key: 'ats_qty', header: 'ATS qty' },
+  { key: 'ats_qty', header: 'In stock qty' },
   { key: 'on_hand_qty', header: 'On hand' },
   { key: 'committed_qty', header: 'Committed' },
   { key: 'backlog_qty', header: 'Backlog' },
@@ -147,9 +216,9 @@ const csvColumns: CsvColumn<AtsRow>[] = [
   <div class="space-y-4">
     <!-- The feed is a separate deployment step (ERP view + ETL entry); say
          so instead of erroring while it's on the way. -->
-    <AppCard v-if="feedMissing" title="ATS list">
+    <AppCard v-if="feedMissing" title="In stock">
       <p class="text-ink-2 text-[15px] leading-relaxed">
-        The ATS feed hasn't landed yet. Once the ERP-side view
+        The in-stock feed hasn't landed yet. Once the ERP-side view
         (<code>bi.vw_FactAvailableToSell</code>) ships and the nightly load
         runs, this page fills in on its own.
       </p>
@@ -162,7 +231,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
       :has-data="query.data.value !== undefined"
       :updated-at="query.dataUpdatedAt.value"
       :empty="!query.isPending.value && rows.length === 0"
-      empty-title="No ATS data yet"
+      empty-title="No stock data yet"
       empty-body="The table exists but the nightly ERP load hasn't filled it. Check back after the next load."
       :rows="4"
       @retry="query.refetch()"
@@ -200,7 +269,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
           <AppButton
             variant="ghost"
             :disabled="visible.length === 0"
-            @click="exportCsv(gapAccountKey ? `ats-gaps-${gapAccountKey}` : 'ats-list', visible, csvColumns)"
+            @click="exportCsv(gapAccountKey ? `ats-${gapMode === 'new' ? 'gaps' : 'reorders'}-${gapAccountKey}` : 'ats-list', visible, csvColumns)"
           >
             Export CSV
           </AppButton>
@@ -228,22 +297,55 @@ const csvColumns: CsvColumn<AtsRow>[] = [
           <AccountPicker
             v-model="gapAccountKey"
             :accounts="accounts"
-            placeholder="Show gaps for one account…"
+            placeholder="Filter for one account…"
           />
+          <div
+            v-if="gapAccountKey"
+            class="border-line flex w-fit border"
+            role="group"
+            aria-label="What to show for this account"
+          >
+            <button
+              type="button"
+              class="tap-target font-label px-4 text-[13px] font-semibold tracking-[0.12em] uppercase"
+              :class="gapMode === 'new' ? 'bg-ink text-canvas' : 'text-muted'"
+              :aria-pressed="gapMode === 'new'"
+              @click="gapMode = 'new'"
+            >
+              New to them
+            </button>
+            <button
+              type="button"
+              class="tap-target font-label px-4 text-[13px] font-semibold tracking-[0.12em] uppercase"
+              :class="gapMode === 'reorders' ? 'bg-ink text-canvas' : 'text-muted'"
+              :aria-pressed="gapMode === 'reorders'"
+              @click="gapMode = 'reorders'"
+            >
+              Reorders
+            </button>
+          </div>
           <p v-if="gapAccountKey" class="text-muted text-[13px]">
-            <template v-if="gapsQuery.isPending.value">Working out what they don't carry…</template>
-            <template v-else-if="gapsQuery.error.value">
+            <template v-if="filterQuery.isPending.value">
+              {{ gapMode === 'new' ? "Working out what they don't carry…" : 'Finding what they reorder…' }}
+            </template>
+            <template v-else-if="filterQuery.error.value">
               Couldn't load that account's history — showing the whole catalog.
             </template>
-            <template v-else>
+            <template v-else-if="gapMode === 'new'">
               Top {{ count(rows.length) }} suggestions for {{ gapAccountName }}
               — in stock, carried by 4+ dealers, never bought here. Not a full
               list of what they don't carry.
+            </template>
+            <template v-else>
+              {{ count(rows.length) }} in-stock {{ rows.length === 1 ? 'item' : 'items' }}
+              {{ gapAccountName }} has bought before<template v-if="dueKeys.size">,
+              {{ count(dueKeys.size) }} due for a reorder</template>.
             </template>
           </p>
         </div>
 
         <DataGrid
+          :key="gridKey"
           :columns="columns"
           :data="displayRows"
           :initial-sorting="[{ id: 'ats_qty', desc: true }]"
@@ -257,6 +359,16 @@ const csvColumns: CsvColumn<AtsRow>[] = [
           <!-- The picture lives on the website — the family page. -->
           <template #cell-part_id="{ row }">
             <ProductLink :family="row.product_family">{{ row.part_id }}</ProductLink>
+            <AppBadge v-if="dueKeys.has(row.part_key)" tone="good" class="ml-2">Due</AppBadge>
+          </template>
+          <template #cell-who="{ row }">
+            <button
+              type="button"
+              class="btn-ghost text-[13px] whitespace-nowrap"
+              @click="whoToCall(row)"
+            >
+              Who to call
+            </button>
           </template>
           <!-- The grid can be empty because of the in-stock toggle, not the
                data — say so, or a searched-for out-of-stock SKU reads as
@@ -297,30 +409,43 @@ const csvColumns: CsvColumn<AtsRow>[] = [
           </template>
           <template #card="{ row }">
             <div class="px-1">
-              <p class="text-ink text-[15px] font-semibold">
-                {{ row.part_id }} · {{ row.part_description }}
-              </p>
+              <div class="flex items-start justify-between gap-3">
+                <p class="text-ink min-w-0 text-[15px] font-semibold">
+                  {{ row.part_id }} · {{ row.part_description }}
+                </p>
+                <AppBadge v-if="dueKeys.has(row.part_key)" tone="good" class="shrink-0">Due</AppBadge>
+              </div>
               <p class="text-muted mt-0.5 text-xs">
                 {{ row.product_family }} · {{ row.chambering }}
               </p>
               <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
-                ATS {{ count(row.ats_qty) }} · on hand {{ count(row.on_hand_qty) }}
+                In stock {{ count(row.ats_qty) }} · on hand {{ count(row.on_hand_qty) }}
                 <ProductLink :family="row.product_family" fallback="none">
                   · see it
                 </ProductLink>
               </p>
-              <p v-if="flags.orders.value" class="mt-1">
+              <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <button
+                  type="button"
+                  class="btn-ghost text-[13px]"
+                  @click="whoToCall(row)"
+                >
+                  Who should I call?
+                </button>
                 <RouterLink
+                  v-if="flags.orders.value"
                   :to="{ name: 'orders-new', query: { sku: row.part_id ?? undefined } }"
                   class="text-ink text-sm font-semibold underline decoration-dotted underline-offset-2"
                 >
                   Order now
                 </RouterLink>
-              </p>
+              </div>
             </div>
           </template>
         </DataGrid>
       </AppCard>
     </AsyncState>
+
+    <SkuProspectsSheet v-model:open="prospectsOpen" :part="prospectPart" />
   </div>
 </template>
