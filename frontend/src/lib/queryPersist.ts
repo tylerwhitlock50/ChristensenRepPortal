@@ -198,7 +198,8 @@ function apply(userId: string, saved: PersistedClient | null): boolean {
 }
 
 /**
- * Restore the saved cache for `userId`, waiting at most RESTORE_BUDGET_MS.
+ * Restore the saved cache for `userId`, waiting at most RESTORE_BUDGET_MS
+ * (or `budgetMs`).
  * Call before anything mounts (the session store does, inside init()), so
  * restored data is in place before any query decides to fetch.
  *
@@ -206,7 +207,10 @@ function apply(userId: string, saved: PersistedClient | null): boolean {
  * copy is applied when it arrives — still only for this user, and only if
  * they are still the one being persisted for.
  */
-export async function restorePersistedCache(userId: string): Promise<boolean> {
+export async function restorePersistedCache(
+  userId: string,
+  opts: { budgetMs?: number } = {},
+): Promise<boolean> {
   readPersistedCache(userId)
   const pending = pendingRead!
   const read = pending.read
@@ -220,7 +224,7 @@ export async function restorePersistedCache(userId: string): Promise<boolean> {
   const first = await Promise.race([
     read,
     new Promise<typeof late>((resolve) => {
-      timer = setTimeout(() => resolve(late), RESTORE_BUDGET_MS)
+      timer = setTimeout(() => resolve(late), opts.budgetMs ?? RESTORE_BUDGET_MS)
     }),
   ])
   clearTimeout(timer)

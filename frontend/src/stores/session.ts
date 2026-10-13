@@ -32,6 +32,7 @@ const db = supabase as unknown as SupabaseClient
 const OFFLINE_OPEN_AFTER_MS = 6_000
 /** While offline, how often to try the network again (if the phone says it has one). */
 const RECONNECT_EVERY_MS = 30_000
+const OFFLINE_RESTORE_BUDGET_MS = 3_000
 
 /**
  * Session + profile only. Everything that comes from the database lives in
@@ -229,8 +230,8 @@ export const useSessionStore = defineStore('session', () => {
    *     have one, so they never open offline;
    *   - a failure that is a missing connection: no answer, a timeout, a
    *     network error. A refresh token the server REJECTS (revoked, user
-   *     deleted) is an answer: supabase-js drops the session and this ends on
-   *     /login as before, with the saved copy deleted.
+   *     deleted) is an answer: supabase-js drops the session from storage,
+   *     SIGNED_OUT deletes the saved copy, and AppShell goes to /login.
    *
    * Nothing new is exposed: it shows only what is already in this phone's
    * IndexedDB, nothing is written while offline (canWrite is false), and no
@@ -245,7 +246,10 @@ export const useSessionStore = defineStore('session', () => {
     // Queries wait instead of failing one by one: no request until the
     // sign-in is real again (goOnline).
     onlineManager.setOnline(false)
-    await restorePersistedCache(stored.user.id)
+    // A longer wait than an online boot allows: with no network there is
+    // nothing else to show, and a slow phone's IndexedDB is still quicker
+    // than an empty screen.
+    await restorePersistedCache(stored.user.id, { budgetMs: OFFLINE_RESTORE_BUDGET_MS })
     offlineSince.value = (await savedCacheTimestamp(stored.user.id)) ?? saved.savedAt
     startReconnecting()
   }
@@ -273,12 +277,22 @@ export const useSessionStore = defineStore('session', () => {
     onlineManager.setOnline(true)
   }
 
+  /**
+   * Whether the server has said no, as opposed to not answering. The one
+   * reliable sign is supabase-js dropping the session from storage, which it
+   * does only on a rejected refresh — not on a network error, and not on its
+   * own bookkeeping errors (a refresh discarded because another tab won).
+   */
+  function sessionWasRejected(): boolean {
+    return storedSession() === null
+  }
+
   /** Try the sign-in again; the 'online' event and a timer call this. */
   async function reconnect() {
     if (!isOffline.value || reconnecting) return
-    const { data, error } = await supabase.auth.getSession()
+    const { data } = await supabase.auth.getSession()
     if (data.session) await goOnline(data.session)
-    else if (error && !isNoConnection(error)) await endRejected()
+    else if (sessionWasRejected()) await endRejected()
   }
 
   /** The sign-in is real again: verify who this is, then carry on online. */
@@ -287,17 +301,11 @@ export const useSessionStore = defineStore('session', () => {
     reconnecting = true
     try {
       session.value = next
-      let failure: unknown = null
-      const fresh = await loadProfile().catch((e) => {
-        failure = e
-        return undefined
-      })
-      if (fresh === undefined) {
-        // Still no connection to the database, or it refused: stay put on
-        // the saved copy unless it was a real refusal.
-        if (!isNoConnection(failure)) await endRejected()
-        return
-      }
+      const fresh = await loadProfile().catch(() => undefined)
+      // The profile read failed (no signal yet, or a hiccup): stay on the
+      // saved copy and try again on the next reconnect. A dead session ends
+      // through SIGNED_OUT instead, never through a failed read.
+      if (fresh === undefined) return
       if (!fresh || !fresh.active) {
         await signOut()
         leaveOffline()
@@ -371,9 +379,9 @@ export const useSessionStore = defineStore('session', () => {
       // The sign-in check is still trying. Open on the saved copy; when the
       // check does finish, it either brings us online or ends the session.
       await openOffline(first.identity, stored!)
-      void auth.then(({ data, error }) => {
+      void auth.then(({ data }) => {
         if (data.session) void goOnline(data.session)
-        else if (error && !isNoConnection(error)) void endRejected()
+        else if (sessionWasRejected()) void endRejected()
       })
     } else {
       const { data, error } = first.result
@@ -434,7 +442,7 @@ export const useSessionStore = defineStore('session', () => {
         // copy if there is one; if not, /login as before — and keep the copy.
         const identity = stored ? await savedIdentity : null
         if (identity) await openOffline(identity, stored!)
-      } else {
+      } else if (sessionWasRejected()) {
         // Nobody is signed in on this device (signed out, or the session is
         // gone for good): nothing saved for anyone should outlive that.
         void wipePersistedCache()
