@@ -27,7 +27,7 @@
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 import { HttpError } from './supabase.ts'
-import { buildContext, canonical, sha256Hex } from './accountContext.ts'
+import { buildContext, canonical, promptPayload, sha256Hex } from './accountContext.ts'
 import { PROMPT_VERSION, SYSTEM_PROMPT } from '../ai-account-summary/prompt.ts'
 
 export const MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-5-mini'
@@ -84,7 +84,7 @@ export type Briefing = { headline: string; briefing: string }
  * truncating the briefing instead produces a sentence that stops mid-thought,
  * which is worse on a card than the deterministic reason string it replaces.
  */
-export async function callOpenAI(contextJson: string): Promise<Briefing> {
+export async function callOpenAI(promptJson: string): Promise<Briefing> {
   const apiKey = Deno.env.get('OPENAI_API_KEY')
   if (!apiKey) {
     throw new HttpError(500, 'missing_env', 'OPENAI_API_KEY is not set on this function.')
@@ -100,7 +100,7 @@ export async function callOpenAI(contextJson: string): Promise<Briefing> {
         role: 'user',
         content:
           'Write the account briefing for this dealer.\n\n<account_context>\n' +
-          contextJson +
+          promptJson +
           '\n</account_context>',
       },
     ],
@@ -224,8 +224,11 @@ export type BuildResult = Awaited<ReturnType<typeof buildContext>>
 
 export type PreparedContext = {
   built: BuildResult
+  /** The hashed part: data only, no day counts (see accountContext.ts). */
   contextJson: string
   contextHash: string
+  /** What the model reads: contextJson plus the as-of-today block. */
+  promptJson: string
   /** True when there is too little here to be worth a token. */
   insufficient: boolean
 }
@@ -234,13 +237,15 @@ export type PreparedContext = {
 export async function prepareContext(
   client: SupabaseClient,
   customerKey: string,
+  today = new Date(),
 ): Promise<PreparedContext> {
-  const built = await buildContext(client, customerKey)
+  const built = await buildContext(client, customerKey, today)
   const contextJson = JSON.stringify(canonical(built.context))
   return {
     built,
     contextJson,
     contextHash: await contextHashFor(contextJson),
+    promptJson: JSON.stringify(canonical(promptPayload(built.context, built.asOf))),
     insufficient: built.invoiceLineCount < MIN_INVOICE_LINES && built.noteCount === 0,
   }
 }

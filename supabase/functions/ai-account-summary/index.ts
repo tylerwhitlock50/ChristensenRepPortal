@@ -92,10 +92,18 @@ async function handle(req: Request): Promise<Response> {
 
   // The caller's JWT, forwarded. RLS applies to everything below.
   const client = userClient(req)
-  const caller = await requireCaller(client)
 
-  // Access is decided by Postgres, as the user — not by anything in this file.
-  const access = await client.rpc('has_account_access', { p_customer_key: customerKey })
+  // Three independent round trips, in parallel rather than one after the
+  // other. Safe because the cache-row read runs under the caller's RLS
+  // anyway: if the access check says no, its result is thrown away unread.
+  // The context build waits — it is ten-plus queries, and a bad token
+  // should come back as a 401, not as whichever of those failed first.
+  const [caller, access, existingRes] = await Promise.all([
+    requireCaller(client),
+    // Access is decided by Postgres, as the user — not by anything in this file.
+    client.rpc('has_account_access', { p_customer_key: customerKey }),
+    client.from('ai_summaries').select('*').eq('customer_key', customerKey).maybeSingle(),
+  ])
   if (access.error) {
     console.error('has_account_access failed', access.error)
     throw new HttpError(500, 'access_check_failed', 'Could not verify access.')
@@ -105,11 +113,6 @@ async function handle(req: Request): Promise<Response> {
     throw new HttpError(403, 'no_access', 'That account is not in your book.')
   }
 
-  const existingRes = await client
-    .from('ai_summaries')
-    .select('*')
-    .eq('customer_key', customerKey)
-    .maybeSingle()
   const existing = (existingRes.data ?? null) as SummaryRow | null
 
   const prepared = await prepareContext(client, customerKey)
@@ -155,7 +158,9 @@ async function handle(req: Request): Promise<Response> {
   if (DAILY_LIMIT > 0) {
     const startOfDay = new Date()
     startOfDay.setUTCHours(0, 0, 0, 0)
-    let usage = await client
+    // Only count and error are read; typed as such so the fallback below
+    // (a different select list) can reuse the variable.
+    let usage: { count: number | null; error: unknown } = await client
       .from('ai_usage_events')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', caller.id)
@@ -180,7 +185,7 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  const briefing = await callOpenAI(prepared.contextJson)
+  const briefing = await callOpenAI(prepared.promptJson)
 
   // Ledger the paid call, tolerantly — a failed insert must not discard the
   // generation, but log loudly because it un-meters the cap.

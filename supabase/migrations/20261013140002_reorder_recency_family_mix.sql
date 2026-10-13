@@ -210,10 +210,13 @@ comment on function public.report_reorder_candidates(text, int) is
   'INVOKER — RLS on erp.agg_sku_month (my_customer_keys(), view-as aware) '
   'decides which accounts return anything.';
 
+-- service_role is the nightly AI batch (_shared/accountContext.ts). The
+-- platform's default privileges already include it; stated here because the
+-- batch fails every account if it is ever missing.
 revoke execute on function public.report_reorder_candidates(text, int)
   from public, anon;
 grant execute on function public.report_reorder_candidates(text, int)
-  to authenticated;
+  to authenticated, service_role;
 
 --------------------------------------------------------------------------
 -- 2. Product-family mix over the same months of two years.
@@ -303,7 +306,7 @@ comment on function public.report_account_family_mix(text, date) is
 revoke execute on function public.report_account_family_mix(text, date)
   from public, anon;
 grant execute on function public.report_account_family_mix(text, date)
-  to authenticated;
+  to authenticated, service_role;
 
 --------------------------------------------------------------------------
 -- 3. "Who bought this SKU" — part-first access path into agg_sku_year.
