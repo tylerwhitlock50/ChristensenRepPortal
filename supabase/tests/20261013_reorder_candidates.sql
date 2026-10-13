@@ -133,6 +133,25 @@ values ('RC-1', 'REORD-A', '0027284', null,      'Dana',  'Fox', 'Y'),
        ('RC-4', 'REORD-A', 'C4',      null,      null,    null,  'Y'),
        ('RC-5', 'REORD-A', 'C5',      '',        '',      '',    'Y');
 
+-- dim_part's production grants (20260901190300) are column-level: the cost
+-- columns are revoked from authenticated. _local_harness_grants.sql re-grants
+-- the whole table, so restate the real grant here — this function runs as
+-- the caller and must work with exactly what a rep holds.
+do $$
+declare cols text;
+begin
+  select string_agg(quote_ident(c.column_name), ', ' order by c.ordinal_position)
+    into cols
+  from information_schema.columns c
+  where c.table_schema = 'erp' and c.table_name = 'dim_part'
+    and c.column_name <> all (array[
+      'wholesale_unit_cost', 'unit_material_cost', 'unit_labor_cost',
+      'unit_burden_cost', 'unit_service_cost', 'fixed_cost',
+      'burden_percent', 'standard_unit_cost']);
+  execute 'revoke select on erp.dim_part from authenticated';
+  execute format('grant select (%s) on erp.dim_part to authenticated', cols);
+end $$;
+
 create or replace function pg_temp.become(p_label text) returns void
 language plpgsql as $$
 declare uid uuid;
@@ -192,6 +211,11 @@ select pg_temp.assert(
   (select display_name from public.v_account_contacts
     where source = 'rep' and customer_key = 'REORD-A') = 'Tucker Rep',
   'rep rows: display_name is name');
+
+select pg_temp.assert(
+  not has_column_privilege('authenticated', 'erp.dim_part', 'standard_unit_cost', 'select')
+  and has_column_privilege('authenticated', 'erp.dim_part', 'part_description', 'select'),
+  'dim_part carries its production column grants for the rest of this file');
 
 --------------------------------------------------------------------------
 -- 1. Scope. SECURITY INVOKER: agg_sku_month's RLS decides.
