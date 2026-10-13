@@ -78,7 +78,7 @@ const hasOrdered = computed(() => !!s.value?.last_order_date)
 const orders = useAccountOrderHeaders(key, { enabled: hasOrdered })
 const newest = computed(() => orders.data.value?.pages[0]?.[0] ?? null)
 
-/* "51234 · $4,250 · 3 lines · their PO 7781 · 2 still open" — lib/precallBrief. */
+/* "51234 · $4,250 · 3 lines · their PO 7781 · 2 units still open" — lib/precallBrief. */
 const newestLine = computed(() => lastOrderLine(newest.value, s.value?.last_order_date))
 
 /* ---- what's owed -------------------------------------------------------- */

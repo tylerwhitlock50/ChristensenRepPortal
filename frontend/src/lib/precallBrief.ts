@@ -75,7 +75,9 @@ export interface LastOrderRow {
 }
 
 /**
- * "51234 · $4,250 · 3 lines · their PO 7781 · 2 still open". The order's
+ * "51234 · $4,250 · 3 lines · their PO 7781 · 2 units still open". The
+ * units say what the number counts: next to "3 lines", a bare "5 still
+ * open" reads as more open lines than the order has. The order's
  * own date joins the line only when it differs from `shownDate`, the date
  * already printed above it — the ERP's own last-order field can be newer
  * than any order line, and then the line must say which order it means.
@@ -91,7 +93,7 @@ export function lastOrderLine(o: LastOrderRow | null | undefined, shownDate?: st
   if (o.customer_po_number) parts.push(`their PO ${o.customer_po_number}`)
   parts.push(
     o.open_line_count > 0
-      ? `${count(o.backlog_qty)} still open`
+      ? `${count(o.backlog_qty)} unit${o.backlog_qty === 1 ? '' : 's'} still open`
       : humanize(o.order_state ?? o.order_status_desc),
   )
   return parts.join(' · ')

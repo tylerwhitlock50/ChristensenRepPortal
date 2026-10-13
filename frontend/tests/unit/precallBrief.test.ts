@@ -112,7 +112,7 @@ const order = {
 t(
   'open order: id, value, lines, PO, what is still open',
   lastOrderLine(order, '2026-10-08'),
-  'SO-88412 · $13,693 · 3 lines · their PO PO-1001 · 5 still open',
+  'SO-88412 · $13,693 · 3 lines · their PO PO-1001 · 5 units still open',
 )
 t(
   'closed order, one line, no PO: the status, humanized',
@@ -125,7 +125,12 @@ t(
 t(
   'the order date leads when it is not the date shown above it',
   lastOrderLine(order, '2026-10-11'),
-  'Oct 8, 2026 · SO-88412 · $13,693 · 3 lines · their PO PO-1001 · 5 still open',
+  'Oct 8, 2026 · SO-88412 · $13,693 · 3 lines · their PO PO-1001 · 5 units still open',
+)
+t(
+  'one unit still open: singular',
+  lastOrderLine({ ...order, backlog_qty: 1 }, '2026-10-08'),
+  'SO-88412 · $13,693 · 3 lines · their PO PO-1001 · 1 unit still open',
 )
 t('no order yet → empty', lastOrderLine(null, '2026-10-08'), '')
 
