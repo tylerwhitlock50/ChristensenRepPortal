@@ -170,17 +170,21 @@ function onExport() {
         <!-- So-what tiles first; the grid is the detail. -->
         <div class="border-line bg-line grid grid-cols-2 gap-px border md:grid-cols-4">
           <StatTile
-            :label="`Revenue ${yearNow} so far`"
+            :label="`Revenue ${yearNow}`"
             :value="money(totals.rev)"
-            :sub="`All of ${yearNow - 1}: ${money(totals.revLY)}`"
+            :sub="`So far · all of ${yearNow - 1}: ${money(totals.revLY)}`"
           />
-          <StatTile :label="`Units ${yearNow} so far`" :value="count(totals.qty)" />
+          <StatTile :label="`Units ${yearNow}`" :value="count(totals.qty)" sub="So far" />
           <StatTile label="SKUs bought" :value="count(totals.skus)" :sub="`in ${yearNow}`" />
           <StatTile label="SKUs all years" :value="count(pivoted.length)" />
         </div>
 
         <AppCard :padded="false" class="mt-4">
+          <!-- Keyed: DataGrid does not redraw when only `data` changes, and
+               switching to a cached account swaps the rows without a
+               loading state in between (see AtsIntel's gridKey). -->
           <DataGrid
+            :key="`${mode}|${accountKey}`"
             :columns="columns"
             :data="pivoted"
             :initial-sorting="[{ id: 'revenueThisYear', desc: true }]"
