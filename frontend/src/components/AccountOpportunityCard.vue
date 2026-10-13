@@ -52,6 +52,12 @@ watch(
 )
 
 const customerKey = toRef(props, 'customerKey')
+// The router reuses this page from one account to the next (header search,
+// Recently opened): re-arm per account, as the sibling cards do, or every
+// later account fetched both RPCs on arrival with the card collapsed.
+watch(customerKey, () => {
+  opened.value = !!card.value?.isOpen
+})
 const activeKey = computed(() => (opened.value ? customerKey.value : ''))
 
 const gaps = useAccountSkuGaps(activeKey)
