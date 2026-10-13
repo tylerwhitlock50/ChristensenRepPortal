@@ -127,7 +127,7 @@ const setByLine = computed(() => {
       <button
         v-if="!editing && goal && session.canWrite"
         type="button"
-        class="tap-target text-ink-2 inline-flex items-center px-1 text-[13px] font-semibold underline underline-offset-2"
+        class="tap-target text-ink-2 inline-flex min-w-11 items-center justify-center px-1 text-[13px] font-semibold underline underline-offset-2"
         @click="startEdit"
       >
         Edit
