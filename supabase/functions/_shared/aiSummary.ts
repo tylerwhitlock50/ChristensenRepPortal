@@ -194,6 +194,13 @@ export async function callOpenAI(promptJson: string): Promise<Briefing> {
   try {
     parsed = JSON.parse(text) as Partial<Briefing>
   } catch {
+    // Half a JSON object is a reply cut off at the token ceiling, not prose:
+    // stored, the account card would show `{"headline":"…` until the next
+    // paid regeneration (and the batch would cache it as current).
+    if (text.trimStart().startsWith('{')) {
+      console.error('openai returned unparseable JSON (truncated?)', text.length)
+      throw new HttpError(502, 'ai_truncated', 'The summary came back cut off. Try again in a moment.')
+    }
     // strict json_schema makes this close to impossible, but a summary is
     // still worth more than a 502: fall back to treating the whole reply as
     // the briefing and let the card use the deterministic reason string.
