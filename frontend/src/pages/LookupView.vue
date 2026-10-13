@@ -126,7 +126,8 @@ async function sendStatus(row: OrderLookupRow) {
       </template>
       <template v-else>
         This searches every account in your book, so you don't need to know
-        which dealer it was.
+        which dealer it was. Looking for a dealer by name? Use the search at
+        the top of the screen.
       </template>
     </p>
 

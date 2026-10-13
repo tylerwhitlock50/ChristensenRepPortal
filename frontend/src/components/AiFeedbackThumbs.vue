@@ -143,7 +143,7 @@ const optionClass = (selected: boolean) =>
           rows="2"
           maxlength="1000"
           class="field py-2.5"
-          placeholder="e.g. the backlog figure is too high"
+          placeholder="e.g. the amount still owed looks too high"
         />
         <AppButton
           type="submit"

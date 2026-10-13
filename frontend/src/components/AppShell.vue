@@ -463,10 +463,13 @@ async function signOut() {
               <path d="M4 6h9M4 12h9M4 18h6" />
               <path d="M16 16l2.2 2.2L22 14" />
             </template>
-            <!-- Magnifier: find an order by number. -->
+            <!-- A parcel: find an order by number. Not a magnifier — the
+                 header's magnifier searches dealers, orders and products,
+                 and two identical icons that search different things sent
+                 reps here to look for a dealer by name. -->
             <template v-else-if="item.icon === 'lookup'">
-              <circle cx="11" cy="11" r="7" />
-              <path d="M20 20l-3.5-3.5" />
+              <path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5v-9Z" />
+              <path d="M3 7.5 12 12l9-4.5M12 12v9" />
             </template>
             <!-- Clipboard with lines: the order writer. -->
             <template v-else-if="item.icon === 'orders'">
