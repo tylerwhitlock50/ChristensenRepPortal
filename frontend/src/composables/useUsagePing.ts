@@ -74,20 +74,32 @@ export function useUsagePing() {
    * one only stamps, or a password sign-in would count twice.
    */
   let sawSignedOut = false
+  /** One request at a time: boot and a tab switch can land together. */
+  let inFlight = false
 
   function maybePing(reason: 'open' | 'signed-in') {
     if (!session.ready || !session.isSignedIn || session.isViewingAs) return
     const userId = session.user?.id
-    if (!userId) return
+    if (!userId || inFlight) return
     const now = Date.now()
     if (!isPingDue(readStamp(userId), now)) return
-    // Stamped before the request, like the brief guard on the Overview: a
-    // log that fails must not retry on every tab switch.
-    writeStamp(userId, now)
-    if (reason === 'signed-in') return
+    if (reason === 'signed-in') {
+      writeStamp(userId, now)
+      return
+    }
+    // A phone in a dead zone: try again when it comes back into view.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return
+    inFlight = true
+    // Stamped only once the row is written, so an open that could not be
+    // logged (no signal, a dropped request) is counted on the next one.
     void supabase.rpc('log_login').then(
-      () => {},
-      () => {},
+      ({ error }) => {
+        inFlight = false
+        if (!error) writeStamp(userId, now)
+      },
+      () => {
+        inFlight = false
+      },
     )
   }
 
