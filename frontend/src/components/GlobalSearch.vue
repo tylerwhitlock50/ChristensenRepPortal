@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQueryClient } from '@tanstack/vue-query'
 import { useSessionStore } from '@/stores/session'
@@ -25,17 +25,37 @@ const session = useSessionStore()
 installRecentAccountsTracking(router, queryClient, () => session.user?.id ?? null)
 
 const loadSheet = () => import('@/components/GlobalSearchSheet.vue')
-const GlobalSearchSheet = defineAsyncComponent(loadSheet)
+type Sheet = Awaited<ReturnType<typeof loadSheet>>['default']
+
+/* Loaded by hand rather than defineAsyncComponent: a sheet that fails to
+   load (a dropped LTE connection, a build replaced under an open tab) must
+   leave the rep on the page they were on. An async component's load error
+   travels up to App.vue's boundary and swaps the whole screen for "This
+   screen didn't load". Here the magnifier simply does nothing, and the next
+   tap tries again. */
+const sheet = shallowRef<Sheet | null>(null)
+let loading: Promise<Sheet | null> | null = null
+function ensureSheet(): Promise<Sheet | null> {
+  const ready = sheet.value
+  if (ready) return Promise.resolve(ready)
+  loading ??= loadSheet()
+    // `m` is undefined when the app's preload-error hook took over (it
+    // reloads onto the new build); that is a failure here too.
+    .then((m): Sheet | null => (sheet.value = m.default))
+    .catch((): Sheet | null => null)
+    .finally(() => (loading = null))
+  return loading
+}
 
 const open = ref(false)
 const trigger = ref<HTMLButtonElement | null>(null)
 
 function warm() {
-  void loadSheet()
+  void ensureSheet()
 }
 
-function openSearch() {
-  open.value = true
+async function openSearch() {
+  if (await ensureSheet()) open.value = true
 }
 
 async function closeSearch(restoreFocus: boolean) {
@@ -54,7 +74,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null
   if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
   e.preventDefault()
-  openSearch()
+  void openSearch()
 }
 onMounted(() => document.addEventListener('keydown', onGlobalKeydown))
 onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown))
@@ -91,5 +111,5 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown))
     </svg>
   </button>
 
-  <GlobalSearchSheet v-if="open" @close="closeSearch" />
+  <component :is="sheet" v-if="open && sheet" @close="closeSearch" />
 </template>
