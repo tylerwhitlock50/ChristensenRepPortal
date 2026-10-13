@@ -18,10 +18,13 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
   `push.log`, so Task Scheduler's *Last Run Result* is the alarm.
 - **Post-load:** after every table loads it runs `views.yml → post_load_sql`
   in order (rollup refresh first, then scoring/recommendations, then order
-  QC) and finally logs one `etl:run` row in `public.job_runs`. That row is
-  `success` only when every table AND every post-load step succeeded; the
-  portal's freshness stamp reads it, so a partial night shows as stale
-  instead of fresh.
+  QC) and then logs one `etl:run` row in `public.job_runs`. That row is
+  `success` only when every table AND every required post-load step
+  succeeded; the portal's freshness stamp reads it, so a partial night shows
+  as stale instead of fresh. Steps marked `optional: true` (statistics,
+  order change capture) are logged as `etl:post_load` errors when they fail
+  and never hold the stamp back. `post_load_http` (the AI batch) runs after
+  the `etl:run` row and never affects it.
 
 ## Files
 

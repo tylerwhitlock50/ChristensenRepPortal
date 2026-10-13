@@ -144,6 +144,27 @@ def post_load_http(call):
             break
 
 
+def post_load_steps(entries) -> list[tuple[str, bool]]:
+    """views.yml `post_load_sql` as (sql, optional) pairs.
+
+    A plain string is a required step: if it raises, the list stops there
+    (later steps read what it should have produced) and the night's
+    'etl:run' is logged as an error. `{sql: ..., optional: true}` is
+    housekeeping — planner statistics, change capture: a failure is logged
+    as 'etl:post_load' and printed, and the list carries on. It never
+    counts against the run, so the freshness stamp still moves when the
+    data and rollups landed (and a step whose migration is not applied yet
+    cannot hold the stamp back every night).
+    """
+    steps: list[tuple[str, bool]] = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            steps.append((str(entry["sql"]), bool(entry.get("optional"))))
+        else:
+            steps.append((str(entry), False))
+    return steps
+
+
 def log_job_run(pg, job_name, started_at, status, rows=None, error=None):
     try:
         with pg.transaction():
@@ -290,7 +311,7 @@ def main() -> int:
     # Post-load only when every table landed and this was a full run. A
     # partial load must not refresh rollups over a mix of old and new facts.
     if not failures and not only:
-        for sql in cfg.get("post_load_sql") or []:
+        for sql, optional in post_load_steps(cfg.get("post_load_sql")):
             step_started = time.monotonic()
             step_started_at = datetime.now(timezone.utc)
             try:
@@ -299,21 +320,27 @@ def main() -> int:
                 print(f"post_load: {sql} -> {res} "
                       f"({time.monotonic() - step_started:.1f}s)")
             except Exception as exc:
+                log_job_run(pg, "etl:post_load", step_started_at, "error", None,
+                            f"{sql}: {exc}")
+                if optional:
+                    # Housekeeping (see post_load_steps): logged, not fatal.
+                    print(f"post_load: {sql} FAILED (optional, carrying on) — {exc}",
+                          file=sys.stderr)
+                    continue
                 # Stop here: later steps read what this one should have
                 # produced (views.yml explains the ordering).
                 failures.append(f"post_load: {sql}: {exc}")
-                log_job_run(pg, "etl:post_load", step_started_at, "error", None,
-                            f"{sql}: {exc}")
                 print(f"post_load: {sql} FAILED — {exc}", file=sys.stderr)
                 break
 
-        if not failures:
-            for call in cfg.get("post_load_http") or []:
-                post_load_http(call)
-
     # The one row the freshness stamp reads (20260901190400): success means
-    # every table loaded AND every post-load step ran. A subset run is
-    # never a full refresh, so it is logged but never as 'etl:run' success.
+    # every table loaded AND every required post-load step ran. A subset run
+    # is never a full refresh, so it is logged but never as 'etl:run'
+    # success. Logged BEFORE post_load_http on purpose: those calls never
+    # count toward success, and the AI batch can take ~20 minutes of
+    # repeated calls — the stamp (and the app's cache invalidation keyed on
+    # it) should move when the data lands, on a connection that has not
+    # sat idle all that time.
     if not only:
         log_job_run(
             pg, "etl:run", run_started_at,
@@ -321,6 +348,10 @@ def main() -> int:
             total_rows if not failures else None,
             "; ".join(failures) if failures else None,
         )
+
+    if not failures and not only:
+        for call in cfg.get("post_load_http") or []:
+            post_load_http(call)
 
     ms.close()
     pg.close()
