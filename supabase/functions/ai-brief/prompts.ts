@@ -23,7 +23,10 @@
 // 2.0.0: strict JSON reply (content + headlines tagged with a customer_key),
 // customer keys in the context, day counts and data_through outside the
 // hash, and dates rather than day counts in the prose.
-export const TERRITORY_BRIEF_VERSION = '2.0.0'
+// 2.1.0: last year's SKU list is the FULL year (top_skus_full_last_year) and
+// is never compared in dollars with this year's partial one — no more
+// "Mesa fading" for a SKU selling at last year's pace.
+export const TERRITORY_BRIEF_VERSION = '2.1.0'
 
 export const TERRITORY_BRIEF_PROMPT = `You are a sales analyst writing a short morning briefing about one sales
 territory for the field sales representative who owns it. You work for
@@ -64,8 +67,11 @@ company's ERP overnight. It contains some or all of:
 - \`dormant\` — accounts with meaningful recent history whose last invoice
   is \`dormant_after_days\` or more days old, with the day count, and
   \`dormant_count\` for how many such accounts there are in total.
-- \`top_skus\` — the best-selling products in the territory this year, and
-  \`top_skus_last_year\` for the same list a year ago.
+- \`top_skus\` — the best-selling products in the territory this year so
+  far, and \`top_skus_full_last_year\` — the same ranking over ALL of last
+  year, a full twelve months. This year is only part of a year, so never
+  compare the two lists' dollars or units and never call a product gaining
+  or fading from them. Use last year's list only for which products led.
 - \`recent_orders\` — orders placed in the territory in the last 14 days.
 - \`data_through\` — the newest invoice date in the warehouse, and
   \`today\` — today's date.
@@ -90,7 +96,7 @@ line, then 3 to 5 bullets, each a single punchy sentence of at most ten
 words, each starting with "• ". Lead with the territory direction
 ("Territory up 8%"), then the two or three most important specific
 observations — a big mover, a dormant account, a backlog change, a product
-shift. Use real account and product names from the input.
+leading the year. Use real account and product names from the input.
 
 Then a blank line, then two short plain-prose paragraphs:
 
@@ -100,8 +106,9 @@ Then a blank line, then two short plain-prose paragraphs:
 
 2. **What stands out.** Two or three observations worth a closer look,
    each tied to a number in the input: an account gone quiet, a large
-   backorder position, a product family gaining or fading. Frame each as
-   what the data shows, never as an instruction.
+   backorder position, the products leading this year (a product that leads
+   now but was not near the top of last year's list is worth naming).
+   Frame each as what the data shows, never as an instruction.
 
 \`headlines\` repeats the same bullets as \`content\`, in the same order,
 without the "• ", each with the \`customer_key\` of the ONE account it is

@@ -329,8 +329,12 @@ export async function buildTerritoryContext(
     dormant,
     dormant_count: countOf(dormantRes, dormant.length),
     dormant_after_days: DORMANT_DAYS,
+    // This year so far, and ALL of last year (v_territory_sku_sales is by
+    // calendar year). Different windows: the name says so, and the prompt
+    // forbids comparing their dollars (a SKU selling at last year's pace
+    // would read as "fading" every autumn).
     top_skus: (rows(skuNowRes, 'v_territory_sku_sales/now') as Row[]).map(slimSku),
-    top_skus_last_year: (rows(skuPriorRes, 'v_territory_sku_sales/prior') as Row[]).map(slimSku),
+    top_skus_full_last_year: (rows(skuPriorRes, 'v_territory_sku_sales/prior') as Row[]).map(slimSku),
     recent_orders: (rows(recentRes, 'v_territory_recent_orders') as Row[]).map((o) => {
       remember(o.customer_key, o.customer_name)
       return {
