@@ -108,6 +108,11 @@ export default defineConfig({
   plugins: [vue(), tailwindcss(), pwa],
   define: {
     __CACHE_SCHEMA__: JSON.stringify(cacheSchema),
+    // A Vercel PREVIEW build applies a new deploy as soon as it finds one
+    // (lib/pwa.ts): someone testing a branch pushes a fix and reloads, and
+    // the waiting-worker rule meant the reload served the old build until
+    // they spotted the toast. Production keeps asking.
+    __AUTO_UPDATE__: JSON.stringify(process.env.VERCEL_ENV === 'preview'),
   },
   resolve: {
     alias: {

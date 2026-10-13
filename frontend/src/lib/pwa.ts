@@ -16,6 +16,10 @@ import { ref } from 'vue'
 
 const CHECK_EVERY_MS = 60 * 60_000
 
+/** Replaced at build time (vite.config.ts): true on a Vercel preview build. */
+declare const __AUTO_UPDATE__: boolean
+const autoUpdate = typeof __AUTO_UPDATE__ === 'boolean' && __AUTO_UPDATE__
+
 /** A new version is downloaded and waiting for the rep's go-ahead. */
 export const updateReady = ref(false)
 
@@ -28,6 +32,12 @@ export async function registerServiceWorker(): Promise<void> {
   applyUpdate = registerSW({
     immediate: true,
     onNeedRefresh() {
+      // Preview builds only: take the new deploy straight away, so a plain
+      // reload after a push shows the push (see vite.config.ts).
+      if (autoUpdate && applyUpdate) {
+        void applyUpdate(true)
+        return
+      }
       updateReady.value = true
     },
     onRegisteredSW(_url, registration) {
