@@ -386,9 +386,12 @@ async function signOut() {
           <path d="M12 20h.01" />
           <path d="M3 3l18 18" />
         </svg>
+        <!-- Read-only while offline (session.canWrite is false): nothing
+             typed now could be waiting to sync, so the copy promises nothing.
+             Surveys queued before the signal went keep their own badge. -->
         <p class="text-[14px] leading-snug">
-          You're offline — showing data saved at {{ offlineSavedAt }}. Changes
-          will sync when you're back online.
+          You're offline — showing what was saved at {{ offlineSavedAt }}.
+          Reconnect to make changes.
         </p>
       </div>
     </div>
