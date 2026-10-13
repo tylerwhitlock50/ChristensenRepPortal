@@ -180,7 +180,18 @@ const table = useVueTable<T>({
   getFacetedUniqueValues: getFacetedUniqueValues(),
 })
 
-const rows = computed(() => table.getRowModel().rows)
+/**
+ * Read `data` here so new rows redraw. TanStack reads options.data through
+ * a getter its own memo sees but Vue does not track; the row model only
+ * re-ran when sorting or a filter changed, so a toggle, an account filter
+ * or a background refetch with new rows left the old ones on screen (and in
+ * the CSV). Touching the prop makes this computed depend on it; the call
+ * below then rebuilds the row model because options.data changed.
+ */
+const rows = computed(() => {
+  void data.value
+  return table.getRowModel().rows
+})
 const visibleRows = computed(() => rows.value.map((r) => r.original))
 
 watch(visibleRows, (value) => emit('rowsChange', value), { immediate: true })

@@ -180,11 +180,7 @@ function onExport() {
         </div>
 
         <AppCard :padded="false" class="mt-4">
-          <!-- Keyed: DataGrid does not redraw when only `data` changes, and
-               switching to a cached account swaps the rows without a
-               loading state in between (see AtsIntel's gridKey). -->
           <DataGrid
-            :key="`${mode}|${accountKey}`"
             :columns="columns"
             :data="pivoted"
             :initial-sorting="[{ id: 'revenueThisYear', desc: true }]"

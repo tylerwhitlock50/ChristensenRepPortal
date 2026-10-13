@@ -141,20 +141,6 @@ const displayRows = computed(() =>
   inStockOnly.value ? rows.value.filter((r) => r.ats_qty > 0) : rows.value,
 )
 
-/**
- * DataGrid builds its rows once per sort/filter change, not when `data`
- * changes (it reads TanStack's non-reactive options), so a grid whose rows
- * shrink under it — the in-stock toggle, an account filter, Reorders —
- * kept drawing the old rows. Remount it whenever the row set's definition
- * changes; the search box survives (it is v-model'd from this page). See
- * the integration notes: the real fix belongs in DataGrid.
- */
-const gridKey = computed(
-  () =>
-    `${inStockOnly.value}|${gapAccountKey.value}|${gapMode.value}|` +
-    (gapKeys.value ? [...gapKeys.value].sort().join(',') : 'all'),
-)
-
 /** Feed-not-landed reads differently from a real failure. */
 const feedMissing = computed(() => isViewMissing(query.error.value))
 
@@ -345,7 +331,6 @@ const csvColumns: CsvColumn<AtsRow>[] = [
         </div>
 
         <DataGrid
-          :key="gridKey"
           :columns="columns"
           :data="displayRows"
           :initial-sorting="[{ id: 'ats_qty', desc: true }]"
