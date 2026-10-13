@@ -9,6 +9,7 @@ import {
   type ShippedItem,
 } from '@/composables/useActivityFeed'
 import AppBadge from '@/components/ui/AppBadge.vue'
+import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { count, dayMonth, daysAgo, money } from '@/lib/format'
@@ -125,8 +126,16 @@ function slipLine(l: { part: string; before: string | null; after: string | null
   return l.part
 }
 
-/** Groups render at most this many rows; the rest are a count. */
+/** Groups render this many rows until the rep asks for the rest. */
 const PER_GROUP = 6
+const showAll = ref<Record<'shipped' | 'newOrders' | 'headsUp', boolean>>({
+  shipped: false,
+  newOrders: false,
+  headsUp: false,
+})
+function shown<T>(rows: T[], group: keyof typeof showAll.value): T[] {
+  return showAll.value[group] ? rows : rows.slice(0, PER_GROUP)
+}
 </script>
 
 <template>
@@ -148,7 +157,7 @@ const PER_GROUP = 6
           Shipped
         </h3>
         <ul class="divide-line divide-y">
-          <li v-for="s in groups.shipped.slice(0, PER_GROUP)" :key="s.key">
+          <li v-for="s in shown(groups.shipped, 'shipped')" :key="s.key">
             <!-- The padding is on the link, so the whole row is the tap
                  target, like the other two groups. -->
             <RouterLink
@@ -206,12 +215,14 @@ const PER_GROUP = 6
             </div>
           </li>
         </ul>
-        <p
-          v-if="groups.shipped.length > PER_GROUP"
-          class="text-muted border-line border-t px-4 py-2 text-xs"
+        <div
+          v-if="!showAll.shipped && groups.shipped.length > PER_GROUP"
+          class="border-line border-t p-3 text-center"
         >
-          and {{ groups.shipped.length - PER_GROUP }} more shipments
-        </p>
+          <AppButton variant="ghost" :aria-expanded="false" @click="showAll.shipped = true">
+            Show {{ groups.shipped.length - PER_GROUP }} more shipments
+          </AppButton>
+        </div>
       </section>
 
       <!-- New orders -->
@@ -224,7 +235,7 @@ const PER_GROUP = 6
           New orders
         </h3>
         <ul class="divide-line divide-y">
-          <li v-for="o in groups.newOrders.slice(0, PER_GROUP)" :key="`${o.customer_key}-${o.order_id}`">
+          <li v-for="o in shown(groups.newOrders, 'newOrders')" :key="`${o.customer_key}-${o.order_id}`">
             <RouterLink
               :to="orderLink(o.customer_key, o.order_id)"
               class="hover:bg-canvas flex items-center justify-between gap-3 px-4 py-3"
@@ -248,12 +259,14 @@ const PER_GROUP = 6
             </RouterLink>
           </li>
         </ul>
-        <p
-          v-if="groups.newOrders.length > PER_GROUP"
-          class="text-muted border-line border-t px-4 py-2 text-xs"
+        <div
+          v-if="!showAll.newOrders && groups.newOrders.length > PER_GROUP"
+          class="border-line border-t p-3 text-center"
         >
-          and {{ groups.newOrders.length - PER_GROUP }} more orders
-        </p>
+          <AppButton variant="ghost" :aria-expanded="false" @click="showAll.newOrders = true">
+            Show {{ groups.newOrders.length - PER_GROUP }} more orders
+          </AppButton>
+        </div>
       </section>
 
       <!-- Heads-up -->
@@ -266,7 +279,7 @@ const PER_GROUP = 6
           Heads-up
         </h3>
         <ul class="divide-line divide-y">
-          <li v-for="p in groups.headsUp.slice(0, PER_GROUP)" :key="p.key">
+          <li v-for="p in shown(groups.headsUp, 'headsUp')" :key="p.key">
             <RouterLink
               :to="orderLink(p.customer_key, p.order_id)"
               class="hover:bg-canvas block px-4 py-3"
@@ -293,12 +306,14 @@ const PER_GROUP = 6
             </RouterLink>
           </li>
         </ul>
-        <p
-          v-if="groups.headsUp.length > PER_GROUP"
-          class="text-muted border-line border-t px-4 py-2 text-xs"
+        <div
+          v-if="!showAll.headsUp && groups.headsUp.length > PER_GROUP"
+          class="border-line border-t p-3 text-center"
         >
-          and {{ groups.headsUp.length - PER_GROUP }} more orders
-        </p>
+          <AppButton variant="ghost" :aria-expanded="false" @click="showAll.headsUp = true">
+            Show {{ groups.headsUp.length - PER_GROUP }} more orders
+          </AppButton>
+        </div>
       </section>
     </AsyncState>
 
