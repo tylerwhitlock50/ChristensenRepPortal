@@ -17,6 +17,7 @@ import { useAccountRevenueMonthly } from '@/composables/useAccountMetrics'
 import { buildAccountReach } from '@/composables/useBestContacts'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useAccountGoal } from '@/composables/useAccountGoals'
+import { useQuickCallLog } from '@/composables/useQuickCallLog'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -132,6 +133,19 @@ const reach = computed(() =>
   buildAccountReach(props.customerKey, contacts.data.value ?? [], account.data.value),
 )
 const buyer = computed(() => reach.value.best.contact)
+
+/* The header Call button feeds the quick call log (feature.quick_log) like
+   the Overview's call list does: the global sheet asks "how did it go?" when
+   the rep comes back from the dialler. No preventDefault — the tel: link
+   dials as before; with the flag off this records nothing. */
+const quickLog = useQuickCallLog()
+function noteCallTap() {
+  quickLog.noteCallTap({
+    customerKey: props.customerKey,
+    customerName: title.value,
+    contactLabel: buyer.value?.label ?? '',
+  })
+}
 
 /** Directions, Email, New order: chips that leave the page. */
 const headerLinks = computed<QuickLink[]>(() => {
@@ -669,6 +683,7 @@ watch(key, () => {
             <a
               v-if="buyer?.callable && buyer.phone"
               :href="telHref(buyer.phone)"
+              @click="noteCallTap"
               class="tap-target font-label bg-canvas text-ink mt-3 flex w-full items-center justify-center gap-2 rounded-[2px] px-4 text-[15px] font-semibold tracking-[0.1em] uppercase hover:bg-[#E6E3DC]"
             >
               <svg
