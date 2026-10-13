@@ -1,3 +1,22 @@
+<script lang="ts">
+import type { RouteLocationRaw } from 'vue-router'
+
+/**
+ * A chip that GOES somewhere rather than routing to a panel on this page:
+ * a map, the phone's mail app, the order writer. `href` renders an <a>
+ * (external ones open in a new tab), `to` a RouterLink.
+ */
+export interface QuickLink {
+  id: string
+  label: string
+  icon: 'directions' | 'email' | 'order'
+  href?: string
+  to?: RouteLocationRaw
+  /** Opens in a new tab — a maps link should not unload the account. */
+  external?: boolean
+}
+</script>
+
 <script setup lang="ts">
 /**
  * What a rep can DO on this account, at the top of the page.
@@ -9,9 +28,12 @@
  * story the page is built around (tabs would hide four fifths of it behind a
  * tap, on the one screen a rep reads in a parking lot before walking in).
  *
- * It only ROUTES. Every panel still opens inline, in place, further down the
- * page — the no-modals-for-writes rule is untouched, and the survey remains
- * the thing the page is for.
+ * Two kinds of chip. `links` leave the page — Directions, Email, New order —
+ * and come first, because they are what a rep reaches for before a call or
+ * a drive; none of them writes anything, so the page keeps them for an
+ * admin viewing as a rep. `include` chips only ROUTE: every panel still
+ * opens inline, in place, further down the page — the no-modals-for-writes
+ * rule is untouched, and the survey remains the thing the page is for.
  *
  * No `variant="primary"` here: the page's one green button is still "Log a
  * visit" in its own section. These are outlines on the ink header.
@@ -23,7 +45,7 @@ import type { QuickAction } from '@/types/domain'
  * `include` lets the page hide the chips whose target panels are behind a
  * disabled feature flag (data-first restructure). Omitted = all six.
  */
-const props = defineProps<{ include?: QuickAction[] }>()
+const props = defineProps<{ include?: QuickAction[]; links?: QuickLink[] }>()
 
 defineEmits<{ select: [action: QuickAction] }>()
 
@@ -37,25 +59,73 @@ const actions: { id: QuickAction; label: string; path: string }[] = [
   { id: 'summary', label: 'Summary', path: 'M4 5h16M4 10h16M4 15h10M4 20h7' },
 ]
 
+const LINK_ICONS: Record<QuickLink['icon'], string> = {
+  directions: 'M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21Zm0-9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
+  email: 'M3 6h18v12H3V6Zm0 0 9 7 9-7',
+  order: 'M3 4h2l2.4 11h11.2L21 7H7M9.5 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z',
+}
+
 const visible = computed(() =>
   props.include ? actions.filter((a) => props.include!.includes(a.id)) : actions,
 )
+const linkChips = computed(() => props.links ?? [])
+
+const chipClass =
+  'tap-target font-label text-canvas flex shrink-0 items-center gap-2 rounded-[2px] border border-[#4A4D44] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase hover:border-canvas'
 </script>
 
 <template>
   <!-- Scrolls horizontally on a narrow phone rather than wrapping to two rows
        and pushing the account numbers below the fold. -->
   <div
-    v-if="visible.length"
+    v-if="visible.length || linkChips.length"
     class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     role="group"
     aria-label="Account actions"
   >
+    <template v-for="l in linkChips" :key="l.id">
+      <RouterLink v-if="l.to" :to="l.to" :class="chipClass">
+        <svg
+          class="size-5 shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path :d="LINK_ICONS[l.icon]" />
+        </svg>
+        {{ l.label }}
+      </RouterLink>
+      <a
+        v-else
+        :href="l.href"
+        :class="chipClass"
+        :target="l.external ? '_blank' : undefined"
+        :rel="l.external ? 'noopener noreferrer' : undefined"
+      >
+        <svg
+          class="size-5 shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path :d="LINK_ICONS[l.icon]" />
+        </svg>
+        {{ l.label }}
+      </a>
+    </template>
     <button
       v-for="a in visible"
       :key="a.id"
       type="button"
-      class="tap-target font-label text-canvas flex shrink-0 items-center gap-2 rounded-[2px] border border-[#4A4D44] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase hover:border-canvas"
+      :class="chipClass"
       @click="$emit('select', a.id)"
     >
       <svg
