@@ -31,10 +31,24 @@ export interface AiBriefRow {
   action: string
   subject_key: string
   content: string
+  /**
+   * Structured headlines (ai_briefs.items, 20261013140001). Absent on a
+   * database without the column and on briefs written before it; read it
+   * through briefHeadlines(), never directly.
+   */
+  items?: unknown
   model: string | null
   context_hash: string | null
   prompt_version: string | null
   generated_at: string
+}
+
+/** One headline the server tagged with the account it is about. */
+export interface BriefHeadline {
+  text: string
+  /** Checked server-side against the brief's own context; null = no chip. */
+  customerKey: string | null
+  accountName: string | null
 }
 
 export type AiBriefStatus =
@@ -88,6 +102,31 @@ export function parseBrief(content: string): {
   }
   const body = [...lines.slice(0, start), ...lines.slice(i)].join('\n').trim()
   return { headlines, body }
+}
+
+/**
+ * The tagged headlines from `items`, or null when there are none to use —
+ * the caller then renders parseBrief()'s prose headlines exactly as before.
+ * Defensive on purpose: `items` is JSON from the database, and a shape this
+ * build doesn't understand must fall back to prose, not throw on the
+ * Overview. Exported for unit tests.
+ */
+export function briefHeadlines(row: Pick<AiBriefRow, 'items'> | null | undefined): BriefHeadline[] | null {
+  const items = row?.items as { headlines?: unknown } | null | undefined
+  if (!items || typeof items !== 'object' || !Array.isArray(items.headlines)) return null
+  const out: BriefHeadline[] = []
+  for (const h of items.headlines as unknown[]) {
+    if (!h || typeof h !== 'object') continue
+    const { text, customer_key, account_name } = h as Record<string, unknown>
+    if (typeof text !== 'string' || !text.trim()) continue
+    const key = typeof customer_key === 'string' && customer_key.trim() ? customer_key.trim() : null
+    out.push({
+      text: text.trim(),
+      customerKey: key,
+      accountName: key && typeof account_name === 'string' && account_name.trim() ? account_name.trim() : null,
+    })
+  }
+  return out.length ? out : null
 }
 
 async function functionErrorMessage(error: unknown): Promise<string> {
