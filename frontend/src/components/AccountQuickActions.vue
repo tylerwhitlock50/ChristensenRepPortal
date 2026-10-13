@@ -38,7 +38,7 @@ export interface QuickLink {
  * No `variant="primary"` here: the page's one green button is still "Log a
  * visit" in its own section. These are outlines on the ink header.
  */
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { QuickAction } from '@/types/domain'
 
 /**
@@ -70,6 +70,32 @@ const visible = computed(() =>
 )
 const linkChips = computed(() => props.links ?? [])
 
+/* The strip hides its scrollbar, and at 390px with the three link chips
+   first the next chip started a pixel past the edge: nothing said Log
+   visit, Note or Photo were there. While more chips sit off to the right
+   the strip's right edge fades out, so the cut-off chip reads as "more". */
+const strip = ref<HTMLElement | null>(null)
+const moreToTheRight = ref(false)
+function measure() {
+  const el = strip.value
+  moreToTheRight.value = !!el && el.scrollLeft + el.clientWidth < el.scrollWidth - 4
+}
+const FADE = 'linear-gradient(to right, #000 calc(100% - 3rem), transparent)'
+const fadeStyle = computed(() =>
+  moreToTheRight.value ? { maskImage: FADE, WebkitMaskImage: FADE } : undefined,
+)
+onMounted(() => {
+  measure()
+  // The chips' width settles once the condensed face has loaded.
+  void document.fonts?.ready.then(measure)
+  window.addEventListener('resize', measure)
+})
+onBeforeUnmount(() => window.removeEventListener('resize', measure))
+watch(
+  () => [props.include?.length, props.links?.length],
+  () => requestAnimationFrame(measure),
+)
+
 const chipClass =
   'tap-target font-label text-canvas flex shrink-0 items-center gap-2 rounded-[2px] border border-[#4A4D44] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase hover:border-canvas'
 </script>
@@ -79,9 +105,12 @@ const chipClass =
        and pushing the account numbers below the fold. -->
   <div
     v-if="visible.length || linkChips.length"
+    ref="strip"
     class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    :style="fadeStyle"
     role="group"
     aria-label="Account actions"
+    @scroll.passive="measure"
   >
     <template v-for="l in linkChips" :key="l.id">
       <RouterLink v-if="l.to" :to="l.to" :class="chipClass">
