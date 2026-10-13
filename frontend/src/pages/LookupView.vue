@@ -52,8 +52,11 @@ const term = ref(typeof route.query.q === 'string' ? route.query.q : '')
 // otherwise be a round trip over LTE.
 const debounced = refDebounced(term, 350)
 
-const { data, dataUpdatedAt, isPending, error, refetch, longEnough } =
+const { data, dataUpdatedAt, isPending, fetchStatus, error, refetch, longEnough } =
   useOrderLookup(debounced)
+/* No signal (or the offline open): the lookup waits for one instead of
+   failing, and a waiting read is not a loading one. */
+const waitingForSignal = computed(() => fetchStatus.value === 'paused' && data.value === undefined)
 const rows = computed(() => data.value ?? [])
 
 watch(debounced, (q) => {
@@ -129,13 +132,17 @@ async function sendStatus(row: OrderLookupRow) {
 
     <AsyncState
       v-else
-      :loading="isPending"
+      :loading="isPending && !waitingForSignal"
       :error="error"
       :has-data="data !== undefined"
       :updated-at="dataUpdatedAt"
-      :empty="!isPending && rows.length === 0"
-      empty-title="Nothing matches that"
-      empty-body="Check the number, or try just the digits — a dealer's PO prefix isn't always what we recorded. Only orders on your own accounts are searched."
+      :empty="(!isPending || waitingForSignal) && rows.length === 0"
+      :empty-title="waitingForSignal ? 'You\'re offline' : 'Nothing matches that'"
+      :empty-body="
+        waitingForSignal
+          ? 'Find needs a signal to search orders. It will run when you\'re back online.'
+          : 'Check the number, or try just the digits — a dealer\'s PO prefix isn\'t always what we recorded. Only orders on your own accounts are searched.'
+      "
       :rows="3"
       @retry="refetch()"
     >

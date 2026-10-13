@@ -203,6 +203,7 @@ const {
   data,
   dataUpdatedAt,
   isPending,
+  fetchStatus,
   error,
   refetch,
   fetchNextPage,
@@ -220,6 +221,10 @@ const {
 )
 
 const rows = computed(() => data.value?.pages.flatMap((p) => p.rows) ?? [])
+/* No signal (or the offline open, where every read waits): a list or search
+   that was never loaded is waiting, not loading — a skeleton for ever said
+   nothing. AsyncState shows the offline line instead. */
+const bookWaiting = computed(() => fetchStatus.value === 'paused' && data.value === undefined)
 const total = computed(() => data.value?.pages[0]?.total ?? 0)
 
 /**
@@ -820,16 +825,18 @@ function goalAmounts(g: AccountGoalProgress): string {
     <!-- ── The book ─────────────────────────────────────────────────────── -->
     <AsyncState
       v-else
-      :loading="isPending"
+      :loading="isPending && !bookWaiting"
       :error="error"
       :has-data="data !== undefined"
       :updated-at="dataUpdatedAt"
       :empty="rows.length === 0"
-      :empty-title="search ? 'No matches' : 'No accounts assigned yet'"
+      :empty-title="bookWaiting ? 'You\'re offline' : search ? 'No matches' : 'No accounts assigned yet'"
       :empty-body="
-        search
-          ? 'Try a shorter search, or turn off the active-only filter.'
-          : 'Your book comes from the ERP. If this is empty, ask your admin to check your rep code.'
+        bookWaiting
+          ? 'This list needs a signal to load. Accounts you opened recently are in the search at the top.'
+          : search
+            ? 'Try a shorter search, or turn off the active-only filter.'
+            : 'Your book comes from the ERP. If this is empty, ask your admin to check your rep code.'
       "
       :rows="6"
       @retry="refetch()"

@@ -146,8 +146,16 @@ const groups = computed(() =>
 )
 
 const anyLoading = computed(() => groups.value.some((g) => g.loading))
+/* Offline: a typed search is waiting for a signal (see useGlobalSearch).
+   Say so, and keep Recently opened on screen — those links still open the
+   accounts this phone has saved. */
+const waitingForSignal = computed(() => search.longEnough.value && search.paused.value)
 const nothing = computed(
-  () => search.longEnough.value && !anyLoading.value && groups.value.length === 0,
+  () =>
+    search.longEnough.value &&
+    !waitingForSignal.value &&
+    !anyLoading.value &&
+    groups.value.length === 0,
 )
 /* The debounce is still running: the results on screen are for an older
    term. Say "Searching" rather than "Nothing matches". */
@@ -241,35 +249,44 @@ watch(
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">
-          <!-- Empty box: where the rep has been. -->
-          <template v-if="!term.trim()">
-            <section v-if="recents.length" aria-labelledby="search-recent">
-              <h2 id="search-recent" class="u-label bg-canvas border-line border-b px-4 py-2">
-                Recently opened
-              </h2>
-              <ul class="divide-line divide-y">
-                <li v-for="r in recents" :key="r.customer_key">
-                  <RouterLink
-                    :to="{ name: 'account', params: { customerKey: r.customer_key } }"
-                    class="hover:bg-canvas flex min-h-12 flex-col justify-center px-4 py-2"
-                    @click="close(false)"
-                  >
-                    <span class="text-ink truncate text-[15px] font-semibold">
-                      {{ r.customer_name || r.customer_key }}
-                    </span>
-                    <span class="text-muted text-xs">
-                      {{ r.customer_key }}<template v-if="r.at"> · opened {{ daysAgo(r.at) }}</template>
-                    </span>
-                  </RouterLink>
-                </li>
-              </ul>
-            </section>
-            <p class="text-muted px-4 py-4 text-[15px] leading-relaxed">
-              Find a dealer by name, city or customer number, an order by
-              their PO, our order number or a tracking number, or a product
-              by SKU.
-            </p>
-          </template>
+          <p
+            v-if="term.trim() && waitingForSignal"
+            class="text-ink px-4 py-3 text-[15px] leading-relaxed"
+            role="status"
+          >
+            Search needs a signal.
+            <template v-if="recents.length">Recently opened dealers are below.</template>
+          </p>
+
+          <!-- Empty box (or no signal to search with): where the rep has been. -->
+          <section
+            v-if="recents.length && (!term.trim() || waitingForSignal)"
+            aria-labelledby="search-recent"
+          >
+            <h2 id="search-recent" class="u-label bg-canvas border-line border-b px-4 py-2">
+              Recently opened
+            </h2>
+            <ul class="divide-line divide-y">
+              <li v-for="r in recents" :key="r.customer_key">
+                <RouterLink
+                  :to="{ name: 'account', params: { customerKey: r.customer_key } }"
+                  class="hover:bg-canvas flex min-h-12 flex-col justify-center px-4 py-2"
+                  @click="close(false)"
+                >
+                  <span class="text-ink truncate text-[15px] font-semibold">
+                    {{ r.customer_name || r.customer_key }}
+                  </span>
+                  <span class="text-muted text-xs">
+                    {{ r.customer_key }}<template v-if="r.at"> · opened {{ daysAgo(r.at) }}</template>
+                  </span>
+                </RouterLink>
+              </li>
+            </ul>
+          </section>
+          <p v-if="!term.trim()" class="text-muted px-4 py-4 text-[15px] leading-relaxed">
+            Find a dealer by name, city or customer number, an order by their
+            PO, our order number or a tracking number, or a product by SKU.
+          </p>
 
           <p v-else-if="!search.longEnough.value" class="text-muted px-4 py-4 text-[15px]">
             Keep typing — at least {{ MIN_SEARCH_LENGTH }} characters.

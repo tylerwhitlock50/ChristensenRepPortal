@@ -147,15 +147,32 @@ export function useGlobalSearch(
       : (productsQuery.data.value ?? []),
   )
 
+  /* With no signal (or in the offline open, where every request waits) a
+     new search never starts: TanStack holds it 'paused' with isPending
+     true, which read as "Searching…" for ever. Paused is not loading; the
+     sheet says the search needs a signal instead. Products still filter
+     the In stock list when this session (or the saved copy) has it. */
+  const isPaused = (query: { fetchStatus: { value: string } }) =>
+    query.fetchStatus.value === 'paused'
+  const loading = (query: { isPending: { value: boolean }; fetchStatus: { value: string } }) =>
+    query.isPending.value && !isPaused(query)
+
   return {
     q,
     longEnough,
     ordersLongEnough,
+    /** A search was asked for and is waiting on a connection. */
+    paused: computed(
+      () =>
+        (longEnough.value && isPaused(dealersQuery)) ||
+        (ordersLongEnough.value && isPaused(ordersQuery)) ||
+        (longEnough.value && !cachedAts.value && isPaused(productsQuery)),
+    ),
     dealers,
-    dealersLoading: computed(() => longEnough.value && dealersQuery.isPending.value),
+    dealersLoading: computed(() => longEnough.value && loading(dealersQuery)),
     dealersError: computed(() => (longEnough.value ? dealersQuery.error.value : null)),
     orders,
-    ordersLoading: computed(() => ordersLongEnough.value && ordersQuery.isPending.value),
+    ordersLoading: computed(() => ordersLongEnough.value && loading(ordersQuery)),
     // A database without lookup_orders (035) just has no Orders group.
     ordersError: computed(() =>
       ordersLongEnough.value && !isMissingDbObject(ordersQuery.error.value)
@@ -164,7 +181,7 @@ export function useGlobalSearch(
     ),
     products,
     productsLoading: computed(
-      () => longEnough.value && !cachedAts.value && productsQuery.isPending.value,
+      () => longEnough.value && !cachedAts.value && loading(productsQuery),
     ),
     productsError: computed(() =>
       longEnough.value && !cachedAts.value && !isMissingDbObject(productsQuery.error.value)
