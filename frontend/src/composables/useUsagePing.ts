@@ -87,6 +87,10 @@ export function useUsagePing() {
       writeStamp(userId, now)
       return
     }
+    // Only an app someone is looking at counts: a tab restored in the
+    // background, or a token refresh while it sits hidden, is not use. It
+    // is logged when it comes into view.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
     // A phone in a dead zone: try again when it comes back into view.
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return
     inFlight = true
