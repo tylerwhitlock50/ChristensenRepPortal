@@ -4,9 +4,13 @@ import { useRoute } from 'vue-router'
 import AppShell from '@/components/AppShell.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import { useSessionStore } from '@/stores/session'
+import { useUsagePing } from '@/composables/useUsagePing'
 
 const route = useRoute()
 const session = useSessionStore()
+
+// App opens count as activity, not only password sign-ins (Admin → Activity).
+useUsagePing()
 
 /**
  * Last-resort error boundary.
