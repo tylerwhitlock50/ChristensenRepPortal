@@ -306,7 +306,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
         :error="ordersQuery.error.value"
         :has-data="ordersQuery.data.value !== undefined"
         :updated-at="ordersQuery.dataUpdatedAt.value"
-        :empty="!ordersQuery.isPending.value && !orders.length"
+        :empty="!ordersQuery.isPending.value && !allOrders.length"
         empty-title="No orders"
         empty-body="Nothing has been ordered on this account yet."
         :rows="3"
@@ -323,6 +323,12 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
             class="field"
           />
         </label>
+        <!-- A search with no match keeps the box (and the footer's Load
+             older orders): it is about what is loaded, not the account. -->
+        <p v-if="orderSearch.trim() && !orders.length" class="text-muted py-2 text-[15px]" role="status">
+          No loaded order matches "{{ orderSearch.trim() }}".
+          <template v-if="ordersQuery.hasNextPage.value">Load older orders below to look further back.</template>
+        </p>
 
         <!-- Phone: one tappable row per order. The whole row is the button —
              a nested link would be invalid inside it, and everything a rep
@@ -365,7 +371,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
           </li>
         </ul>
 
-        <div class="hidden overflow-x-auto sm:block">
+        <div v-if="orders.length" class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
               Orders for this account, newest first — select one for its lines
@@ -460,7 +466,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
         :error="shipmentsQuery.error.value"
         :has-data="shipmentsQuery.data.value !== undefined"
         :updated-at="shipmentsQuery.dataUpdatedAt.value"
-        :empty="!shipmentsQuery.isPending.value && !shipments.length"
+        :empty="!shipmentsQuery.isPending.value && !allShipments.length"
         empty-title="No shipments"
         empty-body="Nothing has shipped to this account yet."
         :rows="3"
@@ -477,6 +483,10 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
             class="field"
           />
         </label>
+        <p v-if="shipmentSearch.trim() && !shipments.length" class="text-muted py-2 text-[15px]" role="status">
+          No loaded shipment matches "{{ shipmentSearch.trim() }}".
+          <template v-if="shipmentsQuery.hasNextPage.value">Load older shipments below to look further back.</template>
+        </p>
 
         <!-- Phone: same shape as the orders list. The tracking link is NOT
              here — an <a> inside the row button would be invalid interactive
@@ -512,7 +522,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
           </li>
         </ul>
 
-        <div class="hidden overflow-x-auto sm:block">
+        <div v-if="shipments.length" class="hidden overflow-x-auto sm:block">
           <table class="w-full min-w-[34rem] border-collapse text-sm">
             <caption class="sr-only">
               The 20 most recent shipments for this account — select one for its
