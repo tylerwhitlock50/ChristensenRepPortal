@@ -100,6 +100,12 @@ const sheetOpen = ref(false)
 /** When the rep left the app after the tap; null while they are here. */
 let leftAt: number | null = null
 let listening = false
+/**
+ * The mounted sheet's handlers. The document listeners are added once per
+ * page load and call whichever sheet is mounted now — a sheet unmounted by
+ * a sign-out must not keep answering with its stopped computeds.
+ */
+let active: { onLeave: () => void; onReturn: () => void } | null = null
 
 function clearPending() {
   pending.value = null
@@ -165,23 +171,32 @@ export function useQuickCallLog() {
     if (pending.value && leftAt == null) leftAt = Date.now()
   }
 
+  const handlers = { onLeave, onReturn }
+
   /**
-   * Installs the return listeners, once per page load. Called by the sheet
-   * (mounted once, in App.vue). A pending attempt that survived a reload
-   * is asked about straight away: the reload itself means the rep left.
+   * Makes this the sheet that answers, adding the return listeners on the
+   * first call of the page load. Called by the sheet (mounted once, in
+   * App.vue). A pending attempt that survived a reload is asked about
+   * straight away: the reload itself means the rep left.
    */
   function install() {
-    if (listening) return
-    listening = true
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') onLeave()
-      else onReturn()
-    })
-    // A desktop dialler (FaceTime, a softphone) takes focus without hiding
-    // the tab.
-    window.addEventListener('blur', onLeave)
-    window.addEventListener('focus', onReturn)
+    active = handlers
+    if (!listening) {
+      listening = true
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') active?.onLeave()
+        else active?.onReturn()
+      })
+      // A desktop dialler (FaceTime, a softphone) takes focus without
+      // hiding the tab.
+      window.addEventListener('blur', () => active?.onLeave())
+      window.addEventListener('focus', () => active?.onReturn())
+    }
     if (pending.value && enabled.value) offerIfDue(session.user?.id)
+  }
+
+  function uninstall() {
+    if (active === handlers) active = null
   }
 
   /** The flags load after boot; a restored attempt waits for them. */
@@ -236,6 +251,7 @@ export function useQuickCallLog() {
     logOutcome,
     dismiss: clearPending,
     install,
+    uninstall,
     recheckRestored,
   }
 }

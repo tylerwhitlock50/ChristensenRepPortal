@@ -424,7 +424,9 @@ function goalAmounts(g: AccountGoalProgress): string {
 
       <!-- Filter chips, not checkboxes — thumb-sized, glove-proof. -->
       <div class="flex flex-wrap gap-2">
+        <!-- Not in My plan: a starred account is shown whatever its status. -->
         <button
+          v-if="!planMode"
           type="button"
           class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
           :class="

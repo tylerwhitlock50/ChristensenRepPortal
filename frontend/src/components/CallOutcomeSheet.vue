@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import {
@@ -23,6 +23,7 @@ const remind = ref(false)
 const choosing = ref<CallOutcome | null>(null)
 
 onMounted(() => log.install())
+onBeforeUnmount(() => log.uninstall())
 // A restored attempt (tab reloaded mid-call) waits for the flags to load.
 watch(log.enabled, (on) => {
   if (on) log.recheckRestored()
