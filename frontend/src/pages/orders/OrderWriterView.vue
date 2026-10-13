@@ -41,6 +41,20 @@ import { newPhotoId } from '@/lib/photos'
 const props = defineProps<{ id?: string }>()
 
 const router = useRouter()
+const route = useRoute()
+
+/**
+ * ?customer=<key> — "New order" on an account page lands here with the
+ * account already chosen, so the rep starts at step 2. New orders only, the
+ * same rule as ?sku= below: an edit reopening with a stale ?customer must
+ * not swap the draft's account. Works alongside ?sku= (an account page's
+ * "Add to order" sends both): the account resolves the price lists, then
+ * the SKU prefill finds its line on them.
+ */
+const routeCustomer =
+  !props.id && typeof route.query.customer === 'string'
+    ? route.query.customer.trim()
+    : ''
 
 // ------------------------------------------------------------ local state
 interface LocalLine {
@@ -54,7 +68,10 @@ interface LocalLine {
 }
 
 const orderId = ref<number | null>(props.id ? Number(props.id) : null)
-const customerKey = ref('')
+// Seeded, not assigned after setup: the dirty watcher below never sees a
+// prefilled account as an edit, so backing out of an untouched order does
+// not ask "Leave without saving this draft?".
+const customerKey = ref(routeCustomer)
 const poNumber = ref('')
 const shipDate = ref('')
 const notes = ref('')
@@ -175,7 +192,6 @@ const itemSearch = ref('')
  * New orders only — an edit reopening with a stale ?sku would add a line
  * nobody asked for.
  */
-const route = useRoute()
 const routeSku = computed(() =>
   !props.id && typeof route.query.sku === 'string' ? route.query.sku.trim() : '',
 )
