@@ -6,10 +6,12 @@
  * Run with:  npm run test:unit -- activityFeed
  */
 import {
+  baselineFor,
   groupActivity,
   isNewSince,
   mapActivityRow,
   mapFallbackOrder,
+  parseSeenState,
   type ActivityEvent,
 } from '../../src/composables/useActivityFeed'
 
@@ -115,6 +117,26 @@ t('dated before it: not new', isNewSince('2026-10-11', seen), false)
 t('never looked: nothing is marked', isNewSince('2026-10-13', null), false)
 t('no date: not marked', isNewSince(null, seen), false)
 t('a garbage timestamp marks nothing', isNewSince('2026-10-13', 'not a date'), false)
+
+/* ---- the baseline holds for a sitting ------------------------------------ */
+
+const at = (h: number, m = 0) => new Date(2026, 9, 13, h, m)
+const yesterday = new Date(2026, 9, 12, 8, 0).toISOString()
+const morning = { seen: at(7, 0).toISOString(), base: yesterday }
+
+t('first look ever: no baseline', baselineFor(null, at(7)), null)
+t('back 10 minutes later (tapped an item, came back): the sitting keeps yesterday\'s baseline',
+  baselineFor(morning, at(7, 10)), yesterday)
+t('after a break: the previous look becomes the baseline',
+  baselineFor(morning, at(13)), morning.seen)
+t('a first look stored with no baseline stays unmarked for its sitting',
+  baselineFor({ seen: at(7).toISOString(), base: null }, at(7, 30)), null)
+t('stored state round-trips', parseSeenState(JSON.stringify(morning)), morning)
+t('a bare timestamp (or anything malformed) reads as never looked',
+  [parseSeenState(at(7).toISOString()), parseSeenState('{"seen":"nope"}'), parseSeenState('[]'), parseSeenState(null)],
+  [null, null, null, null])
+t('a non-string baseline is dropped, the look kept',
+  parseSeenState(JSON.stringify({ seen: morning.seen, base: 42 })), { seen: morning.seen, base: null })
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

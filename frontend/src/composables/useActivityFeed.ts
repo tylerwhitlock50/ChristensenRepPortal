@@ -264,37 +264,78 @@ export function isNewSince(occurredOn: string | null, lastSeenIso: string | null
   return occurredOn.slice(0, 10) >= format(seen, 'yyyy-MM-dd')
 }
 
-const SEEN_PREFIX = 'rp:activity-seen:'
+/**
+ * Looks closer together than this are one sitting and share one "last
+ * looked". The rep taps a New item, reads the account, comes back: the
+ * other New items must still be marked. Only a look after a break moves
+ * the baseline on.
+ */
+export const SITTING_MS = 60 * 60_000
 
-function readSeen(userId: string): string | null {
+/** What is stored per user: the latest look and the baseline it was judged against. */
+export interface SeenState {
+  /** ISO time of the most recent look. */
+  seen: string
+  /** ISO time of the look before that sitting began; null before there was one. */
+  base: string | null
+}
+
+/** localStorage is user-editable state: anything malformed reads as never looked. */
+export function parseSeenState(raw: string | null): SeenState | null {
+  if (!raw) return null
   try {
-    return localStorage.getItem(SEEN_PREFIX + userId)
+    const value: unknown = JSON.parse(raw)
+    if (!value || typeof value !== 'object') return null
+    const { seen, base } = value as Record<string, unknown>
+    if (typeof seen !== 'string' || Number.isNaN(Date.parse(seen))) return null
+    return { seen, base: typeof base === 'string' ? base : null }
   } catch {
     return null
   }
 }
 
-function writeSeen(userId: string, iso: string): void {
+/**
+ * The "last looked" a look at `now` is judged against: inside a sitting the
+ * sitting's own baseline carries over; after a break it is the previous
+ * look itself.
+ */
+export function baselineFor(state: SeenState | null, now: Date): string | null {
+  if (!state) return null
+  return now.getTime() - Date.parse(state.seen) < SITTING_MS ? state.base : state.seen
+}
+
+const SEEN_PREFIX = 'rp:activity-seen:'
+
+function readSeen(userId: string): SeenState | null {
   try {
-    localStorage.setItem(SEEN_PREFIX + userId, iso)
+    return parseSeenState(localStorage.getItem(SEEN_PREFIX + userId))
+  } catch {
+    return null
+  }
+}
+
+function writeSeen(userId: string, state: SeenState): void {
+  try {
+    localStorage.setItem(SEEN_PREFIX + userId, JSON.stringify(state))
   } catch {
     // Private mode or blocked storage: the marker just never shows.
   }
 }
 
 /**
- * The previous look, read once per mount (so the markers stay put while
- * the rep reads), and `markSeen()` to record this one. Per user id: a
- * shared truck iPad must not inherit the last rep's "new".
+ * The baseline for this look, read once per mount (so the markers stay put
+ * while the rep reads), and `markSeen()` to record this look. Per user id:
+ * a shared truck iPad must not inherit the last rep's "new".
  */
 export function useActivityLastSeen(userId: MaybeRefOrGetter<string | null | undefined>) {
   const uid = toValue(userId) ?? ''
-  const previous = ref<string | null>(uid ? readSeen(uid) : null)
+  const baseline = uid ? baselineFor(readSeen(uid), new Date()) : null
+  const previous = ref<string | null>(baseline)
   let marked = false
   function markSeen() {
     if (marked || !uid) return
     marked = true
-    writeSeen(uid, new Date().toISOString())
+    writeSeen(uid, { seen: new Date().toISOString(), base: baseline })
   }
   return { previous, markSeen }
 }
