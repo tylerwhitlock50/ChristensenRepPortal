@@ -27,11 +27,14 @@ useErpHeartbeat()
 
 /* Signed out from under the page: another tab, a revoked session, or an
    offline open the server then refused. The shell has nothing left to show,
-   so go where a sign-in starts, keeping the way back. */
+   so go where a sign-in starts, keeping the way back. Not for the menu's own
+   Sign out below, which goes to a plain /login: on a shared iPad the next
+   rep must not be sent on to the last one's page. */
+let signingOut = false
 watch(
   () => session.isSignedIn,
   (signedIn) => {
-    if (!signedIn && !route.meta.public) {
+    if (!signedIn && !signingOut && !route.meta.public) {
       void router.replace({ name: 'login', query: { redirect: route.fullPath } })
     }
   },
@@ -182,6 +185,7 @@ const initials = computed(() => {
 
 async function signOut() {
   menuOpen.value = false
+  signingOut = true
   await session.signOut()
   await router.push({ name: 'login' })
 }

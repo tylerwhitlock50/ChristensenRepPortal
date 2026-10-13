@@ -199,12 +199,15 @@ function showMore() {
   drawLimit.value += props.renderLimit
 }
 
-// A new sort or search starts from the top again: "show more" was about the
-// old order, and the rows that matter now are the first ones. A background
-// refetch of the same data leaves it alone.
-watch([sorting, filter, columnFilters], () => {
-  drawLimit.value = props.renderLimit
-})
+// A new sort, search or data set starts from the top again: "show more" was
+// about the old rows, and the ones that matter now are the first. A
+// background refetch of the same data (same length) leaves it alone.
+watch(
+  [sorting, filter, columnFilters, () => props.data.length, () => props.renderLimit],
+  () => {
+    drawLimit.value = props.renderLimit
+  },
+)
 
 function ariaSort(column: Column<T, unknown>) {
   if (!column.getCanSort()) return undefined

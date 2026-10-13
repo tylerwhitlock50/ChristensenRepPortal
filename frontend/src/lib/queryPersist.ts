@@ -34,10 +34,10 @@
 import { createStore, del, get, set, type UseStore } from 'idb-keyval'
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister'
 import {
-  persistQueryClientSubscribe,
+  persistQueryClientSave,
   type PersistedClient,
 } from '@tanstack/query-persist-client-core'
-import { hydrate } from '@tanstack/vue-query'
+import { hydrate, type QueryCacheNotifyEvent } from '@tanstack/vue-query'
 import { isErpQueryKey, qk, queryClient } from '@/lib/queryClient'
 
 /** Replaced at build time (vite.config.ts): the deploy's commit, or a build stamp. */
@@ -209,7 +209,7 @@ function apply(userId: string, saved: PersistedClient | null): boolean {
  */
 export async function restorePersistedCache(
   userId: string,
-  opts: { budgetMs?: number } = {},
+  opts: { budgetMs?: number; applyLate?: () => boolean } = {},
 ): Promise<boolean> {
   readPersistedCache(userId)
   const pending = pendingRead!
@@ -230,8 +230,24 @@ export async function restorePersistedCache(
   clearTimeout(timer)
   if (first !== late) return apply(userId, first)
 
+  const stillWanted = opts.applyLate ?? (() => persistingFor === userId)
   void read.then((saved) => {
-    if (persistingFor === userId) apply(userId, saved)
+    if (!stillWanted()) return
+    // By now the heartbeat may already have seen today's load stamp, so it
+    // would never flag this copy as older. Compare here instead.
+    const stamp = (data: unknown) =>
+      (data as { data_loaded_at?: string | null } | undefined)?.data_loaded_at
+    const current = queryClient.getQueryData(qk.freshness())
+    const savedFreshness = saved?.clientState.queries.find(
+      (q) => q.queryKey[0] === qk.freshness()[0],
+    )
+    if (!apply(userId, saved)) return
+    if (current !== undefined && stamp(savedFreshness?.state.data) !== stamp(current)) {
+      void queryClient.invalidateQueries({
+        predicate: (q) => isErpQueryKey(q.queryKey),
+        refetchType: 'none',
+      })
+    }
   })
   return false
 }
@@ -249,13 +265,28 @@ export async function savedCacheTimestamp(userId: string): Promise<number | null
 
 /* -------------------------------------------------------------- writes */
 
+/**
+ * Cache events that change what would be saved: a persisted query's data
+ * arriving, being invalidated or written, or the query coming or going. A
+ * fetch starting, an observer mounting, any non-persisted query: none of
+ * those touch the saved copy, so they don't re-serialize it.
+ */
+function changesSavedCopy(event: QueryCacheNotifyEvent): boolean {
+  const key = event.query.queryKey
+  if (!isErpQueryKey(key) && !PERSISTED_ROOTS.has(key[0])) return false
+  if (event.type === 'added' || event.type === 'removed') return true
+  if (event.type !== 'updated') return false
+  const action = event.action.type
+  return action === 'success' || action === 'invalidate' || action === 'setState'
+}
+
 /** Keep the cache saved for `userId` from now on. Idempotent. */
 export function startPersisting(userId: string): void {
   if (persistingFor === userId && unsubscribe) return
   stopPersisting()
   if (!cacheStore()) return
   persistingFor = userId
-  unsubscribe = persistQueryClientSubscribe({
+  const options = {
     queryClient,
     persister,
     buster: busterFor(userId),
@@ -263,6 +294,9 @@ export function startPersisting(userId: string): void {
       shouldDehydrateQuery: shouldPersistQuery,
       shouldDehydrateMutation: () => false,
     },
+  }
+  unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+    if (changesSavedCopy(event)) void persistQueryClientSave(options)
   })
 }
 

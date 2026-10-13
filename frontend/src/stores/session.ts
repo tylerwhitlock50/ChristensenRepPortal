@@ -244,12 +244,19 @@ export const useSessionStore = defineStore('session', () => {
     profile.value = saved.profile
     acting.value = null
     // Queries wait instead of failing one by one: no request until the
-    // sign-in is real again (goOnline).
+    // sign-in is real again (goOnline). TanStack would flip itself back
+    // online on the browser's 'online' event, before anything is verified,
+    // so its listener is swapped out until leaveOffline().
+    onlineManager.setEventListener(() => undefined)
     onlineManager.setOnline(false)
     // A longer wait than an online boot allows: with no network there is
     // nothing else to show, and a slow phone's IndexedDB is still quicker
     // than an empty screen.
-    await restorePersistedCache(stored.user.id, { budgetMs: OFFLINE_RESTORE_BUDGET_MS })
+    await restorePersistedCache(stored.user.id, {
+      budgetMs: OFFLINE_RESTORE_BUDGET_MS,
+      // Slower still: apply it when it comes, if we're still offline as U.
+      applyLate: () => isOffline.value && session.value?.user.id === stored.user.id,
+    })
     offlineSince.value = (await savedCacheTimestamp(stored.user.id)) ?? saved.savedAt
     startReconnecting()
   }
@@ -274,7 +281,20 @@ export const useSessionStore = defineStore('session', () => {
   function leaveOffline() {
     offlineSince.value = null
     stopReconnecting()
-    onlineManager.setOnline(true)
+    onlineManager.setEventListener(followBrowserConnectivity)
+    onlineManager.setOnline(navigator.onLine !== false)
+  }
+
+  /** TanStack's default onlineManager listener, put back after offline mode. */
+  function followBrowserConnectivity(setOnline: (online: boolean) => void) {
+    const on = () => setOnline(true)
+    const off = () => setOnline(false)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    return () => {
+      window.removeEventListener('online', on)
+      window.removeEventListener('offline', off)
+    }
   }
 
   /**
@@ -301,11 +321,21 @@ export const useSessionStore = defineStore('session', () => {
     reconnecting = true
     try {
       session.value = next
-      const fresh = await loadProfile().catch(() => undefined)
-      // The profile read failed (no signal yet, or a hiccup): stay on the
-      // saved copy and try again on the next reconnect. A dead session ends
-      // through SIGNED_OUT instead, never through a failed read.
-      if (fresh === undefined) return
+      let failure: unknown = null
+      const fresh = await loadProfile().catch((e) => {
+        failure = e
+        return undefined
+      })
+      if (fresh === undefined) {
+        // No signal yet: stay on the saved copy and try again next time.
+        if (isNoConnection(failure)) return
+        // The database answered and refused. Same as an online boot that
+        // can't read the profile: no profile, so the shell sends the rep to
+        // /login. The saved copy is left alone, as it is there.
+        leaveOffline()
+        profile.value = null
+        return
+      }
       if (!fresh || !fresh.active) {
         await signOut()
         leaveOffline()
@@ -335,18 +365,29 @@ export const useSessionStore = defineStore('session', () => {
    * the network: at once if the phone reports no connection, else after
    * OFFLINE_OPEN_AFTER_MS. Never resolves without a usable saved identity.
    */
-  function offlineFallback(
-    saved: Promise<OfflineIdentity<Profile> | null>,
-  ): Promise<OfflineIdentity<Profile>> {
-    return saved.then(
+  function offlineFallback(saved: Promise<OfflineIdentity<Profile> | null>): {
+    fallback: Promise<OfflineIdentity<Profile>>
+    cancel: () => void
+  } {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onOffline: (() => void) | undefined
+    const cancel = () => {
+      cancelled = true
+      clearTimeout(timer)
+      if (onOffline) window.removeEventListener('offline', onOffline)
+    }
+    const fallback = saved.then(
       (identity) =>
         new Promise<OfflineIdentity<Profile>>((resolve) => {
-          if (!identity) return
+          if (!identity || cancelled) return
           if (navigator.onLine === false) return resolve(identity)
-          setTimeout(() => resolve(identity), OFFLINE_OPEN_AFTER_MS)
-          window.addEventListener('offline', () => resolve(identity), { once: true })
+          onOffline = () => resolve(identity)
+          timer = setTimeout(onOffline, OFFLINE_OPEN_AFTER_MS)
+          window.addEventListener('offline', onOffline, { once: true })
         }),
     )
+    return { fallback, cancel }
   }
 
   /**
@@ -370,10 +411,12 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const auth = supabase.auth.getSession()
+    const authFallback = offlineFallback(savedIdentity)
     const first = await Promise.race([
       auth.then((result) => ({ result })),
-      offlineFallback(savedIdentity).then((identity) => ({ identity })),
+      authFallback.fallback.then((identity) => ({ identity })),
     ])
+    authFallback.cancel()
 
     if ('identity' in first) {
       // The sign-in check is still trying. Open on the saved copy; when the
@@ -412,7 +455,9 @@ export const useSessionStore = defineStore('session', () => {
         ]).then(() => true as const)
         // The token is still good but the database isn't answering (no
         // signal; postgrest-js retries the read for ~7 s): same fallback.
-        const loadedFirst = await Promise.race([loaded, offlineFallback(savedIdentity)])
+        const readsFallback = offlineFallback(savedIdentity)
+        const loadedFirst = await Promise.race([loaded, readsFallback.fallback])
+        readsFallback.cancel()
         let identity: OfflineIdentity<Profile> | null = null
         if (loadedFirst !== true) identity = loadedFirst
         else if (!profile.value && isNoConnection(failure)) identity = await savedIdentity

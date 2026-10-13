@@ -82,12 +82,17 @@ export async function fetchAllRows<Row>(
 
   const results = new Array<PageResult<Row> | undefined>(starts.length)
   let next = 0
+  let failed = false
   async function worker() {
-    while (next < starts.length) {
+    // After one window fails the whole read has failed: don't send the rest.
+    while (!failed && next < starts.length) {
       const i = next++
       const from = starts[i]
       results[i] = await withoutCount(page(from, from + window - 1))
-      if (results[i]!.error) throw results[i]!.error
+      if (results[i]!.error) {
+        failed = true
+        throw results[i]!.error
+      }
     }
   }
   await Promise.all(
