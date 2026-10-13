@@ -30,9 +30,9 @@ import { parseFactors, rowChips, topReasons, type ReasonChip, type ScoreFactors 
  * is the whole effect (public.call_list_feedback, 20261013130000).
  *
  * Degrades in two steps:
- *   - no signals (019 never applied, or the nightly score has not run for
- *     this book) → the classifier list the Overview has always shown
- *     (worthInvestigating), same row shape;
+ *   - no signals (019 never applied, the nightly score has not run for
+ *     this book, or the read failed) → the classifier list the Overview
+ *     has always shown (worthInvestigating), same row shape;
  *   - no call_list_feedback table (tonight's migration not applied) → no
  *     reaction menu and nothing hidden.
  */
@@ -370,12 +370,16 @@ export function useCallList() {
   const signals = useCallListSignals()
   const feedback = useCallListFeedback()
 
+  // A ranking that failed to load (a timeout on a weak signal) falls back
+  // like a missing one: the classifier list from rows already on screen,
+  // as the Overview did before this list existed, not an error card.
   const usingFallback = computed(() => {
     const s = signals.data.value
-    return s === null || (Array.isArray(s) && s.length === 0)
+    if (s === undefined) return signals.isError.value
+    return s === null || s.length === 0
   })
   const deactivations = useOpenDeactivations(
-    () => usingFallback.value && signals.isSuccess.value,
+    () => usingFallback.value && !signals.isPending.value,
   )
 
   const territoryMap = computed(() => {

@@ -164,11 +164,17 @@ const NOT_RELEVANT_REASONS = CALL_LIST_REASONS.filter((r) => r !== 'other')
       </span>
     </template>
 
+    <!-- The territory rows are the one input the list cannot do without
+         (names, money, the fallback); a failed ranking read falls back
+         instead (useCallList), so it never shows as an error here. -->
     <AsyncState
       :loading="list.isPending.value"
-      :error="list.signals.error.value"
-      :has-data="list.signals.data.value !== undefined && list.territory.data.value !== undefined"
-      :updated-at="list.signals.dataUpdatedAt.value"
+      :error="list.territory.error.value"
+      :has-data="
+        list.territory.data.value !== undefined &&
+        (list.signals.data.value !== undefined || list.usingFallback.value)
+      "
+      :updated-at="list.territory.dataUpdatedAt.value"
       :empty="!list.isPending.value && rows.length === 0"
       empty-title="Nothing stands out today"
       :empty-body="
@@ -177,7 +183,7 @@ const NOT_RELEVANT_REASONS = CALL_LIST_REASONS.filter((r) => r !== 'other')
           : 'Nobody is late against their usual ordering rhythm, slipping sharply, or waiting on a big late order.'
       "
       :rows="3"
-      @retry="list.signals.refetch()"
+      @retry="list.territory.refetch(); list.signals.refetch()"
     >
       <p class="text-muted border-line border-b px-4 py-2.5 text-[13px] leading-snug">
         <template v-if="list.usingFallback.value">
@@ -305,7 +311,7 @@ const NOT_RELEVANT_REASONS = CALL_LIST_REASONS.filter((r) => r !== 'other')
     <AppModal
       v-model:open="menuOpen"
       :title="menuFor?.customer_name ?? ''"
-      subtitle="Take it off your list for a while. Only you see this."
+      subtitle="Takes it off your list for a while. Nothing else changes."
     >
       <div class="grid gap-2">
         <AppButton block @click="choose('on_it')">
