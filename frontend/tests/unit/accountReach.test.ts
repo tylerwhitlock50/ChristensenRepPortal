@@ -78,6 +78,12 @@ const bare = buildAccountReach('C2', [], null)
 t('no customer row: no address', [bare.addressLine, bare.directionsUrl], [null, null])
 t('no contacts: no best', bare.best, { contact: null, callable: false, reason: 'none' })
 
+t(
+  'survives JSON (a persisted query cache stores it that way)',
+  JSON.parse(JSON.stringify(reach)),
+  reach,
+)
+
 t('account key sits under the contacts prefix', bestContactsKeys.account('C1'), ['account', 'C1', 'contacts', 'reach'])
 t('multi key', bestContactsKeys.forKeys(['A', 'B']), ['contacts', 'best', ['A', 'B']])
 

@@ -196,8 +196,12 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out
 }
 
-/** One entry per requested key, contacts or not. */
-async function fetchReach(keys: string[]): Promise<Map<string, AccountReach>> {
+/**
+ * One entry per requested key, contacts or not. A plain object, not a Map:
+ * query data must survive JSON (a persisted query cache stores it that way,
+ * and a Map comes back as {}). byKey below is the Map view of it.
+ */
+async function fetchReach(keys: string[]): Promise<Record<string, AccountReach>> {
   const batches = await Promise.all(
     chunk(keys, KEY_CHUNK).map(async (part) => {
       const [contacts, customers] = await Promise.all([contactsFor(part), customersFor(part)])
@@ -216,19 +220,21 @@ async function fetchReach(keys: string[]): Promise<Map<string, AccountReach>> {
     for (const row of customers) customerByKey.set(row.customer_key, row)
   }
 
-  const out = new Map<string, AccountReach>()
-  for (const key of keys) {
-    out.set(key, buildAccountReach(key, contactsByKey.get(key) ?? [], customerByKey.get(key)))
-  }
-  return out
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      buildAccountReach(key, contactsByKey.get(key) ?? [], customerByKey.get(key)),
+    ]),
+  )
 }
 
-const EMPTY = new Map<string, AccountReach>()
-
 /**
- * Reach for every account in `keys`: data is a Map customer_key →
- * AccountReach, with an entry for every key asked for. `byKey` is that map
- * (empty until loaded) so templates can call byKey.value.get(key).
+ * Reach for every account in `keys`: data is customer_key → AccountReach,
+ * with an entry for every key asked for. `byKey` is the same as a Map (empty
+ * until loaded) so templates can call byKey.value.get(key).
+ *
+ * With no keys the query is disabled and stays pending — gate a skeleton on
+ * the list having keys, not on isPending alone.
  */
 export function useBestContacts(keys: MaybeRefOrGetter<string[]>) {
   const sorted = computed(() => [...new Set(toValue(keys).filter(Boolean))].sort())
@@ -238,7 +244,9 @@ export function useBestContacts(keys: MaybeRefOrGetter<string[]>) {
     staleTime: STALE_TIME,
     queryFn: () => fetchReach(sorted.value),
   })
-  const byKey = computed(() => query.data.value ?? EMPTY)
+  const byKey = computed(
+    () => new Map<string, AccountReach>(Object.entries(query.data.value ?? {})),
+  )
   return { ...query, byKey }
 }
 
@@ -250,8 +258,8 @@ export function useAccountReach(customerKey: MaybeRefOrGetter<string>) {
     enabled: computed(() => !!key.value),
     staleTime: STALE_TIME,
     queryFn: async (): Promise<AccountReach> => {
-      const map = await fetchReach([key.value])
-      return map.get(key.value) ?? buildAccountReach<ReachContact>(key.value, [], null)
+      const all = await fetchReach([key.value])
+      return all[key.value] ?? buildAccountReach<ReachContact>(key.value, [], null)
     },
   })
   const reach = computed(() => query.data.value ?? null)
