@@ -83,6 +83,17 @@ post_load_sql:
   # discrepancies. An exception here must never block the rollups above,
   # and the flag gate at the call site matches the recommendations pattern.
   - "select public.run_order_qc() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.orders' and s.enabled);"
+  # Fresh planner statistics for the four rollups the refresh rebuilt with
+  # DELETE + INSERT (migration 20261013150002 — no more TRUNCATE locking
+  # readers out). A function rather than a bare ANALYZE because the loader
+  # fetches a result from every step; ANALYZE (unlike VACUUM) is fine inside
+  # the step's transaction.
+  - "select * from public.analyze_territory_rollups();"
+  # Last, always: what changed on the order book tonight — new orders,
+  # shipped backorders, slipped promise dates (migration 20261013150003).
+  # It never raises: a failed capture is logged as etl:order_changes and the
+  # night's run still counts as loaded. Needs the migration applied first.
+  - "select public.capture_order_changes();"
 
 # Then pre-generate the account briefings for the top of each rep's book (by
 # account_signals.score — no recommendation needed since 20261013140000).

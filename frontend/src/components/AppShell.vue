@@ -14,6 +14,7 @@ import { warmForLink, warmLikelyPages } from '@/lib/warmPages'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
+import GlobalSearch from '@/components/GlobalSearch.vue'
 import { daysUntilDue } from '@/lib/format'
 
 const session = useSessionStore()
@@ -242,6 +243,7 @@ async function signOut() {
         </div>
 
         <div class="flex items-center gap-2">
+          <GlobalSearch />
           <!-- The whole sync UI budget (§2.5): renders nothing until a survey
                is actually waiting, and then it is visible on every screen. -->
           <SyncStatusBadge compact />
