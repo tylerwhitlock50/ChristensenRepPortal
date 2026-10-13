@@ -2,6 +2,7 @@ import { computed } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { ERP_STALE_TIME } from '@/lib/queryClient'
 import {
   observeAccount,
   useTerritoryAccounts,
@@ -89,6 +90,8 @@ export const MAX_ROWS = 25
  */
 const FETCH_ROWS = 40
 
+// Reactions and deactivations are rep-written: the client default policy, a
+// little longer. The ranking itself is ERP (see useCallListSignals).
 const STALE_TIME = 10 * 60_000
 const DAY_MS = 86_400_000
 
@@ -279,7 +282,9 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
 function useCallListSignals() {
   return useQuery({
     queryKey: callListKeys.signals(),
-    staleTime: STALE_TIME,
+    // account_signals is rebuilt by the nightly load: the ERP policy
+    // (lib/queryClient.ts), and the heartbeat refreshes it after a load.
+    staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<CallListSignal[] | null> => {
       const { data, error } = await db

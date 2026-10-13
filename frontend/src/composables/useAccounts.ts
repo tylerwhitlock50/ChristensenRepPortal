@@ -3,7 +3,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/vue-quer
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, isSchemaNotExposed, supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
-import { qk } from '@/lib/queryClient'
+import { ERP_STALE_TIME, qk } from '@/lib/queryClient'
 import { isViewMissing } from '@/composables/useAccountMetrics'
 import type { DimCustomerRow } from '@/types/erp'
 
@@ -248,7 +248,7 @@ export function useAccount(customerKey: MaybeRef<string>) {
       if (error) throw error
       return (data ?? null) as unknown as DimCustomerRow | null
     },
-    staleTime: 10 * 60_000,
+    staleTime: ERP_STALE_TIME, // erp.dim_customer: the nightly-load policy
   })
 }
 

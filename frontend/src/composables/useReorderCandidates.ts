@@ -2,6 +2,7 @@ import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
 
 /**
  * "Bought before and in stock now" — public.report_reorder_candidates,
@@ -23,8 +24,6 @@ import { isMissingDbObject, supabase } from '@/lib/supabase'
 
 /** The RPC postdates the generated database.types.ts. */
 const db = supabase as unknown as SupabaseClient
-
-const ERP_STALE_TIME = 10 * 60_000
 
 /**
  * Under ['account', key] so the account-root invalidation sweeps it. `limit`

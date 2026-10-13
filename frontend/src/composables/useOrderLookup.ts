@@ -2,6 +2,7 @@ import { computed, toValue, unref, type MaybeRef, type MaybeRefOrGetter } from '
 import { useQuery, type QueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { ERP_STALE_TIME } from '@/lib/queryClient'
 import {
   accountMetricsKeys,
   type AccountOrderLineRow,
@@ -173,7 +174,7 @@ export function useOrderLineTracking(
     queryKey: computed(() => orderLineTrackingKey(key.value, id.value ?? '')),
     enabled: computed(() => !!key.value && !!id.value),
     // Nightly ERP data, like the lines it annotates.
-    staleTime: 10 * 60_000,
+    staleTime: ERP_STALE_TIME,
     retry: (n, e) => !isMissingDbObject(e) && n < 1,
     queryFn: async (): Promise<LineTracking> => {
       const { data, error } = await db

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { format } from 'date-fns'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { ERP_STALE_TIME } from '@/lib/queryClient'
 import { trackingList } from '@/lib/orderStatusMessage'
 
 /**
@@ -34,7 +35,7 @@ export const activityKeys = {
 export const ACTIVITY_LIMIT = 50
 
 // Nightly ERP data; same holding period as the rest of the Overview.
-const STALE_TIME = 10 * 60_000
+const STALE_TIME = ERP_STALE_TIME
 
 export type ActivityKind = 'order_new' | 'shipped' | 'backorder_shipped' | 'promise_slipped'
 

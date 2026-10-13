@@ -174,7 +174,10 @@ export const qk = {
  * accounts list and table (v_account_table joins rep goals and
  * deactivations), contacts (rep-entered rows), the admin reports (they join
  * account_goals, actions and profiles), AI output, and data-freshness itself
- * (it is the heartbeat). A new key is NOT ERP until it is added here.
+ * (it is the heartbeat). Also off: ['intel', 'sku-prospects', …] (it reads
+ * v_account_list for names and deactivations), AI feedback, call-list
+ * reactions and deactivations (['call-list', …]), and the header search.
+ * A new key is NOT ERP until it is added here.
  * ------------------------------------------------------------------------- */
 
 export const ERP_STALE_TIME = 3 * 60 * 60_000
@@ -189,6 +192,9 @@ const ERP_INTEL_KEYS = new Set([
   'ats', //                    v_ats_list
   'global', //                 report_global_product_sales()
   'signals', //                account_signals (rebuilt by the ETL's post-load step)
+  'call-list', //              account_signals top of the ranking (useCallList)
+  'territory-recent-events', // v_territory_recent_events: facts + the ETL's order_change_events
+  //                            (+ its fallback, v_territory_recent_orders)
 ])
 
 /** ['account', <key>, <one of these>, …] */

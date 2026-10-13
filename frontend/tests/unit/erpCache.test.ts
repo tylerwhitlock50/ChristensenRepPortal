@@ -26,6 +26,11 @@ import { reorderCandidatesKey } from '../../src/composables/useReorderCandidates
 import { bestContactsKeys } from '../../src/composables/useBestContacts'
 import { taskKeys } from '../../src/composables/useTasks'
 import { useErpHeartbeat } from '../../src/composables/useDataFreshness'
+import { callListKeys } from '../../src/composables/useCallList'
+import { activityKeys } from '../../src/composables/useActivityFeed'
+import { orderLineTrackingKey } from '../../src/composables/useOrderLookup'
+import { skuProspectsKey } from '../../src/composables/useSkuProspects'
+import { aiFeedbackKey } from '../../src/composables/useAiFeedback'
 
 let pass = 0
 let fail = 0
@@ -65,6 +70,10 @@ const erp: [string, readonly unknown[]][] = [
   ['account signals', qk.account.signals(k)],
   ['sku gaps (with limit)', [...qk.account.skuGaps(k), 25]],
   ['reorder candidates', reorderCandidatesKey(k, 10)],
+  ['call list ranking (account_signals)', callListKeys.signals()],
+  ['activity feed', activityKeys.feed()],
+  ['activity feed fallback (orders only)', activityKeys.fallback()],
+  ['order line tracking', orderLineTrackingKey(k, 'SO-1')],
 ]
 for (const [label, key] of erp) t(`ERP: ${label}`, isErpQueryKey(key), true)
 
@@ -90,6 +99,14 @@ const notErp: [string, readonly unknown[]][] = [
   ['tasks', taskKeys.due('u1')],
   ['admin channels (joins account_goals)', qk.admin.channels()],
   ['admin rep groups (joins actions, profiles)', qk.admin.repGroupPerformance()],
+  ['call list reactions (rep-written)', callListKeys.feedback('u1')],
+  ['call list reactions root', callListKeys.feedbackRoot()],
+  ['call list deactivations', callListKeys.deactivations()],
+  ['who should I call (reads v_account_list deactivations)', skuProspectsKey('P-1')],
+  ['ai feedback, account summary', aiFeedbackKey('account_summary', k, 'u1', '2026-10-12')],
+  ['ai feedback, territory brief', aiFeedbackKey('territory_brief', '', 'u1', '2026-10-12')],
+  ['plan accounts by key (v_account_list)', [...qk.me.accounts(), 'by-keys', [k]]],
+  ['header search products', ['global-search', 'products', 'mpr']],
   ['an intel key nobody vetted', ['intel', 'something-new']],
   ['an account key nobody vetted', ['account', k, 'something-new']],
   ['account key with a non-string customer', ['account', 7, 'summary']],
