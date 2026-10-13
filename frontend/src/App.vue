@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onErrorCaptured, ref, watch } from 'vue'
+import { defineAsyncComponent, onErrorCaptured, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '@/components/AppShell.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -11,6 +11,12 @@ const session = useSessionStore()
 
 // App opens count as activity, not only password sign-ins (Admin → Activity).
 useUsagePing()
+
+// Its own chunk, fetched after the shell paints: nothing on first load
+// needs it, and it pulls in date math and the task/action writers.
+const CallOutcomeSheet = defineAsyncComponent(
+  () => import('@/components/CallOutcomeSheet.vue'),
+)
 
 /**
  * Last-resort error boundary.
@@ -82,5 +88,9 @@ function reload() {
          state — setViewAs() resets the query cache, but a component's own
          refs (module-scoped brief guard, open panels) it cannot reach. -->
     <RouterView :key="session.acting?.target_user_id ?? 'self'" />
+    <!-- The quick call log's "how did it go?" (feature.quick_log). Here, not
+         on a page, so a call started from any list is asked about wherever
+         the rep comes back to. Renders nothing while the flag is off. -->
+    <CallOutcomeSheet />
   </AppShell>
 </template>
