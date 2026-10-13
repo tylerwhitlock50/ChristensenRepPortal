@@ -225,6 +225,12 @@ def last_good_rows(pg, job_name: str) -> int | None:
     return int(row[0]) if row else None
 
 
+def statement_timeout() -> str:
+    """ETL_STATEMENT_TIMEOUT (default 15min): per-statement cap for this
+    session, loads and post-load steps alike. Any Postgres interval text."""
+    return os.environ.get("ETL_STATEMENT_TIMEOUT", "15min").strip() or "15min"
+
+
 def min_row_ratio() -> float:
     try:
         return float(os.environ.get("ETL_MIN_ROW_RATIO", "0.5"))
@@ -325,6 +331,13 @@ def main() -> int:
 
     ms = pyodbc.connect(os.environ["MSSQL_CONN"])
     pg = psycopg.connect(os.environ["PG_CONN"])
+    # The postgres role inherits the project's 120 s statement_timeout, and
+    # refresh_territory_rollups() alone has taken longer than that most
+    # nights since late September 2026 (etl:post_load errors at exactly
+    # 120 s). The limit is session-scoped: the app's 8 s cap on the
+    # authenticated role is untouched.
+    pg.execute("select set_config('statement_timeout', %s, false)", (statement_timeout(),))
+    pg.commit()
 
     failures: list[str] = []
     failed_tables: list[str] = []
