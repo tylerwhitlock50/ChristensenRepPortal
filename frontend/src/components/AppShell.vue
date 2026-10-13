@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import { format, isToday } from 'date-fns'
@@ -10,6 +10,7 @@ import { useMyDueTasks } from '@/composables/useTasks'
 import { useOpenSupportCount } from '@/composables/useSupport'
 import { useErpHeartbeat } from '@/composables/useDataFreshness'
 import { dismissUpdate, reloadToUpdate, updateReady } from '@/lib/pwa'
+import { warmForLink, warmLikelyPages } from '@/lib/warmPages'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
@@ -35,6 +36,12 @@ watch(
     }
   },
 )
+
+/* The account page's code arrives before the tap that needs it: once the
+   phone is idle after first paint, and again (a no-op if done) the moment a
+   finger lands on an account link — one listener on the shell, below, for
+   every list on every page. */
+onMounted(warmLikelyPages)
 
 /* Open on the saved copy with no signal (session store, openOffline). */
 const offlineSavedAt = computed(() => {
@@ -181,7 +188,11 @@ async function signOut() {
 </script>
 
 <template>
-  <div class="bg-canvas min-h-svh">
+  <div
+    class="bg-canvas min-h-svh"
+    @pointerdown.capture.passive="warmForLink"
+    @touchstart.capture.passive="warmForLink"
+  >
     <!-- Ink header, 56px: orange tick + wordmark left, initials right. -->
     <header class="bg-ink text-canvas sticky top-0 z-30">
       <div

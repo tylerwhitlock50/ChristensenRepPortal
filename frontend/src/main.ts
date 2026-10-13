@@ -20,6 +20,7 @@ import App from './App.vue'
 import router from './router'
 import { queryClient } from './lib/queryClient'
 import { registerServiceWorker } from './lib/pwa'
+import { isWarming } from './lib/warmPages'
 import { useSessionStore } from './stores/session'
 
 /**
@@ -77,6 +78,9 @@ function isChunkLoadError(error: unknown): boolean {
 }
 
 window.addEventListener('vite:preloadError', (event) => {
+  // A background warm-up (lib/warmPages.ts) failing is not worth a reload;
+  // if the rep then taps through, the router's hook below handles it.
+  if (isWarming()) return
   if (reloadForNewBuild()) event.preventDefault()
 })
 
