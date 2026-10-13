@@ -51,6 +51,12 @@ export function useAccountDeactivation(customerKey: MaybeRef<string>) {
  * Deactivating dismisses the account's open recommendations and drops it
  * from scoring DB-side (the 023 trigger), so on success everything that
  * shows that work is invalidated too, not just this account's page.
+ *
+ * That includes the book-wide reads of account_signals: the Overview's call
+ * list (['intel', 'call-list'], callListKeys.signals() in useCallList.ts —
+ * spelled out here so this module doesn't pull the call list's code into
+ * the account page) and the Accounts page's scores. Both are ERP keys that
+ * otherwise hold for hours, and the 023 trigger deletes the row at once.
  */
 function useInvalidateAccountStatus() {
   const qc = useQueryClient()
@@ -58,6 +64,9 @@ function useInvalidateAccountStatus() {
     void qc.invalidateQueries({ queryKey: qk.account.root(customerKey) })
     void qc.invalidateQueries({ queryKey: qk.me.accounts() })
     void qc.invalidateQueries({ queryKey: qk.me.needsAttention() })
+    void qc.invalidateQueries({ queryKey: ['intel', 'call-list'] })
+    void qc.invalidateQueries({ queryKey: ['call-list', 'deactivations'] })
+    void qc.invalidateQueries({ queryKey: qk.intel.signals() })
   }
 }
 

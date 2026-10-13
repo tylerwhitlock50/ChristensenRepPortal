@@ -228,6 +228,16 @@ export function useSaveScoreSettings() {
       void qc.invalidateQueries({ queryKey: qk.admin.scoreSettings() })
       void qc.invalidateQueries({ queryKey: qk.admin.rules() })
       void qc.invalidateQueries({ queryKey: qk.me.needsAttention() })
+      // The rescore rewrote account_signals mid-day. Its reads are ERP keys
+      // (lib/queryClient.ts) that otherwise hold for hours, so the admin's
+      // own Overview call list, Accounts scores and account pages would keep
+      // the old scores. Reps on other phones still wait for their stale time.
+      void qc.invalidateQueries({
+        predicate: (q) =>
+          (q.queryKey[0] === 'intel' &&
+            (q.queryKey[1] === 'signals' || q.queryKey[1] === 'call-list')) ||
+          (q.queryKey[0] === 'account' && q.queryKey[2] === 'signals'),
+      })
     },
   })
 }
