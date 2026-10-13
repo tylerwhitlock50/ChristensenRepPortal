@@ -44,6 +44,47 @@ function warmRoute() {
   }
 }
 
+/**
+ * After a deploy, a tab opened on the previous build still asks for that
+ * build's chunk names, which Vercel no longer serves, and the next page the
+ * rep taps fails to load. One reload picks up the new build and lands them
+ * where they were going. The stamp stops a reload loop when the chunk is
+ * missing for some other reason, and nothing reloads while offline: a
+ * reload with no signal is the browser's dinosaur, not the app.
+ */
+const RELOADED_AT_KEY = 'rep-portal:chunk-reload-at'
+
+function reloadForNewBuild(path?: string): boolean {
+  if (navigator.onLine === false) return false
+  try {
+    const last = Number(sessionStorage.getItem(RELOADED_AT_KEY) ?? 0)
+    if (Date.now() - last < 60_000) return false
+    sessionStorage.setItem(RELOADED_AT_KEY, String(Date.now()))
+  } catch {
+    // No sessionStorage, no loop guard — let the error surface instead.
+    return false
+  }
+  if (path) window.location.assign(path)
+  else window.location.reload()
+  return true
+}
+
+function isChunkLoadError(error: unknown): boolean {
+  return /dynamically imported module|importing a module script failed|unable to preload css/i.test(
+    (error as { message?: string } | null)?.message ?? '',
+  )
+}
+
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadForNewBuild()) event.preventDefault()
+})
+
+// Not every lazy import goes through Vite's preload helper; a route
+// component that fails to load surfaces here instead.
+router.onError((error, to) => {
+  if (isChunkLoadError(error)) reloadForNewBuild(to.fullPath)
+})
+
 async function bootstrap() {
   const app = createApp(App)
 

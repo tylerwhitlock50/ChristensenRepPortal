@@ -12,6 +12,55 @@ if (!url || !key) {
 }
 
 /**
+ * How long a read may hang before we give up on it. On one bar of LTE a
+ * request can stall with no error at all, and the rep watches a skeleton
+ * forever; after this the query fails like any network error, so AsyncState
+ * can say so (or keep the data already on screen) and the rep can retry.
+ */
+export const READ_TIMEOUT_MS = 20_000
+const TIMEOUT_MESSAGE = 'The request timed out on a slow connection'
+
+/**
+ * fetch() with a timeout on GET and HEAD only. Writes are never timed
+ * out: a POST that reached the server and is merely slow to answer would be
+ * reported as failed after it succeeded, and the rep would save the survey
+ * twice. Storage is left alone whatever the method — a photo on a weak
+ * signal legitimately takes longer than this.
+ *
+ * The timeout aborts with an AbortError on purpose: postgrest-js retries a
+ * failed GET three more times but rethrows an abort at once, and four
+ * stalled 20-second attempts back to back is the hang we are removing.
+ * The caller's own signal still works alongside it.
+ */
+export function readTimeoutFetch(timeoutMs: number) {
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : null
+    const method = (init?.method ?? request?.method ?? 'GET').toUpperCase()
+    const href = request ? request.url : String(input)
+    if ((method !== 'GET' && method !== 'HEAD') || href.includes('/storage/v1/')) {
+      return fetch(input, init)
+    }
+
+    const controller = new AbortController()
+    const caller = init?.signal ?? request?.signal ?? null
+    const onCallerAbort = () => controller.abort(caller?.reason)
+    if (caller?.aborted) onCallerAbort()
+    else caller?.addEventListener('abort', onCallerAbort, { once: true })
+    // Cleared once the response headers arrive: a big page still streaming
+    // in over a slow link is progress, not a hang.
+    const timer = setTimeout(
+      () => controller.abort(new DOMException(TIMEOUT_MESSAGE, 'AbortError')),
+      timeoutMs,
+    )
+
+    return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+      clearTimeout(timer)
+      caller?.removeEventListener('abort', onCallerAbort)
+    })
+  }
+}
+
+/**
  * The only Supabase client in the app. Every read and write goes through this
  * with the signed-in user's JWT — there is no service_role anywhere in the
  * frontend, and no application server in front of it (TECH_STACK §3.1).
@@ -22,6 +71,7 @@ export const supabase = createClient<Database>(url, key, {
     autoRefreshToken: true,
     detectSessionInUrl: false,
   },
+  global: { fetch: readTimeoutFetch(READ_TIMEOUT_MS) },
 })
 
 /**
@@ -106,6 +156,13 @@ function isAuthExpired(error: unknown): boolean {
   )
 }
 
+/** readTimeoutFetch() gave up on a read that never answered. */
+function isReadTimeout(error: unknown): boolean {
+  const e = error as { message?: string } | null
+  if (!e) return false
+  return (e.message ?? '').includes(TIMEOUT_MESSAGE)
+}
+
 /** fetch() never reached Supabase. Safari and Chrome word this differently. */
 function isNetworkFailure(error: unknown): boolean {
   const e = error as { message?: string } | null
@@ -132,6 +189,9 @@ export function describeError(error: unknown): string {
 
   if (isSchemaNotExposed(e)) {
     return 'The ERP read models are not published to the API yet. An admin needs to add the `erp` schema under Settings → API → Exposed schemas in Supabase.'
+  }
+  if (isReadTimeout(e)) {
+    return `The signal here is too weak to load this — it didn't come back in ${READ_TIMEOUT_MS / 1000} seconds. Anything you've saved is still here; try again when you have more bars.`
   }
   if (isNetworkFailure(e)) {
     return "This phone couldn't reach the network. Anything you've saved is still here — try again when you have signal."

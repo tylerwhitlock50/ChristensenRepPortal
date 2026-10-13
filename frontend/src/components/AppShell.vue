@@ -42,8 +42,10 @@ const missionsLate = computed(() =>
 /* Due follow-ups on the Tasks tab. Deliberately NOT gated off for admins the
    way the mission query above is: `tasks` is user-scoped and the composable
    always sends `.eq('user_id', …)`, so an admin sees their own list, not the
-   company's. Gating it would hide an admin's own overdue follow-ups. */
-const dueTasks = useMyDueTasks()
+   company's. Gating it would hide an admin's own overdue follow-ups. It IS
+   gated on the tasks flag, like the mission badge: no tab, no badge, no
+   request. */
+const dueTasks = useMyDueTasks({ enabled: flags.tasks })
 const tasksDue = computed(() => dueTasks.data.value?.due ?? 0)
 const tasksOverdue = computed(() => dueTasks.data.value?.overdue ?? 0)
 
