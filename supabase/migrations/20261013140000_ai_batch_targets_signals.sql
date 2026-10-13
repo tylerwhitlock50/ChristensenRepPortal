@@ -24,7 +24,16 @@
      re-reading the same top N. 20 hours matches the function's
      AI_BATCH_MIN_AGE_HOURS default: last night's rows are eligible again,
      a brief a rep generated this afternoon is not.
-  3. Unchanged: the recently-resolved suppression (021 header), the
+  3. Rows come back in round-robin order: every rep's #1 (by its place in
+     the rep's WHOLE book, fresh accounts included), then every rep's #2,
+     and so on, score breaking ties within a round. The batch works them in
+     that order and stops at its per-call allowance, so across the night's
+     repeated calls each rep's top accounts are done before any rep's
+     deeper ones. Sorted by score alone, the books with the highest scores
+     took every call's allowance while a rep with smaller dealers got
+     nothing. (The order is the function's; its OUT columns cannot carry
+     the rank — create-or-replace rules.)
+  4. Unchanged: the recently-resolved suppression (021 header), the
      distinct-on dedupe, the per-rep clamp 1..25, SECURITY DEFINER (the
      batch runs as service_role and needs the whole user x account map —
      see 021), and job-only grants.
@@ -54,15 +63,7 @@ as $$
     join public.account_signals s
       on s.customer_key = ua.customer_key
     where s.score is not null
-      -- Written in the last 20 hours (by last night's batch or by a rep
-      -- pressing Summarize): nothing to do tonight. Filtered here, before
-      -- the cap, so the next call in the chunked run gets the next accounts.
-      and not exists (
-        select 1 from public.ai_summaries a
-        where a.customer_key = ua.customer_key
-          and a.generated_at > now() - interval '20 hours'
-      )
-      -- ...and not one the rep just finished with (021).
+      -- ...not one the rep just finished with (021).
       and not exists (
         select 1 from public.recommendations r, cooldown c
         where r.customer_key = ua.customer_key
@@ -71,24 +72,49 @@ as $$
           and r.closed_at > now() - make_interval(days => c.days)
       )
   ),
-  ranked as (
+  book as (
+    -- Each account's place in its rep's whole book, fresh ones included:
+    -- the round an account belongs to (see header, 3).
     select e.*, row_number() over (
              partition by e.user_id
-             order by e.score desc, e.customer_key) as rn
+             order by e.score desc, e.customer_key) as book_rank
     from eligible e
+  ),
+  todo as (
+    -- Written in the last 20 hours (by last night's batch or by a rep
+    -- pressing Summarize): nothing to do tonight. Filtered here, before
+    -- the cap, so the next call in the chunked run gets the next accounts.
+    select b.*, row_number() over (
+             partition by b.user_id
+             order by b.book_rank) as rn
+    from book b
+    where not exists (
+      select 1 from public.ai_summaries a
+      where a.customer_key = b.customer_key
+        and a.generated_at > now() - interval '20 hours'
+    )
+  ),
+  picked as (
+    -- An account in two books (a rep's and their group principal's) is
+    -- generated once, in the earlier of its two rounds.
+    select distinct on (t.customer_key) t.customer_key, t.score, t.book_rank
+    from todo t
+    where t.rn <= greatest(1, least(coalesce(p_per_rep, 5), 25))
+    order by t.customer_key, t.book_rank
   )
-  select distinct on (r.customer_key) r.customer_key, r.score
-  from ranked r
-  where r.rn <= greatest(1, least(coalesce(p_per_rep, 5), 25))
-  order by r.customer_key, r.score desc;
+  select p.customer_key, p.score
+  from picked p
+  order by p.book_rank, p.score desc, p.customer_key;
 $$;
 
 comment on function public.ai_batch_targets(int) is
   'The accounts tonight''s summary batch should generate: each active rep''s '
   'top N by account_signals.score, skipping accounts summarised in the last '
   '20 hours (before the cap, so chunked calls make progress) and ones '
-  'recently resolved. No recommendation required (20261013140000). Job '
-  'only — the Edge Function calls it with service_role.';
+  'recently resolved, in round-robin order (every rep''s #1, then every '
+  'rep''s #2, ...). No recommendation required (20261013140000). Job only '
+  '— the Edge Function calls it with service_role and works the rows in '
+  'the order returned.';
 
 -- Job-only. Nothing about this should be reachable from a browser.
 revoke execute on function public.ai_batch_targets(int) from public, anon, authenticated;

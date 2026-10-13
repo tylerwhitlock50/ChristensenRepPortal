@@ -116,6 +116,16 @@ select pg_temp.assert(
   'per rep, top 2 by score: no recommendation needed; the fresh A1 is skipped '
   'BEFORE the cap so A3 makes the list; the old summary does not block A3');
 
+-- Round-robin, not score order: B1 (50) is rep B's #1 and comes before
+-- rep A's A2 (80), which is #2 in A's book (the fresh A1 still holds #1).
+-- The batch works rows in this order, so no book can take a whole call.
+select pg_temp.assert(
+  (select array_agg(t.customer_key order by t.ord)
+     from public.ai_batch_targets(2) with ordinality as t(customer_key, score, ord)
+    where t.customer_key like 'IA-%')
+  = array['IA-B1','IA-A2','IA-A3'],
+  'rows come back round-robin by place in each rep''s book, then score');
+
 select pg_temp.assert(
   (select count(*) from public.ai_batch_targets(25) where customer_key = 'IA-A4') = 0,
   'an account with a recommendation closed inside the cooldown stays quiet');

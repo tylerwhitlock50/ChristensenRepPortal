@@ -77,8 +77,10 @@
       no new account is started, leaving room for the ones in flight under
       the 150 s request limit.
 
-  Targets are worked highest score first, so a call cut short by the budget
-  has spent it on the accounts that matter most.
+  Targets are worked in the function's order — round-robin across reps,
+  each rep's highest score first — so a call cut short by its allowance has
+  spent it on every rep's top accounts, not on whichever books score
+  highest.
 
   ── Invoking it ────────────────────────────────────────────────────────────
       curl -X POST "$SUPABASE_URL/functions/v1/ai-summary-batch" \
@@ -280,14 +282,12 @@ async function handle(req: Request): Promise<Response> {
     throw new HttpError(500, 'targets_failed', 'Could not resolve the target accounts.')
   }
 
-  // Highest score first (the function returns them in key order), key as
-  // the tie-break so the order is stable.
-  const ranked = ((targets.data ?? []) as { customer_key: string; score: number | null }[])
-    .sort(
-      (a, b) =>
-        Number(b.score ?? 0) - Number(a.score ?? 0) || a.customer_key.localeCompare(b.customer_key),
-    )
-    .map((r) => r.customer_key)
+  // In the order the function returns them: round-robin across reps
+  // (every rep's #1, then every rep's #2, ...), so a call that runs out of
+  // allowance has spent it fairly. Re-sorting by score here would hand
+  // every call to the books with the highest scores. (021's version
+  // returns key order; it only runs until 20261013140000 is applied.)
+  const ranked = ((targets.data ?? []) as { customer_key: string }[]).map((r) => r.customer_key)
   const keys = await withoutFresh(client, ranked)
 
   const budget: Budget = { paid: 0, cap, deadline: Date.parse(started) + TIME_BUDGET_MS }
