@@ -1,7 +1,10 @@
 /*============================================================================
   20261013_reorder_candidates.sql — assertions for migration
   20261013100000_foundation_contacts_reorders.sql:
-  report_reorder_candidates() and v_account_contacts.display_name.
+  report_reorder_candidates() and v_account_contacts.display_name, and for
+  20261013140002_reorder_recency_family_mix.sql: a part is only due while it
+  is recent (bought in the last 24 months, at most max(2 x median gap, 3)
+  months past its expected month), and lapsed parts rank after current ones.
 
   Same harness rules as the other files here: runs in a transaction and ROLLS
   BACK, creates throwaway users and ERP rows, dev only.
@@ -67,7 +70,9 @@ values ('RP-DUE',    'CA-DUE',    'Due Gun',      'FINISHED',  'Ridgeline', '6.5
        ('RP-ZERO',   'CA-ZERO',   'Zero ATS Gun', 'FINISHED',  'Mesa',      '270 WIN'),
        ('RP-COMP',   'CA-COMP',   'OEM Barrel',   'COMPONENT', 'N/A',       'N/A'),
        ('RP-NA',     'CA-NA',     'Mystery',      'FINISHED',  'N/A',       ''),
-       ('RP-BONLY',  'CA-BONLY',  'B Only Gun',   'FINISHED',  'Ridgeline', '7MM');
+       ('RP-BONLY',  'CA-BONLY',  'B Only Gun',   'FINISHED',  'Ridgeline', '7MM'),
+       ('RP-LAPSED', 'CA-LAPSED', 'Lapsed Gun',   'FINISHED',  'Mesa',      '300 PRC'),
+       ('RP-STALE',  'CA-STALE',  'Stale Gun',    'FINISHED',  'Summit',    '7MM PRC');
 
 -- Available to sell. RP-LATER is split over two sites (3 + 2): the
 -- function sums sites.
@@ -82,7 +87,9 @@ values ('RP-DUE',    'S1', 10),
        ('RP-ZERO',   'S1',  0),
        ('RP-COMP',   'S1', 50),
        ('RP-NA',     'S1', 20),
-       ('RP-BONLY',  'S1',  8);
+       ('RP-BONLY',  'S1',  8),
+       ('RP-LAPSED', 'S1',  6),
+       ('RP-STALE',  'S1',  9);
 
 --------------------------------------------------------------------------
 -- Purchase history, in months before the current one.
@@ -93,6 +100,11 @@ values ('RP-DUE',    'S1', 10),
 --   RP-EVEN    10, 8, 4     gaps 2,4     median 3   next = last month → DUE
 --   RP-LATER   14, 8, 2     gaps 6,6     median 6   next = +4 months  → not due
 --   RP-ONCE    1            no gap       median —   next —            → not due
+--   RP-LAPSED  12,11,10,9   gaps 1,1,1   median 1   next = 8 months ago
+--              → 8 months past it, more than max(2 x 1, 3): lapsed, not due
+--   RP-STALE   30..26       gaps 1 x4    median 1   last buy 26 months ago
+--              → older than 24 months: lapsed, not due — even with the most
+--              buy months of any part (the old function ranked it FIRST)
 --------------------------------------------------------------------------
 create temporary table t_buy (customer_key text, part_key text, months_ago int, qty numeric)
   on commit drop;
@@ -107,6 +119,11 @@ insert into t_buy values
   ('REORD-A', 'RP-LATER',  14, 1), ('REORD-A', 'RP-LATER',   8, 1),
   ('REORD-A', 'RP-LATER',   2, 5),
   ('REORD-A', 'RP-ONCE',    1, 6),
+  ('REORD-A', 'RP-LAPSED', 12, 1), ('REORD-A', 'RP-LAPSED', 11, 1),
+  ('REORD-A', 'RP-LAPSED', 10, 1), ('REORD-A', 'RP-LAPSED',  9, 1),
+  ('REORD-A', 'RP-STALE',  30, 1), ('REORD-A', 'RP-STALE',  29, 1),
+  ('REORD-A', 'RP-STALE',  28, 1), ('REORD-A', 'RP-STALE',  27, 1),
+  ('REORD-A', 'RP-STALE',  26, 2),
   ('REORD-A', 'RP-OVER',    6, 3), ('REORD-A', 'RP-OVER',    3, 3),
   ('REORD-A', 'RP-ZERO',    6, 3), ('REORD-A', 'RP-ZERO',    3, 3),
   ('REORD-A', 'RP-COMP',    6, 40), ('REORD-A', 'RP-COMP',   3, 40),
@@ -245,8 +262,25 @@ select pg_temp.become('rep_a');
 
 select pg_temp.assert(
   (select array_agg(part_key) from public.report_reorder_candidates('REORD-A', 50))
-    = array['RP-DUE','RP-MEDIAN','RP-EVEN','RP-LATER','RP-ONCE'],
-  'due first; then most buy months; then most recent buy');
+    = array['RP-DUE','RP-MEDIAN','RP-EVEN','RP-LATER','RP-ONCE','RP-STALE','RP-LAPSED'],
+  'due first; then current before lapsed; then most buy months; then most recent buy');
+
+select pg_temp.assert(
+  (select (is_due, expected_next_month)
+     from public.report_reorder_candidates('REORD-A', 50) where part_key = 'RP-LAPSED')
+  = (false, (date_trunc('month', current_date) - interval '8 months')::date),
+  'RP-LAPSED: 8 months past a monthly rhythm is not due');
+
+select pg_temp.assert(
+  (select (is_due, months_with_buys, last_qty)
+     from public.report_reorder_candidates('REORD-A', 50) where part_key = 'RP-STALE')
+  = (false, 5, 2::numeric),
+  'RP-STALE: last bought 26 months ago is never due, however often it was bought');
+
+select pg_temp.assert(
+  (select array_agg(part_key) from public.report_reorder_candidates('REORD-A', 3))
+    = array['RP-DUE','RP-MEDIAN','RP-EVEN'],
+  'a short list is all current parts: lapsed ones cannot crowd them out');
 
 select pg_temp.assert(
   not exists (select 1 from public.report_reorder_candidates('REORD-A', 50)
@@ -310,10 +344,10 @@ select pg_temp.assert(
   (select count(*) from public.report_reorder_candidates('REORD-A', 0)) = 1,
   'p_limit below 1 clamps to 1');
 select pg_temp.assert(
-  (select count(*) from public.report_reorder_candidates('REORD-A', null)) = 5,
+  (select count(*) from public.report_reorder_candidates('REORD-A', null)) = 7,
   'p_limit null means the default (10)');
 select pg_temp.assert(
-  (select count(*) from public.report_reorder_candidates('REORD-A')) = 5,
+  (select count(*) from public.report_reorder_candidates('REORD-A')) = 7,
   'default limit');
 
 --------------------------------------------------------------------------
@@ -321,13 +355,13 @@ select pg_temp.assert(
 --------------------------------------------------------------------------
 select pg_temp.become('admin');
 select pg_temp.assert(
-  (select count(*) from public.report_reorder_candidates('REORD-A')) = 5
+  (select count(*) from public.report_reorder_candidates('REORD-A')) = 7
   and (select count(*) from public.report_reorder_candidates('REORD-B')) = 2,
   'an admin sees every account''s candidates');
 
 select public.start_impersonation((select id from t_user where label='rep_a'));
 select pg_temp.assert(
-  (select count(*) from public.report_reorder_candidates('REORD-A')) = 5
+  (select count(*) from public.report_reorder_candidates('REORD-A')) = 7
   and (select count(*) from public.report_reorder_candidates('REORD-B')) = 0,
   'an admin viewing as rep A sees exactly rep A''s scope');
 select public.stop_impersonation();
