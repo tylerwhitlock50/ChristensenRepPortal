@@ -1,4 +1,4 @@
-import { computed, unref, type MaybeRef } from 'vue'
+import { computed, toValue, unref, type MaybeRef, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
@@ -133,9 +133,10 @@ const ERP_STALE_TIME = 10 * 60_000
  * admin's book is every scorable account in the ERP and would silently stop
  * at PostgREST's 1,000-row cap.
  */
-export function useTerritorySignals() {
+export function useTerritorySignals(enabled: MaybeRefOrGetter<boolean> = true) {
   return useQuery({
     queryKey: qk.intel.signals(),
+    enabled: computed(() => toValue(enabled)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<Record<string, AccountSignalRow>> => {

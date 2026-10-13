@@ -1,3 +1,4 @@
+import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
@@ -104,10 +105,15 @@ const ERP_STALE_TIME = 10 * 60_000
 
 /* -------------------------------------------------------------- queries */
 
-/** Every account in the caller's book with YoY + backlog. THE Overview query. */
-export function useTerritoryAccounts() {
+/**
+ * Every account in the caller's book with YoY + backlog. THE Overview query.
+ * `enabled` lets a page that only sometimes shows it (the Accounts cards)
+ * skip the read; the Overview always wants it.
+ */
+export function useTerritoryAccounts(enabled: MaybeRefOrGetter<boolean> = true) {
   return useQuery({
     queryKey: qk.intel.territoryYoy(),
+    enabled: computed(() => toValue(enabled)),
     staleTime: ERP_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<TerritoryAccountRow[]> => {

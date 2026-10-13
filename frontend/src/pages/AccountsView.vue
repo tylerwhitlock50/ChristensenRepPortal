@@ -263,8 +263,11 @@ const behindRows = computed(() => {
    Overview's call list would. Both are whole-book reads shared with other
    pages; an account missing from them (inactive) just shows no money line.
 ------------------------------------------------------------------------- */
-const territory = useTerritoryAccounts()
-const signals = useTerritorySignals()
+// Only the card lists that print money or a reason read them; the table and
+// the goal-ranked list don't.
+const decorated = computed(() => effectiveView.value === 'cards' && sort.value !== 'behind')
+const territory = useTerritoryAccounts(decorated)
+const signals = useTerritorySignals(decorated)
 const territoryByKey = computed(
   () => new Map((territory.data.value ?? []).map((r) => [r.customer_key, r])),
 )
