@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useAtsList, type AtsRow } from '@/composables/useIntel'
 import { isViewMissing, useTerritoryAccounts } from '@/composables/useOverview'
@@ -29,7 +30,18 @@ import { useFeatureFlags } from '@/composables/useAppSettings'
  * Reps see it as "In stock": "ATS" is the ERP's word, not theirs. Routes and
  * names keep 'ats'.
  */
-const search = ref('')
+/* ?q= seeds the filter: the header search's product results land here
+   already narrowed to that SKU. Following it while mounted covers a second
+   header-search pick made from this page. Typing does not touch the URL. */
+const route = useRoute()
+const routeTerm = () => (typeof route.query.q === 'string' ? route.query.q : '')
+const search = ref(routeTerm())
+watch(
+  () => route.query.q,
+  () => {
+    search.value = routeTerm()
+  },
+)
 const query = useAtsList()
 const allRows = computed(() => query.data.value ?? [])
 

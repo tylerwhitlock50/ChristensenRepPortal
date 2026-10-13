@@ -107,7 +107,7 @@ const router = createRouter({
           path: 'ats',
           name: 'intel-ats',
           component: () => import('@/pages/intel/AtsIntel.vue'),
-          meta: { title: 'ATS' },
+          meta: { title: 'In stock' },
         },
         {
           path: 'global',
