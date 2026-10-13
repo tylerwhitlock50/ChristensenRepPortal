@@ -54,7 +54,53 @@ column_map:
   QtyAvailableMRP: qty_available_mrp
   LinkedInURL: linkedin_url
 
-# After the last table loads successfully, run:
+# The tables post_load_sql reads. Post-load runs on a full run when every
+# table listed here loaded in THIS run, even if another table failed: one
+# feed nothing downstream reads (contacts, ATS, inventory) must not freeze
+# every rollup, the account signals and the AI batch while the facts keep
+# moving (October 2026: ten days of a stale Overview over current
+# invoices). If any of these failed, post-load is skipped, so the rollups
+# are never rebuilt over a mix of old and new copies of the tables they
+# combine. Either way a failed table still logs the night's etl:run as an
+# error (the freshness stamp's data_loaded_at does not move) and the exit
+# code is still 1.
+# Delete the key and every table is required again (the old rule).
+#
+# When you add a post_load_sql step or change one of its functions, check
+# what it reads and add the table here. Verified against the latest
+# definitions on 2026-10-13:
+post_load_requires:
+  # refresh_territory_rollups (20261013150002): the account rollup is built
+  # per dim_customer row. refresh_account_signals (023): the active,
+  # non-internal, not-deactivated accounts every score is computed for.
+  - erp.dim_customer
+  # refresh_account_signals (023): product_family for families dropped.
+  # run_order_qc (20260817000200): part_id when comparing ERP lines with
+  # portal order lines.
+  - erp.dim_part
+  # refresh_territory_rollups: revenue for all four erp.agg_* rollups.
+  # refresh_account_signals: 12/24-month revenue and product families.
+  - erp.fact_invoice_line
+  # refresh_territory_rollups: backlog, open orders, bookings and last order
+  # date in agg_account_rollup. refresh_account_signals: order cadence and
+  # backlog. capture_order_changes (20261013150003): the whole diff against
+  # last night's snapshot. run_order_qc: the ERP side of every comparison.
+  - erp.fact_order_line
+  # capture_order_changes: tracking numbers for lines shipped since the
+  # snapshot. The snapshot is replaced every run, so tracking missed on a
+  # stale shipment table is never picked up later.
+  - erp.fact_shipment_line
+# Not read by any post-load step: erp.dim_ship_to, erp.dim_sales_rep,
+# erp.fact_inventory_on_hand, erp.dim_customer_contact,
+# erp.fact_available_to_sell (generate_recommendations, apply_account_scores
+# and analyze_territory_rollups read only what the steps above produce).
+# post_load_http runs after a post-load whose required steps succeeded. The
+# AI batch reads what those steps rebuilt, plus the same live tables the app
+# reads (ATS, for one). A table that failed tonight is yesterday's copy there,
+# the same as everywhere else in the app.
+
+# After the tables load (all of them, or every table in post_load_requires —
+# see above), run:
 #
 # The flag gate lives at the CALL SITE (migration 024): while
 # feature.recommendations is disabled, the SRF in the generate_recommendations()
