@@ -425,7 +425,10 @@ export function useCallList() {
       (!!feedback.userId.value &&
         feedback.isPending.value &&
         feedback.fetchStatus.value !== 'paused') ||
-      (usingFallback.value && deactivations.isPending.value),
+      // Same for the fallback's deactivations (rep-written, not saved).
+      (usingFallback.value &&
+        deactivations.isPending.value &&
+        deactivations.fetchStatus.value !== 'paused'),
   )
 
   // One request for every row's contacts and address, not one per row. The
