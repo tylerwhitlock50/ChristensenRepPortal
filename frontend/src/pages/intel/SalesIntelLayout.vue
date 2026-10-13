@@ -12,7 +12,8 @@ import FreshnessStamp from '@/components/FreshnessStamp.vue'
 const tabs = [
   { to: { name: 'intel-sku' }, label: 'SKU Sales' },
   { to: { name: 'intel-backlog' }, label: 'Backlog' },
-  { to: { name: 'intel-ats' }, label: 'ATS' },
+  // "ATS" is the ERP's word; reps read "In stock". The route keeps 'ats'.
+  { to: { name: 'intel-ats' }, label: 'In stock' },
   { to: { name: 'intel-global' }, label: 'Global' },
   { to: { name: 'intel-price-lists' }, label: 'Price Lists' },
 ] as const
