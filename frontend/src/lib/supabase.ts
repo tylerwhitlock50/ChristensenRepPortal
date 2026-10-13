@@ -43,6 +43,44 @@ export function isSchemaNotExposed(error: unknown): boolean {
 }
 
 /**
+ * True when the request failed because the database object it names does not
+ * exist yet — a function, a table or view, or a column.
+ *
+ * The contract: a feature that reads a NEW object (a migration newer than the
+ * last one applied everywhere) checks this on its error and hides itself when
+ * it is true, instead of showing an error card. A Vercel preview built from a
+ * branch often points at a database without that branch's migrations; the
+ * page should look like the feature isn't there yet, not like it is broken.
+ * Every other error — RLS, timeouts, network — still surfaces normally.
+ *
+ * PostgREST answers from its schema cache for functions (PGRST202), tables
+ * and views (PGRST205) and write-payload columns (PGRST204); a select naming
+ * an unknown column, or a stale cache, passes Postgres's own code through
+ * (42883 function, 42P01 relation, 42703 column). The message checks catch
+ * proxies and older PostgREST builds that drop the code.
+ */
+export function isMissingDbObject(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null
+  if (!e) return false
+  if (
+    e.code === 'PGRST202' ||
+    e.code === 'PGRST204' ||
+    e.code === 'PGRST205' ||
+    e.code === '42883' ||
+    e.code === '42P01' ||
+    e.code === '42703'
+  ) {
+    return true
+  }
+  const msg = e.message ?? ''
+  return (
+    /could not find the (function|table|relation|'[^']*' column)\b.*in the schema cache/i.test(
+      msg,
+    ) || /^(function|relation|column) \S.* does not exist$/i.test(msg)
+  )
+}
+
+/**
  * The `authenticated` role carries an 8s statement_timeout, so a heavy read
  * over a cold rollup comes back as 57014 rather than slowly.
  */
