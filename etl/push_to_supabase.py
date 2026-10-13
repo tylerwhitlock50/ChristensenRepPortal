@@ -83,8 +83,9 @@ def post_load_http(call):
     whatever it missed.
 
     Kept here rather than in pg_cron + pg_net because this is already the
-    sanctioned nightly hook and it already knows every table loaded cleanly
-    (TECH_STACK §4.2). A separate schedule is a second thing to drift.
+    sanctioned nightly hook and it already knows whether the tables and
+    post-load steps the batch reads landed cleanly (TECH_STACK §4.2). A
+    separate schedule is a second thing to drift.
 
     `repeat_until_idle: N` (optional, views.yml) calls the function again
     while its JSON reply reports progress — `generated + checked > 0` — at
@@ -167,6 +168,37 @@ def post_load_steps(entries) -> list[tuple[str, bool]]:
         else:
             steps.append((str(entry), False))
     return steps
+
+
+def post_load_required_tables(cfg: dict) -> set[str] | None:
+    """views.yml `post_load_requires`: the target tables post-load reads.
+
+    Post-load used to run only when EVERY table loaded. That kept the
+    rollups from being rebuilt over a mix of old and new facts, but it also
+    meant one table nothing downstream reads (a contact list, the ATS feed)
+    failing night after night froze every rollup, the account signals and
+    the AI batch while the fact tables kept moving — October 2026: ten days
+    of a stale Overview over current invoices. With this key, post-load runs
+    when every table it names loaded in this run, whatever else failed.
+
+    None (the key absent, or an empty list) means every table is required —
+    exactly the behaviour before the key existed, so an older views.yml
+    keeps working unchanged. Names are compared lower-cased. A name no
+    `tables` entry loads (a typo, a removed table) can never be satisfied:
+    post-load then waits for a night when every table loads, which is the
+    old rule — safe, but it is printed so it does not go unnoticed.
+    """
+    entries = cfg.get("post_load_requires")
+    if not entries:
+        return None
+    requires = {str(t).strip().lower() for t in entries}
+    known = {str(t["target_table"]).lower() for t in cfg.get("tables") or []}
+    unknown = sorted(requires - known)
+    if unknown:
+        print(f"views.yml post_load_requires names {', '.join(unknown)}, which no "
+              f"`tables` entry loads — post-load will run only when every table "
+              f"loads", file=sys.stderr)
+    return requires
 
 
 def log_job_run(pg, job_name, started_at, status, rows=None, error=None):
@@ -295,6 +327,8 @@ def main() -> int:
     pg = psycopg.connect(os.environ["PG_CONN"])
 
     failures: list[str] = []
+    failed_tables: list[str] = []
+    loaded: set[str] = set()
     total_rows = 0
     for t in tables:
         started = time.monotonic()
@@ -305,16 +339,59 @@ def main() -> int:
             n = push_table(ms, pg, t["source_view"], t["target_table"], overrides,
                            floor_rows)
             total_rows += n
+            loaded.add(t["target_table"].lower())
             log_job_run(pg, job_name, started_at, "success", n)
             print(f"{t['target_table']}: {n} rows in {time.monotonic() - started:.1f}s")
         except Exception as exc:  # keep loading the rest; report at the end
             failures.append(f"{t['target_table']}: {exc}")
+            failed_tables.append(t["target_table"])
             log_job_run(pg, job_name, started_at, "error", None, str(exc))
             print(f"{t['target_table']}: FAILED — {exc}", file=sys.stderr)
 
-    # Post-load only when every table landed and this was a full run. A
-    # partial load must not refresh rollups over a mix of old and new facts.
-    if not failures and not only:
+    # Post-load never runs on a subset run: that is part of tonight's data,
+    # not a refresh. On a full run it runs when every table landed, or —
+    # when views.yml lists post_load_requires — when every table the
+    # post-load steps read landed, whatever else failed (see
+    # post_load_required_tables: one table nothing downstream reads must not
+    # freeze the rollups). Either way the rollups are never rebuilt over a
+    # mix of old and new copies of the tables they combine.
+    requires = post_load_required_tables(cfg)
+    if only:
+        run_post_load = False
+    elif not failed_tables:
+        run_post_load = True
+    elif requires is None:
+        run_post_load = False
+    else:
+        run_post_load = requires <= loaded
+
+    # What etl:run's error text adds about post-load on a night a table
+    # failed, so job_runs answers "did the rollups move?" without push.log.
+    # Nothing is added without post_load_requires: that night reads exactly
+    # as it always has.
+    run_notes: list[str] = []
+    if failed_tables and not only and requires is not None:
+        if run_post_load:
+            note = ("post-load ran anyway: every table in post_load_requires "
+                    "loaded")
+            banner = "!" * 72
+            print(banner, file=sys.stderr)
+            print(f"WARNING: {len(failed_tables)} table(s) FAILED: "
+                  f"{', '.join(failed_tables)}", file=sys.stderr)
+            print("Running post-load anyway — every table it reads "
+                  "(views.yml post_load_requires) loaded tonight. The failed "
+                  "table(s) keep their previous load; etl:run is still logged "
+                  "as an error.", file=sys.stderr)
+            print(banner, file=sys.stderr)
+        else:
+            note = ("post-load skipped: required table(s) did not load: "
+                    + ", ".join(sorted(requires - loaded)))
+            print(note, file=sys.stderr)
+        run_notes.append(note)
+
+    post_load_ok = False
+    if run_post_load:
+        post_load_ok = True
         for sql, optional in post_load_steps(cfg.get("post_load_sql")):
             step_started = time.monotonic()
             step_started_at = datetime.now(timezone.utc)
@@ -334,26 +411,33 @@ def main() -> int:
                 # Stop here: later steps read what this one should have
                 # produced (views.yml explains the ordering).
                 failures.append(f"post_load: {sql}: {exc}")
+                post_load_ok = False
                 print(f"post_load: {sql} FAILED — {exc}", file=sys.stderr)
                 break
 
     # The one row the freshness stamp reads (20260901190400): success means
-    # every table loaded AND every required post-load step ran. A subset run
-    # is never a full refresh, so it is logged but never as 'etl:run'
-    # success. Logged BEFORE post_load_http on purpose: those calls never
-    # count toward success, and the AI batch can take ~20 minutes of
-    # repeated calls — the stamp (and the app's cache invalidation keyed on
-    # it) should move when the data lands, on a connection that has not
-    # sat idle all that time.
+    # every table loaded AND every required post-load step ran. A night
+    # whose post-load ran over its required tables while another table
+    # failed is still an error — the stamp's data_loaded_at keeps meaning
+    # "everything is current" — and the error text names the failed tables
+    # and says post-load ran. A subset run is never a full refresh and logs
+    # no 'etl:run' at all. Logged BEFORE post_load_http on purpose: those
+    # calls never count toward success, and the AI batch can take ~20
+    # minutes of repeated calls — the stamp (and the app's cache
+    # invalidation, which also watches the data horizons) should move when
+    # the data lands, on a connection that has not sat idle all that time.
     if not only:
         log_job_run(
             pg, "etl:run", run_started_at,
             "success" if not failures else "error",
             total_rows if not failures else None,
-            "; ".join(failures) if failures else None,
+            "; ".join(failures + run_notes) if failures else None,
         )
 
-    if not failures and not only:
+    # The AI batch reads the scores and rollups post-load just rebuilt, so
+    # it runs only after a post-load whose required steps all succeeded —
+    # on a clean night, or on one where only tables it does not read failed.
+    if post_load_ok:
         for call in cfg.get("post_load_http") or []:
             post_load_http(call)
 

@@ -2,7 +2,7 @@ import { computed, watch } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import { isErpQueryKey, qk } from '@/lib/queryClient'
+import { freshnessStamp, isErpQueryKey, qk } from '@/lib/queryClient'
 
 /**
  * The "As of … · Data through …" stamp (public.v_data_freshness, 024).
@@ -17,7 +17,8 @@ import { isErpQueryKey, qk } from '@/lib/queryClient'
 const db = supabase as unknown as SupabaseClient
 
 export interface DataFreshnessRow {
-  /** When the nightly ETL last finished successfully. */
+  /** When the nightly ETL last finished with every table and every required
+   *  post-load step successful. */
   data_loaded_at: string | null
   /** Newest non-memo invoice date in the warehouse — the revenue horizon. */
   data_through: string | null
@@ -65,22 +66,32 @@ export function useDataFreshness() {
  *
  * ERP queries (isErpQueryKey) hold their data for hours and skip the
  * refetch-on-focus every other query does, because the rows only change when
- * the ETL runs. This is how a new run reaches them: when data_loaded_at
- * moves from the value the cache was built under, every ERP query is
- * invalidated — the ones on screen refetch now, the rest on next use.
+ * the ETL runs. This is how a new run reaches them: when the freshness stamp
+ * (freshnessStamp: data_loaded_at, data_through and orders_through) moves
+ * from the value the cache was built under, every ERP query is invalidated —
+ * the ones on screen refetch now, the rest on next use.
+ *
+ * Not data_loaded_at alone: that is the last FULLY successful run. The ETL
+ * also lands the facts and rebuilds the rollups on a night when an
+ * unrelated table failed. That night's run is logged as an error, so
+ * data_loaded_at stays put while the invoice and order horizons move. A
+ * heartbeat watching only data_loaded_at would leave phones on yesterday's
+ * ERP data for hours after such a night.
  *
  * "The value the cache was built under" survives an app restart: the
  * freshness row is persisted with the ERP queries (queryPersist.ts), so a
  * morning open compares last night's stamp from disk against the server's
- * and refreshes whatever the phone kept from before the load.
+ * and refreshes whatever the phone kept from before the load. Until the row
+ * is loaded (from disk or the server) the stamp is undefined and nothing is
+ * compared.
  */
 export function useErpHeartbeat() {
   const qc = useQueryClient()
-  const { loadedAt, data } = useDataFreshness()
-  let seen: string | null | undefined
+  const { data } = useDataFreshness()
+  let seen: string | undefined
 
   watch(
-    () => (data.value === undefined ? undefined : loadedAt.value),
+    () => freshnessStamp(data.value),
     (stamp) => {
       if (stamp === undefined) return
       if (seen !== undefined && stamp !== seen) {

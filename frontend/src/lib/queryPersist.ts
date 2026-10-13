@@ -41,7 +41,7 @@ import {
   type PersistedClient,
 } from '@tanstack/query-persist-client-core'
 import { hydrate, type QueryCacheNotifyEvent } from '@tanstack/vue-query'
-import { isErpQueryKey, qk, queryClient } from '@/lib/queryClient'
+import { freshnessStamp, isErpQueryKey, qk, queryClient } from '@/lib/queryClient'
 
 /** Replaced at build time (vite.config.ts): a hash of the data-shaping code. */
 declare const __CACHE_SCHEMA__: string
@@ -259,9 +259,10 @@ export async function restorePersistedCache(
   void read.then((saved) => {
     if (!stillWanted()) return
     // By now the heartbeat may already have seen today's load stamp, so it
-    // would never flag this copy as older. Compare here instead.
+    // would never flag this copy as older. Compare here instead, on the
+    // same stamp the heartbeat watches.
     const stamp = (data: unknown) =>
-      (data as { data_loaded_at?: string | null } | undefined)?.data_loaded_at
+      freshnessStamp(data as Parameters<typeof freshnessStamp>[0])
     const current = queryClient.getQueryData(qk.freshness())
     const savedFreshness = saved?.clientState.queries.find(
       (q) => q.queryKey[0] === qk.freshness()[0],

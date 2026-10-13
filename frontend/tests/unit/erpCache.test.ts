@@ -1,6 +1,6 @@
 /**
- * Unit tests for the ERP cache policy: isErpQueryKey() and the key-based
- * defaults in lib/queryClient.ts, and useErpHeartbeat() in
+ * Unit tests for the ERP cache policy: isErpQueryKey(), freshnessStamp() and
+ * the key-based defaults in lib/queryClient.ts, and useErpHeartbeat() in
  * composables/useDataFreshness.ts.
  *
  * Run with:  npm run test:unit -- erpCache
@@ -17,6 +17,7 @@ import { VueQueryPlugin } from '@tanstack/vue-query'
 import {
   ERP_GC_TIME,
   ERP_STALE_TIME,
+  freshnessStamp,
   isErpQueryKey,
   qk,
   queryClient,
@@ -132,14 +133,61 @@ t('non-ERP keeps refetch on focus', goal.refetchOnWindowFocus, true)
 const freshness = queryClient.defaultQueryOptions({ queryKey: qk.freshness() })
 t('freshness is not given ERP defaults', freshness.refetchOnWindowFocus, true)
 
+/* --- freshnessStamp: the cache version ----------------------------------- */
+const row = {
+  data_loaded_at: '2026-10-12T06:10:00Z',
+  data_through: '2026-10-09',
+  orders_through: '2026-10-12',
+}
+t('stamp: no row yet is undefined, not a stamp', freshnessStamp(undefined), undefined)
+t('stamp: a null row is undefined too', freshnessStamp(null), undefined)
+t('stamp: same row, same stamp', freshnessStamp({ ...row }) === freshnessStamp(row), true)
+t(
+  'stamp: data_loaded_at moving changes it',
+  freshnessStamp({ ...row, data_loaded_at: '2026-10-13T06:05:00Z' }) === freshnessStamp(row),
+  false,
+)
+t(
+  'stamp: data_through moving alone changes it (a partial night that rebuilt the rollups)',
+  freshnessStamp({ ...row, data_through: '2026-10-12' }) === freshnessStamp(row),
+  false,
+)
+t(
+  'stamp: orders_through moving alone changes it',
+  freshnessStamp({ ...row, orders_through: '2026-10-13' }) === freshnessStamp(row),
+  false,
+)
+t(
+  'stamp: a cleared data_loaded_at is a change',
+  freshnessStamp({ ...row, data_loaded_at: null }) === freshnessStamp(row),
+  false,
+)
+t('stamp: a null column is still a stamp', typeof freshnessStamp({ ...row, data_loaded_at: null }), 'string')
+t(
+  'stamp: missing columns (an older saved copy) read as null',
+  freshnessStamp({ data_loaded_at: row.data_loaded_at }) ===
+    freshnessStamp({ data_loaded_at: row.data_loaded_at, data_through: null, orders_through: null }),
+  true,
+)
+t(
+  'stamp: values do not run together across columns',
+  freshnessStamp({ data_loaded_at: 'a', data_through: 'b', orders_through: null }) ===
+    freshnessStamp({ data_loaded_at: null, data_through: 'a', orders_through: 'b' }),
+  false,
+)
+
 /* --- the heartbeat -------------------------------------------------------- */
 // No network: the freshness query is switched off (it sets no `enabled` of
 // its own, so setQueryDefaults reaches it) and its data is written by hand.
 queryClient.setQueryDefaults(qk.freshness(), { enabled: false })
-const stamp = (loaded: string | null) => ({
+const stamp = (
+  loaded: string | null,
+  through = '2026-10-12',
+  ordersThrough = '2026-10-12',
+) => ({
   data_loaded_at: loaded,
-  data_through: '2026-10-12',
-  orders_through: '2026-10-12',
+  data_through: through,
+  orders_through: ordersThrough,
 })
 const summaryKey = accountMetricsKeys.summary(k)
 const goalKey = [...qk.account.goal(k), 2026]
@@ -176,6 +224,34 @@ queryClient.setQueryData(qk.freshness(), stamp(null))
 await nextTick()
 await nextTick()
 t('stamp cleared (no ETL record) counts as a change', invalidated(summaryKey), true)
+
+// A night whose etl:run is an error (an unrelated table failed) but whose
+// facts and rollups landed: data_loaded_at stays, the horizons move.
+seed()
+queryClient.setQueryData(qk.freshness(), stamp('2026-10-13T06:05:00Z', '2026-10-12', '2026-10-12'))
+await nextTick()
+await nextTick()
+seed()
+await nextTick()
+t('reset: the cache is current again', invalidated(summaryKey), false)
+
+queryClient.setQueryData(qk.freshness(), stamp('2026-10-13T06:05:00Z', '2026-10-13', '2026-10-12'))
+await nextTick()
+await nextTick()
+t('data_through moved, data_loaded_at did not: ERP queries invalidated', invalidated(summaryKey), true)
+t('…rep-written queries untouched', invalidated(goalKey), false)
+
+seed()
+queryClient.setQueryData(qk.freshness(), stamp('2026-10-13T06:05:00Z', '2026-10-13', '2026-10-14'))
+await nextTick()
+await nextTick()
+t('orders_through moved alone: ERP queries invalidated', invalidated(summaryKey), true)
+
+seed()
+queryClient.setQueryData(qk.freshness(), stamp('2026-10-13T06:05:00Z', '2026-10-13', '2026-10-14'))
+await nextTick()
+await nextTick()
+t('the same three values again: nothing invalidated', invalidated(summaryKey), false)
 
 scope.stop()
 queryClient.clear()

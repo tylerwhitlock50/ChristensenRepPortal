@@ -158,9 +158,9 @@ export const qk = {
  *   - ERP queries stay fresh for ERP_STALE_TIME and are NOT refetched on
  *     window focus.
  *   - useErpHeartbeat (useDataFreshness.ts) checks v_data_freshness on
- *     focus and every 15 minutes; when the load stamp moves it invalidates
- *     every query isErpQueryKey() matches. Coming back to the app costs that
- *     one tiny request.
+ *     focus and every 15 minutes; when the load stamp or a data horizon
+ *     moves (freshnessStamp) it invalidates every query isErpQueryKey()
+ *     matches. Coming back to the app costs that one tiny request.
  *   - Their gcTime is 24 hours so the persisted cache (queryPersist.ts) can
  *     hold them that long.
  *
@@ -219,6 +219,41 @@ export function isErpQueryKey(queryKey: readonly unknown[]): boolean {
     return typeof second === 'string' && ERP_ACCOUNT_KEYS.has(third as string)
   }
   return false
+}
+
+/** The three columns of public.v_data_freshness that version the ERP cache. */
+export interface FreshnessStampFields {
+  data_loaded_at?: string | null
+  data_through?: string | null
+  orders_through?: string | null
+}
+
+/**
+ * The version of the ERP cache: what useErpHeartbeat watches, and what a
+ * late cache restore compares (queryPersist.ts). A change means new ERP data
+ * landed, so every isErpQueryKey() query is invalidated.
+ *
+ * data_loaded_at alone is not enough. It is the last FULLY successful run,
+ * and the ETL also rebuilds the rollups and signals on a night when only a
+ * table nothing downstream reads failed (etl/views.yml post_load_requires).
+ * That night's etl:run is an error, so data_loaded_at stays put while new
+ * facts and rollups land. The two data horizons (newest invoice, newest
+ * order) move with the facts, so the stamp is all three. At worst a horizon
+ * steps onto a future-dated row at midnight with no load: one extra refetch.
+ *
+ * undefined when there is no row yet (not loaded), so "not loaded" is never
+ * mistaken for a stamp. A null column is part of the stamp: a cleared
+ * data_loaded_at is a change like any other.
+ */
+export function freshnessStamp(
+  row: FreshnessStampFields | null | undefined,
+): string | undefined {
+  if (row === undefined || row === null) return undefined
+  return JSON.stringify([
+    row.data_loaded_at ?? null,
+    row.data_through ?? null,
+    row.orders_through ?? null,
+  ])
 }
 
 const ERP_QUERY_DEFAULTS = {
