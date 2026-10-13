@@ -1,4 +1,5 @@
 import { format, isSameYear, parseISO } from 'date-fns'
+import { trackingList, upsTrackUrl } from '@/lib/tracking'
 
 /**
  * "Where's my order?" — the answer, in words a dealer can read.
@@ -16,22 +17,9 @@ import { format, isSameYear, parseISO } from 'date-fns'
 
 /* ---------------------------------------------------------------- tracking */
 
-/** UPS is the only carrier; the number goes straight to their tracking page. */
-export function upsTrackUrl(trackingNumber: string): string {
-  return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber.trim())}`
-}
-
-/** A row can carry several parcels' numbers, comma-joined by the database. */
-export function trackingList(value: string | null | undefined): string[] {
-  return [
-    ...new Set(
-      (value ?? '')
-        .split(',')
-        .map((v) => v.trim())
-        .filter(Boolean),
-    ),
-  ]
-}
+// upsTrackUrl and trackingList live in lib/tracking.ts; re-exported here
+// for the callers that already compose messages from this module.
+export { trackingList, upsTrackUrl }
 
 /* ------------------------------------------------------------------ shapes */
 

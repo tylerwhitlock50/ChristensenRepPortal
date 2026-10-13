@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { format } from 'date-fns'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
 import { ERP_STALE_TIME } from '@/lib/queryClient'
-import { trackingList } from '@/lib/orderStatusMessage'
+import { trackingList } from '@/lib/tracking'
 
 /**
  * The Overview's "Recent activity": what happened on the book in the last

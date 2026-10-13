@@ -8,7 +8,7 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
-import { trackingList } from '@/lib/orderStatusMessage'
+import { trackingList, upsTrackUrl } from '@/lib/tracking'
 import {
   useAccountOrderHeaders,
   useAccountOrderLines,
@@ -260,11 +260,6 @@ const openOrderSubtitle = computed(() => {
 const openShipment = computed(
   () => allShipments.value.find((s) => s.packlist_id === openPacklistId.value) ?? null,
 )
-
-/** ups.com's tracking page accepts the number straight in the query string. */
-function upsTrackUrl(trackingNumber: string): string {
-  return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber)}`
-}
 
 /* ---- programmatic entry points ------------------------------------------
    The page deep-links here: "Last order" and "what's owed" in the Before
