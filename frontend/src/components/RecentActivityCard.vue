@@ -63,6 +63,17 @@ const hint = computed(() => {
   return 'Last 14 days'
 })
 
+/* The orders-only fallback cannot see shipments or slips, so its empty
+   state says only what it knows. */
+const emptyTitle = computed(() =>
+  feed.usingFallback.value ? 'No orders in the last two weeks' : 'Nothing in the last two weeks',
+)
+const emptyBody = computed(() =>
+  feed.usingFallback.value
+    ? undefined
+    : 'No orders placed, nothing shipped and no promise dates moved on your accounts in 14 days.',
+)
+
 /* This look becomes "last looked" once the feed has actually shown
    something — a failed load must not swallow tomorrow's markers. */
 watch(
@@ -126,8 +137,8 @@ const PER_GROUP = 6
       :has-data="feed.hasData.value"
       :updated-at="feed.updatedAt.value"
       :empty="!feed.isPending.value && empty"
-      empty-title="Nothing in the last two weeks"
-      empty-body="No orders placed, nothing shipped and no promise dates moved on your accounts in 14 days."
+      :empty-title="emptyTitle"
+      :empty-body="emptyBody"
       :rows="3"
       @retry="feed.refetch()"
     >
@@ -137,10 +148,12 @@ const PER_GROUP = 6
           Shipped
         </h3>
         <ul class="divide-line divide-y">
-          <li v-for="s in groups.shipped.slice(0, PER_GROUP)" :key="s.key" class="px-4 py-3">
+          <li v-for="s in groups.shipped.slice(0, PER_GROUP)" :key="s.key">
+            <!-- The padding is on the link, so the whole row is the tap
+                 target, like the other two groups. -->
             <RouterLink
               :to="orderLink(s.customer_key, s.order_id)"
-              class="group flex items-start justify-between gap-3"
+              class="group hover:bg-canvas flex items-start justify-between gap-3 px-4 py-3"
             >
               <span class="min-w-0">
                 <span class="flex items-center gap-2">
@@ -172,7 +185,7 @@ const PER_GROUP = 6
               </span>
             </RouterLink>
 
-            <div v-if="s.tracking.length" class="mt-2 grid grid-cols-2 gap-2">
+            <div v-if="s.tracking.length" class="-mt-1 grid grid-cols-2 gap-2 px-4 pb-3">
               <a
                 :href="upsTrackUrl(s.tracking[0]!)"
                 target="_blank"
