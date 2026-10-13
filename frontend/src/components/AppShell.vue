@@ -8,6 +8,7 @@ import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useMyDueTasks } from '@/composables/useTasks'
 import { useOpenSupportCount } from '@/composables/useSupport'
 import { useErpHeartbeat } from '@/composables/useDataFreshness'
+import { dismissUpdate, reloadToUpdate, updateReady } from '@/lib/pwa'
 import SyncStatusBadge from '@/components/SyncStatusBadge.vue'
 import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
@@ -407,5 +408,46 @@ async function signOut() {
         </RouterLink>
       </div>
     </nav>
+
+    <!-- A new deploy is downloaded and waiting. Never applied on its own: a
+         reload in the middle of a visit survey is the one thing this must
+         not do, so the rep picks the moment. Sits above the phone's bottom
+         bar; bottom-right from md up. -->
+    <div
+      v-if="updateReady"
+      class="fixed inset-x-0 bottom-[calc(66px+env(safe-area-inset-bottom))] z-40 px-4 pb-3 md:inset-x-auto md:right-4 md:bottom-4 md:w-96 md:px-0 md:pb-0"
+    >
+      <div class="bg-ink text-canvas flex items-center gap-2 py-1 pr-1 pl-4 shadow-lg">
+        <p role="status" class="min-w-0 flex-1 text-[15px] leading-snug">
+          A new version is ready
+        </p>
+        <button
+          type="button"
+          class="tap-target font-label border-canvas/50 hover:bg-canvas hover:text-ink shrink-0 border px-4 text-[13px] font-semibold tracking-[0.12em] uppercase"
+          @click="reloadToUpdate"
+        >
+          Refresh
+        </button>
+        <button
+          type="button"
+          class="tap-target grid min-w-11 shrink-0 place-items-center text-[#C9C5BB] hover:text-canvas"
+          aria-label="Not now"
+          title="Not now"
+          @click="dismissUpdate"
+        >
+          <svg
+            class="size-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
+    </div>
   </div>
 </template>

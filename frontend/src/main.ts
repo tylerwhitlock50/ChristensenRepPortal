@@ -19,6 +19,7 @@ import './style.css'
 import App from './App.vue'
 import router from './router'
 import { queryClient } from './lib/queryClient'
+import { registerServiceWorker } from './lib/pwa'
 import { useSessionStore } from './stores/session'
 
 /**
@@ -98,6 +99,10 @@ async function bootstrap() {
   app.use(router)
   await router.isReady()
   app.mount('#app')
+
+  // After the first paint, not before: installing the offline copy of the
+  // app competes with the page's own requests on a slow connection.
+  void registerServiceWorker().catch(() => {})
 }
 
 void bootstrap()

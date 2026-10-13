@@ -9,6 +9,13 @@
     />
     <meta name="theme-color" content="#12130F" />
     <meta name="color-scheme" content="light" />
+    <!-- Installed to an iPhone home screen: the icon, the name under it, and
+         a black status bar above the ink header. The manifest link is added
+         by vite-plugin-pwa (vite.config.ts). -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180x180.png" />
+    <meta name="apple-mobile-web-app-title" content="Rep Portal" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <!-- Every screen's first request goes to Supabase. Open that connection
          (DNS + TLS, several round trips on LTE) while the JS downloads,
          instead of after it has run. -->
