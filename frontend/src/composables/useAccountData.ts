@@ -34,6 +34,12 @@ export type AccountContact = {
    */
   do_not_call: boolean
   do_not_email: boolean
+  /**
+   * The name to print (migration 20261013100000): ERP contact_name, else
+   * first + last, else the contact id. Absent on a database without it —
+   * lib/contacts.ts contactDisplayName() falls back to `name`.
+   */
+  display_name?: string | null
 }
 
 export function useNotes(customerKey: MaybeRef<string>) {

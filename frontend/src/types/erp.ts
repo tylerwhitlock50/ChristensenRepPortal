@@ -38,6 +38,21 @@ export interface DimCustomerRow {
   ffl_expiration_raw: string | null
   credit_limit_amount: number | null
   ar_terms_rule_id: string | null
+  /**
+   * Street address (002) for Directions — lib/maps.ts soldToAddress(). For
+   * chains the sold-to is head office, not the store. Optional because only
+   * useAccount()'s select('*') carries them; v_account_list rows do not.
+   */
+  sold_to_address1?: string | null
+  sold_to_address2?: string | null
+  sold_to_zip_code?: string | null
+  /**
+   * Where the ERP sends invoices and statements. A contact with one of these
+   * addresses is accounts payable, not the buyer — lib/contacts.ts. Same
+   * optionality as the address.
+   */
+  invoice_email?: string | null
+  statement_email?: string | null
 }
 
 export interface DimSalesRepRow {

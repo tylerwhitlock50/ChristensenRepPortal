@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
+import { bestContactsKeys } from '@/composables/useBestContacts'
 
 /**
  * Contact writes. The read lives in `useAccountData.ts` and is re-exported here
@@ -41,7 +42,10 @@ function toRow(values: ContactInput) {
 function useInvalidateContacts() {
   const qc = useQueryClient()
   return (customerKey: string) => {
+    // A prefix: also refreshes useAccountReach (under …'contacts', 'reach').
     void qc.invalidateQueries({ queryKey: qk.account.contacts(customerKey) })
+    // Multi-account reads (call lists) carry no account key.
+    void qc.invalidateQueries({ queryKey: bestContactsKeys.root() })
   }
 }
 
