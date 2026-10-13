@@ -3,6 +3,11 @@
  * Activity by rep group (vendor) and by rep — is the field actually working
  * the portal? The rollup is grouped client-side from v_rep_activity (tens of
  * rows); the raw stream underneath answers "what happened this week."
+ *
+ * "Active", not "login": login_events also gets a row when a rep opens the
+ * app on a saved session or comes back to the tab, at most one per four
+ * hours (useUsagePing.ts). A password sign-in is now the rare case, so the
+ * old labels undercounted the reps who use the portal most.
  */
 import { computed, ref } from 'vue'
 import type { ColumnDef, Row } from '@tanstack/vue-table'
@@ -68,8 +73,8 @@ function byDateNullsFirst(a: Row<RepActivity>, b: Row<RepActivity>, columnId: st
 const columns: ColumnDef<RepActivity, any>[] = [
   { id: 'full_name', accessorFn: (r) => r.full_name ?? '', header: 'Rep' },
   { id: 'vendor_id', accessorFn: (r) => r.vendor_id ?? '', header: 'Rep group' },
-  { id: 'last_login_at', accessorKey: 'last_login_at', header: 'Last login', sortingFn: byDateNullsFirst },
-  { id: 'logins_30d', accessorFn: (r) => r.logins_30d ?? 0, header: 'Logins 30d' },
+  { id: 'last_login_at', accessorKey: 'last_login_at', header: 'Last active', sortingFn: byDateNullsFirst },
+  { id: 'logins_30d', accessorFn: (r) => r.logins_30d ?? 0, header: 'Sessions 30d' },
   { id: 'actions_30d', accessorFn: (r) => r.actions_30d ?? 0, header: 'Actions 30d' },
   { id: 'open_missions', accessorFn: (r) => r.open_missions ?? 0, header: 'Open missions' },
   { id: 'overdue_missions', accessorFn: (r) => r.overdue_missions ?? 0, header: 'Overdue' },
@@ -81,8 +86,8 @@ function onExport() {
     { key: 'email', header: 'Email' },
     { key: 'vendor_id', header: 'Rep Group (Vendor)' },
     { key: 'sales_rep_key', header: 'Rep Code' },
-    { key: 'last_login_at', header: 'Last Login' },
-    { key: 'logins_30d', header: 'Logins Last 30 Days' },
+    { key: 'last_login_at', header: 'Last Active' },
+    { key: 'logins_30d', header: 'Sessions Last 30 Days' },
     { key: 'actions_30d', header: 'Actions Last 30 Days' },
     { key: 'last_action_date', header: 'Last Action Date' },
     { key: 'open_missions', header: 'Open Missions' },
@@ -126,7 +131,7 @@ const stream = computed(() => {
       key: `login-${l.id}`,
       at: l.logged_at,
       who: nameByUser.value[l.user_id] ?? l.user_id,
-      what: 'Signed in',
+      what: 'Opened the portal',
     })
   }
   for (const a of actions.data.value ?? []) {
@@ -151,7 +156,7 @@ const stream = computed(() => {
       </p>
       <h1 class="u-display mt-1 text-4xl">Is the field on the portal?</h1>
       <p class="text-muted mt-2 text-[15px]">
-        Logins, logged work, and mission follow-through — by rep group and by rep.
+        App use, logged work, and mission follow-through — by rep group and by rep.
       </p>
     </header>
 
@@ -164,7 +169,7 @@ const stream = computed(() => {
       <StatTile
         label="Active 30d"
         :value="tilesReady ? activeLast30 : dash"
-        sub="signed in"
+        sub="used the portal"
       />
       <StatTile
         label="Overdue missions"
@@ -199,7 +204,7 @@ const stream = computed(() => {
               <p class="text-muted mt-0.5 text-[15px]">
                 {{ group.reps.length }} rep{{ group.reps.length === 1 ? '' : 's' }} ·
                 {{ count(group.actions30d) }} actions 30d ·
-                last login {{ daysAgo(group.lastLoginAt) }}
+                last active {{ daysAgo(group.lastLoginAt) }}
               </p>
             </div>
             <div class="flex items-center gap-2">
@@ -303,7 +308,7 @@ const stream = computed(() => {
                   {{ count(row.open_missions) }} open
                 </p>
                 <p class="text-muted mt-0.5 text-[13px]">
-                  Last login {{ daysAgo(row.last_login_at) }}
+                  Last active {{ daysAgo(row.last_login_at) }}
                 </p>
               </div>
               <AppBadge v-if="(row.overdue_missions ?? 0) > 0" tone="late">
@@ -347,7 +352,7 @@ const stream = computed(() => {
         :updated-at="Math.min(logins.dataUpdatedAt.value, actions.dataUpdatedAt.value)"
         :empty="stream.length === 0"
         empty-title="Nothing in this window"
-        empty-body="Sign-ins and logged actions show up here."
+        empty-body="App opens and logged actions show up here."
         :rows="3"
         @retry="logins.refetch(); actions.refetch()"
       >

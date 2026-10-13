@@ -20,13 +20,12 @@ import {
   territoryTotals,
   useTerritoryAccounts,
   useTerritoryRecentOrders,
-  worthInvestigating,
 } from '@/composables/useOverview'
-import { useTerritorySignals } from '@/composables/useAccountSignals'
 import { useAiBrief, useGenerateAiBrief } from '@/composables/useAiBrief'
 import { useGoalRollup } from '@/composables/useAccountGoals'
 import { deltaLabel } from '@/composables/useAccountMetrics'
 import SalesBriefCard from '@/components/SalesBriefCard.vue'
+import CallListCard from '@/components/CallListCard.vue'
 import FreshnessStamp from '@/components/FreshnessStamp.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
@@ -34,28 +33,25 @@ import StatTile from '@/components/ui/StatTile.vue'
 import { daysAgo, money } from '@/lib/format'
 
 /**
- * The morning briefing (data-first restructure). Canonical flow, top to
- * bottom: Data → Metrics → AI Interpretation → Observations → Drill into
- * Account. A rep should answer "how is my territory doing, what changed,
- * who deserves attention" in 20 seconds without leaving this page.
+ * The morning briefing (data-first restructure). Top to bottom on a phone:
+ * Metrics → who stands out today (the call list) → AI Interpretation →
+ * Movers → Recent activity, each row a way into the account. A rep should
+ * answer "how is my territory doing, who deserves a call, what changed" in
+ * 20 seconds without leaving this page.
+ *
+ * The call list leads because it is the part a rep acts on from a parking
+ * lot; it replaces the old six-row "Worth investigating" card, whose rules
+ * (worthInvestigating) are now its fallback and its reason chips.
  */
 
 const session = useSessionStore()
 
 const accountsQuery = useTerritoryAccounts()
 const recentQuery = useTerritoryRecentOrders()
-/* The nightly behaviour scores (public.account_signals). Loads alongside the
-   territory rows rather than gating them: if it is slow, missing, or 019 was
-   never applied, the observations below fall back to the flat dormancy rule
-   and the page is exactly what it was before. */
-const signalsQuery = useTerritorySignals()
 
 const rows = computed(() => accountsQuery.data.value ?? [])
 const totals = computed(() => territoryTotals(rows.value))
 const movers = computed(() => largestMovers(rows.value))
-const observations = computed(() =>
-  worthInvestigating(rows.value, 6, new Date(), signalsQuery.data.value ?? {}),
-)
 
 /**
  * `largestMovers` returns up and down separately and the card used to
@@ -233,19 +229,22 @@ const goalSub = computed(() => {
         </div>
       </section>
 
-      <!-- 2 · The analyst's read, above the fold -->
-      <SalesBriefCard
-        class="mt-5"
-        :brief="briefQuery.brief.value"
-        :generating="generate.isPending.value"
-        :notice="briefNotice"
-        :error="briefError"
-        :read-only="!session.canWrite"
-        @regenerate="runBrief"
-      />
+      <!-- 2 · Worth a call today, then 3 · the analyst's read and 4 · the
+           movers. A phone stacks them in that order: the list a rep acts on
+           first. From lg the list takes the left column and the brief and
+           movers stack beside it. -->
+      <div class="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
+        <CallListCard class="lg:row-span-2" />
 
-      <!-- 3 · Largest movers -->
-      <div class="mt-5 grid gap-5 lg:grid-cols-2">
+        <SalesBriefCard
+          :brief="briefQuery.brief.value"
+          :generating="generate.isPending.value"
+          :notice="briefNotice"
+          :error="briefError"
+          :read-only="!session.canWrite"
+          @regenerate="runBrief"
+        />
+
         <AppCard title="Largest movers" :padded="false">
           <div v-if="moverGroups.length === 0" class="p-4">
             <p class="text-muted text-[15px]">No year-over-year movement yet.</p>
@@ -289,30 +288,6 @@ const goalSub = computed(() => {
               </ul>
             </section>
           </template>
-        </AppCard>
-
-        <!-- 4 · Worth investigating — observations, never assignments. -->
-        <AppCard title="Worth investigating" :padded="false">
-          <div v-if="observations.length === 0" class="p-4">
-            <p class="text-muted text-[15px]">
-              Nothing stands out right now — nobody overdue against their usual
-              ordering rhythm, no sharp declines, nothing large past its
-              promise date.
-            </p>
-          </div>
-          <ul v-else class="divide-line divide-y">
-            <li v-for="o in observations" :key="`${o.kind}-${o.customer_key}`">
-              <RouterLink
-                :to="{ name: 'account', params: { customerKey: o.customer_key } }"
-                class="hover:bg-canvas block px-4 py-3"
-              >
-                <span class="text-ink block truncate text-[15px] font-semibold">
-                  {{ o.customer_name }}
-                </span>
-                <span class="text-ink-2 block text-sm">{{ o.note }}</span>
-              </RouterLink>
-            </li>
-          </ul>
         </AppCard>
       </div>
 

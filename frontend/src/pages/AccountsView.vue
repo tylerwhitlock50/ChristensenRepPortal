@@ -1,13 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { refDebounced } from '@vueuse/core'
+import { refDebounced, useMediaQuery } from '@vueuse/core'
 import type { ColumnDef } from '@tanstack/vue-table'
 import {
+  isRankedSort,
+  rankAccountRows,
   useAccountSearch,
+  useAccountsByKeys,
   useAccountTable,
+  type AccountListRow,
+  type AccountSort,
   type AccountTableRow,
 } from '@/composables/useAccounts'
+import { observeAccount, useTerritoryAccounts } from '@/composables/useOverview'
+import { useTerritorySignals } from '@/composables/useAccountSignals'
+import { useBestContacts, type AccountReach } from '@/composables/useBestContacts'
+import { usePlan } from '@/composables/usePlan'
 import {
   currentGoalYear,
   paceLabel,
@@ -15,12 +24,14 @@ import {
   useAccountsBehindGoal,
   type AccountGoalProgress,
 } from '@/composables/useAccountGoals'
+import AccountListCard from '@/components/AccountListCard.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
-import { count as fmtCount, daysAgo, humanize, money, shortDate } from '@/lib/format'
+import { count as fmtCount, humanize, money, shortDate } from '@/lib/format'
+import { formatAddress, MAX_ROUTE_STOPS, multiStopRouteUrl } from '@/lib/maps'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,35 +41,63 @@ const search = ref('')
 const debouncedSearch = refDebounced(search, 300)
 const activeOnly = ref(true)
 
-/* ---- goal mode ----------------------------------------------------------
-   Two sources, one list. The default is the whole book, paged and searched in
-   Postgres; "Behind goal" swaps in the goals ranked worst-first.
+/* ---- sort chips ----------------------------------------------------------
+   One list, five orders. A–Z is the whole book, paged and searched in
+   Postgres. Biggest / Slipping / Longest since order rank the WHOLE book —
+   sorting a page of 50 would silently rank only the 50 that loaded — so they
+   read the table's whole-book rows (one cache with table mode) and filter
+   the search in place. "Behind goal" is the goals ranked worst-first, which
+   has to happen in Postgres too: only accounts with a goal have a row, so
+   that list is small enough to hold whole.
 
-   That ranking has to happen in Postgres too. The accounts a rep needs are
-   the ones at the BOTTOM of it, and sorting a page of 50 client-side would
-   silently rank only the 50 that happened to load. Only accounts with a goal
-   have a row, so the ranked list is small enough to hold whole.
-
-   Deep-linkable (?goal=behind) because the Today page's book line points here.
+   Deep-linkable: ?sort=biggest|slipping|quiet, and ?goal=behind as before
+   (the Today page's book line points there).
 ------------------------------------------------------------------------- */
-const goalMode = ref(route.query.goal === 'behind')
+const SORT_CHIPS: { value: AccountSort; label: string }[] = [
+  { value: 'az', label: 'A–Z' },
+  { value: 'biggest', label: 'Biggest' },
+  { value: 'slipping', label: 'Slipping' },
+  { value: 'quiet', label: 'Longest since order' },
+  { value: 'behind', label: 'Behind goal' },
+]
+
+function sortFromRoute(): AccountSort {
+  if (route.query.goal === 'behind') return 'behind'
+  const q = route.query.sort
+  return q === 'biggest' || q === 'slipping' || q === 'quiet' ? q : 'az'
+}
+
+const sort = ref<AccountSort>(sortFromRoute())
 const goalYear = currentGoalYear()
 
-watch(goalMode, (on) => {
+/** In table mode Behind goal is a filter chip, so it reads as a boolean too. */
+const goalMode = computed({
+  get: () => sort.value === 'behind',
+  set: (on: boolean) => (sort.value = on ? 'behind' : 'az'),
+})
+const ranked = computed(() => isRankedSort(sort.value))
+
+watch(sort, (s) => {
   void router.replace({
-    query: { ...route.query, goal: on ? 'behind' : undefined },
+    query: {
+      ...route.query,
+      goal: s === 'behind' ? 'behind' : undefined,
+      sort: isRankedSort(s) ? s : undefined,
+    },
   })
 })
 
 /* ---- card / table toggle ------------------------------------------------
    Rep feedback: the book as a metric table — ships and bookings YTD/prior,
-   open orders, rep, goal. Cards stay the phone experience (the toggle is
-   hidden below sm); the table reads public.v_account_table, the whole book
-   in one query, so every column sorts over ALL rows rather than the 50
-   that happened to be loaded. Deep-linkable as ?view=table, same pattern
-   as ?goal=behind above.
+   open orders, rep, goal. The table reads public.v_account_table, the whole
+   book in one query, so every column sorts over ALL rows. It needs 72rem,
+   so it is a wide-screen view: below sm the toggle is hidden and the page
+   is cards whatever ?view says, which also means a ?view=table link opened
+   on a phone lands somewhere usable instead of a sideways-scrolling grid.
 ------------------------------------------------------------------------- */
 const view = ref<'cards' | 'table'>(route.query.view === 'table' ? 'table' : 'cards')
+const wide = useMediaQuery('(min-width: 640px)')
+const effectiveView = computed(() => (wide.value ? view.value : 'cards'))
 
 watch(view, (v) => {
   void router.replace({
@@ -66,9 +105,30 @@ watch(view, (v) => {
   })
 })
 
+/* ---- my plan --------------------------------------------------------------
+   Starred accounts (usePlan: this device, this user), shown as their own
+   list with one "Route these" link through their addresses.
+------------------------------------------------------------------------- */
+const {
+  keys: planKeys,
+  count: planCount,
+  full: planFull,
+  has: inPlan,
+  toggle: togglePlan,
+  clear: clearPlan,
+} = usePlan()
+const planMode = ref(route.query.plan === '1' && planCount.value > 0)
+watch(planMode, (on) => {
+  void router.replace({ query: { ...route.query, plan: on ? '1' : undefined } })
+})
+// An empty plan has nothing to show; the chip turns itself off.
+watch(planCount, (n) => {
+  if (n === 0) planMode.value = false
+})
+
 const tableQuery = useAccountTable(
   activeOnly,
-  computed(() => view.value === 'table'),
+  computed(() => effectiveView.value === 'table' || (ranked.value && !planMode.value)),
 )
 
 /** In table mode the Behind-goal chip is a filter, not a different list. */
@@ -151,9 +211,12 @@ const {
 } = useAccountSearch(
   debouncedSearch,
   activeOnly,
-  // Table mode filters client-side over the whole book — the paged server
-  // search would fire per keystroke for a list that isn't rendered.
-  computed(() => view.value !== 'table'),
+  // Only the A–Z list is paged on the server. Every other mode filters its
+  // own rows in place, and a keystroke must not cost round trips for a list
+  // that isn't rendered.
+  computed(
+    () => effectiveView.value === 'cards' && sort.value === 'az' && !planMode.value,
+  ),
 )
 
 const rows = computed(() => data.value?.pages.flatMap((p) => p.rows) ?? [])
@@ -166,7 +229,7 @@ const total = computed(() => data.value?.pages[0]?.total ?? 0)
  */
 const { data: goals } = useAccountGoalsFor(
   computed(() =>
-    goalMode.value || view.value === 'table'
+    sort.value !== 'az' || planMode.value || effectiveView.value === 'table'
       ? []
       : rows.value.map((r) => r.customer_key),
   ),
@@ -192,6 +255,131 @@ const behindRows = computed(() => {
   })
 })
 
+/* ---- what each card says ------------------------------------------------
+   This year's money and the one reason chip come from the territory rows
+   the Overview already holds (v_territory_account_yoy: the only list with
+   trailing-12-month and past-promise money, which the classifier needs) and
+   the nightly signals, so a card says about an account exactly what the
+   Overview's call list would. Both are whole-book reads shared with other
+   pages; an account missing from them (inactive) just shows no money line.
+------------------------------------------------------------------------- */
+// Only the card lists that print money or a reason read them; the table and
+// the goal-ranked list don't.
+const decorated = computed(() => effectiveView.value === 'cards' && sort.value !== 'behind')
+const territory = useTerritoryAccounts(decorated)
+const signals = useTerritorySignals(decorated)
+const territoryByKey = computed(
+  () => new Map((territory.data.value ?? []).map((r) => [r.customer_key, r])),
+)
+
+function moneyFor(key: string) {
+  const t = territoryByKey.value.get(key)
+  return {
+    revenueYtd: t ? t.revenue_ytd : null,
+    revenuePriorYtd: t ? t.revenue_prior_ytd : null,
+  }
+}
+
+function reasonFor(key: string): string | null {
+  const t = territoryByKey.value.get(key)
+  if (!t) return null
+  return observeAccount(t, signals.data.value?.[key] ?? null)?.chip ?? null
+}
+
+function statusOf(a: {
+  deactivated_at?: string | null
+  active_flag?: string | null
+}): 'deactivated' | 'inactive' | null {
+  // The rep's own write-off outranks the ERP flag: an account can be both,
+  // and "you deactivated this" is the label that explains why it's off the
+  // default list.
+  if (a.deactivated_at) return 'deactivated'
+  if (a.active_flag != null && a.active_flag !== 'Y') return 'inactive'
+  return null
+}
+
+function matchesSearch(a: {
+  customer_key: string
+  customer_name: string | null
+  sold_to_city: string | null
+}): boolean {
+  const term = search.value.trim().toLowerCase()
+  if (!term) return true
+  return (
+    (a.customer_name ?? '').toLowerCase().includes(term) ||
+    a.customer_key.toLowerCase().includes(term) ||
+    (a.sold_to_city ?? '').toLowerCase().includes(term)
+  )
+}
+
+/* ---- ranked modes ----------------------------------------------------- */
+const RANKED_PAGE = 50
+const rankedShown = ref(RANKED_PAGE)
+watch([sort, debouncedSearch, activeOnly], () => (rankedShown.value = RANKED_PAGE))
+
+const rankedRows = computed(() => {
+  const s = sort.value
+  if (!isRankedSort(s)) return []
+  return rankAccountRows((tableQuery.data.value ?? []).filter(matchesSearch), s)
+})
+
+const RANKED_CAPTION: Record<string, string> = {
+  biggest: 'Most invoiced this year first.',
+  slipping: 'Behind the same time last year, biggest dollar drop first.',
+  quiet: 'Ordered in the last two years, longest since an order first.',
+}
+const RANKED_EMPTY: Record<string, string> = {
+  biggest: 'No accounts to rank.',
+  slipping: 'Nobody is behind the same time last year.',
+  quiet: 'No account has ordered in the last two years.',
+}
+
+/* ---- plan list -------------------------------------------------------- */
+const planAccounts = useAccountsByKeys(computed(() => (planMode.value ? planKeys.value : [])))
+const planRows = computed(() => {
+  const byKey = new Map((planAccounts.data.value ?? []).map((a) => [a.customer_key, a]))
+  // Star order, which is the order the route drives them in.
+  return planKeys.value
+    .map((k) => byKey.get(k))
+    .filter((a): a is AccountListRow => !!a && matchesSearch(a))
+})
+
+const planReach = useBestContacts(computed(() => (planMode.value ? planKeys.value : [])))
+// Un-starring changes the key set and refetches; the last answer still
+// covers every account left on the plan, so the Route button stays put
+// instead of blinking out and back. A newly starred account is not in it,
+// so nothing below shows until the fetch that includes it lands.
+const lastReach = shallowRef(new Map<string, AccountReach>())
+watch(
+  () => planReach.data.value,
+  (data) => {
+    if (data !== undefined) lastReach.value = planReach.byKey.value
+  },
+)
+const reachMap = computed(() =>
+  planReach.data.value !== undefined ? planReach.byKey.value : lastReach.value,
+)
+const reachReady = computed(
+  () => planKeys.value.length > 0 && planKeys.value.every((k) => reachMap.value.has(k)),
+)
+const routeStops = computed(() =>
+  planKeys.value
+    .map((k) => reachMap.value.get(k)?.address)
+    .filter((a) => !!formatAddress(a)),
+)
+const routeUrl = computed(() => (reachReady.value ? multiStopRouteUrl(routeStops.value) : null))
+const missingAddresses = computed(() =>
+  reachReady.value ? planKeys.value.length - routeStops.value.length : 0,
+)
+
+/** One tap would lose the day's plan; ask first. */
+function confirmClearPlan() {
+  const n = planCount.value
+  if (window.confirm(`Clear all ${n} starred ${n === 1 ? 'account' : 'accounts'} from your plan?`)) {
+    clearPlan()
+  }
+}
+
 function place(a: { sold_to_city: string | null; sold_to_state: string | null }) {
   return [humanize(a.sold_to_city), a.sold_to_state]
     .filter((v) => v && v !== '—')
@@ -216,7 +404,7 @@ function goalAmounts(g: AccountGoalProgress): string {
            count is a different denominator — showing both would read as a
            discrepancy. The table has its own footer count. -->
       <span
-        v-if="!goalMode && view === 'cards' && total"
+        v-if="sort === 'az' && !planMode && effectiveView === 'cards' && total"
         class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums"
       >
         {{ fmtCount(total) }} in book
@@ -236,9 +424,37 @@ function goalAmounts(g: AccountGoalProgress): string {
         />
       </label>
 
+      <!-- Sort chips: one list, five orders (see the script). Cards only —
+           the table sorts by its own column headers. -->
+      <div
+        v-if="effectiveView === 'cards' && !planMode"
+        class="flex flex-wrap gap-2"
+        role="radiogroup"
+        aria-label="Sort accounts"
+      >
+        <button
+          v-for="chip in SORT_CHIPS"
+          :key="chip.value"
+          type="button"
+          role="radio"
+          :aria-checked="sort === chip.value"
+          class="tap-target font-label inline-flex items-center px-3.5 text-[13px] font-semibold tracking-[0.1em] uppercase"
+          :class="
+            sort === chip.value
+              ? 'bg-ink text-canvas'
+              : 'border-line-2 text-ink-2 border bg-transparent'
+          "
+          @click="sort = chip.value"
+        >
+          {{ chip.label }}
+        </button>
+      </div>
+
       <!-- Filter chips, not checkboxes — thumb-sized, glove-proof. -->
       <div class="flex flex-wrap gap-2">
+        <!-- Not in My plan: a starred account is shown whatever its status. -->
         <button
+          v-if="!planMode"
           type="button"
           class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
           :class="
@@ -252,6 +468,22 @@ function goalAmounts(g: AccountGoalProgress): string {
           Active only
         </button>
         <button
+          v-if="planCount > 0 && effectiveView === 'cards'"
+          type="button"
+          class="tap-target font-label inline-flex items-center gap-1.5 px-4 text-[13px] font-semibold tracking-[0.1em] uppercase tabular-nums"
+          :class="
+            planMode
+              ? 'bg-ink text-canvas'
+              : 'border-line-2 text-ink-2 border bg-transparent'
+          "
+          :aria-pressed="planMode"
+          @click="planMode = !planMode"
+        >
+          <span aria-hidden="true">★</span> My plan ({{ planCount }})
+        </button>
+        <!-- In the table, Behind goal filters the same rows instead. -->
+        <button
+          v-if="effectiveView === 'table'"
           type="button"
           class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
           :class="
@@ -265,11 +497,10 @@ function goalAmounts(g: AccountGoalProgress): string {
           Behind goal
         </button>
 
-        <!-- Cards or columns. Visible on phones too — ?view=table deep links
-             land there, and without the toggle a phone would have no way
-             back to cards. The table itself scrolls inside its own box. -->
+        <!-- Cards or columns, from sm up. The table needs 72rem; on a phone
+             the page is cards whatever ?view says (see the script). -->
         <div
-          class="border-line ml-auto flex border"
+          class="border-line ml-auto hidden border sm:flex"
           role="group"
           aria-label="Layout"
         >
@@ -298,7 +529,7 @@ function goalAmounts(g: AccountGoalProgress): string {
          rows. Behind-goal here is a filter on the same table, not the
          ranked list — that list is the cards experience. -->
     <AsyncState
-      v-if="view === 'table'"
+      v-if="effectiveView === 'table'"
       :loading="tableQuery.isPending.value"
       :error="tableQuery.error.value"
       :has-data="tableQuery.data.value !== undefined"
@@ -403,6 +634,130 @@ function goalAmounts(g: AccountGoalProgress): string {
       </p>
     </AsyncState>
 
+    <!-- ── My plan ─────────────────────────────────────────────────────────
+         The starred accounts, in star order, and one link that drives them
+         in that order. -->
+    <section v-else-if="planMode" aria-label="My plan" class="space-y-2.5">
+      <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <p class="text-muted text-sm">Starred on this phone, in the order you starred them.</p>
+        <AppButton variant="ghost" @click="confirmClearPlan">Clear plan</AppButton>
+      </div>
+
+      <template v-if="routeUrl">
+        <a
+          :href="routeUrl"
+          target="_blank"
+          rel="noopener"
+          class="btn-primary w-full gap-2 tabular-nums"
+        >
+          <template v-if="routeStops.length > MAX_ROUTE_STOPS">
+            Route the first {{ MAX_ROUTE_STOPS }}
+          </template>
+          <template v-else>
+            Route {{ routeStops.length === 1 ? 'this stop' : `these ${routeStops.length}` }}
+          </template>
+        </a>
+        <p class="text-muted text-[13px] leading-snug">
+          Opens Google Maps, starting from where you are.
+          <template v-if="routeStops.length > 4">
+            A phone browser shows the first 4 stops; the Maps app shows them all.
+          </template>
+          <template v-if="missingAddresses > 0">
+            {{ missingAddresses }} {{ missingAddresses === 1 ? 'account has' : 'accounts have' }}
+            no street address on file and {{ missingAddresses === 1 ? 'is' : 'are' }} left out.
+          </template>
+        </p>
+      </template>
+      <p v-else-if="reachReady" class="text-muted text-[13px]">
+        None of these has a street address on file to route to.
+      </p>
+
+      <AsyncState
+        :loading="planAccounts.isPending.value"
+        :error="planAccounts.error.value"
+        :has-data="planAccounts.data.value !== undefined"
+        :updated-at="planAccounts.dataUpdatedAt.value"
+        :empty="planRows.length === 0"
+        empty-title="Nothing here"
+        :empty-body="
+          search
+            ? 'No starred account matches that search.'
+            : 'Starred accounts that have left your book drop off this list.'
+        "
+        :rows="3"
+        @retry="planAccounts.refetch()"
+      >
+        <ul class="divide-line border-line bg-surface divide-y border">
+          <AccountListCard
+            v-for="a in planRows"
+            :key="a.customer_key"
+            :customer-key="a.customer_key"
+            :name="a.customer_name"
+            :place="place(a)"
+            :last-order-date="a.last_order_date"
+            :status="statusOf(a)"
+            v-bind="moneyFor(a.customer_key)"
+            :reason="reasonFor(a.customer_key)"
+            :starred="inPlan(a.customer_key)"
+            @toggle-star="togglePlan(a.customer_key)"
+          />
+        </ul>
+      </AsyncState>
+    </section>
+
+    <!-- ── Ranked: Biggest / Slipping / Longest since order ─────────────── -->
+    <AsyncState
+      v-else-if="ranked"
+      :loading="tableQuery.isPending.value"
+      :error="tableQuery.error.value"
+      :has-data="tableQuery.data.value !== undefined"
+      :updated-at="tableQuery.dataUpdatedAt.value"
+      :empty="rankedRows.length === 0"
+      :empty-title="search ? 'No matches' : 'Nothing to show'"
+      :empty-body="
+        search
+          ? 'Try a shorter search, or turn off the active-only filter.'
+          : RANKED_EMPTY[sort]
+      "
+      :rows="6"
+      @retry="tableQuery.refetch()"
+    >
+      <p class="text-muted text-sm">{{ RANKED_CAPTION[sort] }}</p>
+
+      <ul class="divide-line border-line bg-surface mt-2.5 divide-y border">
+        <AccountListCard
+          v-for="a in rankedRows.slice(0, rankedShown)"
+          :key="a.customer_key"
+          :customer-key="a.customer_key"
+          :name="a.customer_name"
+          :place="place(a)"
+          :last-order-date="a.last_order_date"
+          :status="statusOf(a)"
+          :revenue-ytd="a.revenue_ytd"
+          :revenue-prior-ytd="a.revenue_prior_ytd"
+          :reason="reasonFor(a.customer_key)"
+          :starred="inPlan(a.customer_key)"
+          :star-disabled="planFull"
+          @toggle-star="togglePlan(a.customer_key)"
+        />
+      </ul>
+
+      <div class="mt-4 text-center">
+        <p class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase tabular-nums">
+          Showing {{ fmtCount(Math.min(rankedShown, rankedRows.length)) }} of
+          {{ fmtCount(rankedRows.length) }}
+        </p>
+        <AppButton
+          v-if="rankedShown < rankedRows.length"
+          variant="secondary"
+          class="mt-2"
+          @click="rankedShown += RANKED_PAGE"
+        >
+          Show more
+        </AppButton>
+      </div>
+    </AsyncState>
+
     <!-- ── Ranked by attainment ─────────────────────────────────────────── -->
     <AsyncState
       v-else-if="goalMode"
@@ -425,45 +780,34 @@ function goalAmounts(g: AccountGoalProgress): string {
       </p>
 
       <ul class="divide-line border-line bg-surface mt-2.5 divide-y border">
-        <li v-for="g in behindRows" :key="g.customer_key">
-          <RouterLink
-            :to="{ name: 'account', params: { customerKey: g.customer_key } }"
-            class="tap-target hover:bg-canvas flex flex-col justify-center gap-1 px-4 py-3.5"
-          >
-            <span class="flex items-baseline justify-between gap-3">
-              <span class="flex min-w-0 items-baseline gap-1.5">
-                <span class="text-ink truncate text-[17px] font-semibold">
-                  {{ g.customer_name || g.customer_key }}
-                </span>
-                <span
-                  v-if="g.customer_name"
-                  class="text-muted shrink-0 text-[13px] font-medium"
-                >
-                  ({{ g.customer_key }})
-                </span>
-              </span>
-              <span
-                class="u-display shrink-0 text-lg tabular-nums"
-                :class="g.on_track === false ? 'text-accent' : 'text-ink'"
-              >
-                {{ Math.round(g.attainment_pct) }}%
-              </span>
+        <AccountListCard
+          v-for="g in behindRows"
+          :key="g.customer_key"
+          :customer-key="g.customer_key"
+          :name="g.customer_name"
+          :place="place(g)"
+          :starred="inPlan(g.customer_key)"
+          :star-disabled="planFull"
+          @toggle-star="togglePlan(g.customer_key)"
+        >
+          <GoalProgressBar
+            height="sm"
+            :attainment-pct="g.attainment_pct"
+            :expected-pct="g.expected_pct"
+            :on-track="g.on_track"
+            :label="`${g.customer_name || g.customer_key} goal progress`"
+          />
+          <span class="text-muted truncate text-sm">
+            <span
+              class="font-semibold tabular-nums"
+              :class="g.on_track === false ? 'text-accent' : 'text-ink'"
+            >
+              {{ Math.round(g.attainment_pct) }}%
             </span>
-
-            <GoalProgressBar
-              height="sm"
-              :attainment-pct="g.attainment_pct"
-              :expected-pct="g.expected_pct"
-              :on-track="g.on_track"
-              :label="`${g.customer_name || g.customer_key} goal progress`"
-            />
-
-            <span class="text-muted truncate text-sm">
-              {{ goalAmounts(g) }}
-              <template v-if="paceLabel(g)"> · {{ paceLabel(g) }}</template>
-            </span>
-          </RouterLink>
-        </li>
+            · {{ goalAmounts(g) }}
+            <template v-if="paceLabel(g)"> · {{ paceLabel(g) }}</template>
+          </span>
+        </AccountListCard>
       </ul>
 
       <p
@@ -491,72 +835,43 @@ function goalAmounts(g: AccountGoalProgress): string {
       @retry="refetch()"
     >
       <ul class="divide-line border-line bg-surface divide-y border">
-        <li v-for="a in rows" :key="a.customer_key">
-          <RouterLink
-            :to="{ name: 'account', params: { customerKey: a.customer_key } }"
-            class="tap-target hover:bg-canvas flex flex-col justify-center gap-1 px-4 py-3.5"
+        <AccountListCard
+          v-for="a in rows"
+          :key="a.customer_key"
+          :customer-key="a.customer_key"
+          :name="a.customer_name"
+          :place="place(a)"
+          :last-order-date="a.last_order_date"
+          :status="statusOf(a)"
+          v-bind="moneyFor(a.customer_key)"
+          :reason="reasonFor(a.customer_key)"
+          :starred="inPlan(a.customer_key)"
+          :star-disabled="planFull"
+          @toggle-star="togglePlan(a.customer_key)"
+        >
+          <!-- Goal, when the rep has set one. One quiet line: the number
+               they committed to and whether it is on track. -->
+          <span
+            v-if="goalFor(a.customer_key)"
+            class="text-muted flex items-center gap-2 text-[13px]"
           >
-            <span class="flex items-baseline justify-between gap-3">
-              <!-- The ID is the disambiguator — a book has many "GUN SHOP"s.
-                   It sits outside the truncating name span so a long name
-                   clips itself rather than the one field that tells two
-                   look-alike accounts apart. -->
-              <span class="flex min-w-0 items-baseline gap-1.5">
-                <span class="text-ink truncate text-[17px] font-semibold">
-                  {{ a.customer_name || a.customer_key }}
-                </span>
-                <span
-                  v-if="a.customer_name"
-                  class="text-muted shrink-0 text-[13px] font-medium"
-                >
-                  ({{ a.customer_key }})
-                </span>
-              </span>
-              <!-- The rep's own write-off outranks the ERP flag: an account
-                   can be both, and "you deactivated this" is the label that
-                   explains why it's off the default list. -->
-              <span
-                v-if="a.deactivated_at"
-                class="border-line text-muted font-label shrink-0 border px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.1em] uppercase"
-              >
-                Deactivated
-              </span>
-              <span
-                v-else-if="a.active_flag !== 'Y'"
-                class="border-line text-muted font-label shrink-0 border px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.1em] uppercase"
-              >
-                Inactive
-              </span>
-            </span>
-            <span class="text-muted truncate text-sm">
-              <template v-if="place(a)">{{ place(a) }} · </template>
-              Last order {{ daysAgo(a.last_order_date) }}
-            </span>
-
-            <!-- Goal, when the rep has set one. One quiet line: the number
-                 they committed to and whether it is on track. -->
+            <GoalProgressBar
+              height="sm"
+              class="max-w-24 shrink-0"
+              :attainment-pct="goalFor(a.customer_key)!.attainment_pct"
+              :expected-pct="goalFor(a.customer_key)!.expected_pct"
+              :on-track="goalFor(a.customer_key)!.on_track"
+              :label="`${a.customer_name || a.customer_key} goal progress`"
+            />
             <span
-              v-if="goalFor(a.customer_key)"
-              class="text-muted flex items-center gap-2 text-[13px]"
+              class="truncate tabular-nums"
+              :class="goalFor(a.customer_key)!.on_track === false ? 'text-accent font-semibold' : ''"
             >
-              <GoalProgressBar
-                height="sm"
-                class="max-w-24 shrink-0"
-                :attainment-pct="goalFor(a.customer_key)!.attainment_pct"
-                :expected-pct="goalFor(a.customer_key)!.expected_pct"
-                :on-track="goalFor(a.customer_key)!.on_track"
-                :label="`${a.customer_name || a.customer_key} goal progress`"
-              />
-              <span
-                class="truncate tabular-nums"
-                :class="goalFor(a.customer_key)!.on_track === false ? 'text-accent font-semibold' : ''"
-              >
-                {{ Math.round(goalFor(a.customer_key)!.attainment_pct) }}% of
-                {{ money(goalFor(a.customer_key)!.target_amount) }}
-              </span>
+              {{ Math.round(goalFor(a.customer_key)!.attainment_pct) }}% of
+              {{ money(goalFor(a.customer_key)!.target_amount) }}
             </span>
-          </RouterLink>
-        </li>
+          </span>
+        </AccountListCard>
       </ul>
 
       <!-- Always says how much of the result set is on screen; a paged list
