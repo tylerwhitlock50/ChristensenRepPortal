@@ -22,7 +22,11 @@
   ----
   The function restated VERBATIM from its latest definition
   (20260901190100_rollup_restore.sql) with one kind of change: each of the
-  four `truncate erp.X;` is now `delete from erp.X;`. DELETE takes ROW
+  four `truncate erp.X;` is now `delete from erp.X;`. (Plus, first, a
+  SHARE ROW EXCLUSIVE lock on the four rollups — the old exclusive lock
+  serialized two concurrent refreshes for free; DELETE does not, and the
+  second run's INSERT would hit the first one's rows on the primary key.
+  Readers' ACCESS SHARE does not conflict with it.) DELETE takes ROW
   EXCLUSIVE, which conflicts with no reader: until the function's
   transaction commits, every query keeps seeing the previous rollup in
   full, then sees tonight's in full. Nothing else in the body moved — this
@@ -66,6 +70,16 @@ declare
   -- once so a refresh straddling midnight uses the same date everywhere.
   today constant date := current_date;
 begin
+  -- One refresh at a time. A second run started during this one (a
+  -- hand-run push.ps1 or SQL-editor call during the scheduled load) waits
+  -- here, then clears and rebuilds what this one committed. Without the
+  -- lock its DELETE skipped rows this run had just inserted and its INSERT
+  -- collided with them on the primary key. SHARE ROW EXCLUSIVE conflicts
+  -- with itself and with writers, never with a reader's ACCESS SHARE.
+  lock table erp.agg_account_rollup, erp.agg_sku_year, erp.agg_customer_month,
+             erp.agg_sku_month
+    in share row exclusive mode;
+
   ------------------------------------------------------------------------
   -- 1. Account rollup. When you add a column to erp.agg_account_rollup,
   --    add it HERE and run supabase/tests/20260901_rollup_restore.sql.
@@ -236,7 +250,8 @@ $$;
 comment on function public.refresh_territory_rollups() is
   'Rebuilds erp.agg_account_rollup, erp.agg_sku_year, erp.agg_customer_month '
   'and erp.agg_sku_month with DELETE + INSERT (never TRUNCATE: readers keep '
-  'the previous rollup until commit — 20261013150002). Called by the ETL as '
+  'the previous rollup until commit; one run at a time — 20261013150002). '
+  'Called by the ETL as '
   'its first post_load_sql step (etl/views.yml). Not callable by app roles — '
   'the ETL connects as postgres. THE SINGLE HOME OF EVERY WINDOW: when '
   'restating, diff the insert column list against the LIVE table and run '

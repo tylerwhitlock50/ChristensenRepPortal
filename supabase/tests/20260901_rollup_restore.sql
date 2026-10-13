@@ -27,6 +27,7 @@ declare
   c         record;
   insert_at int;
   seg       text;
+  lock_stmt text;
 begin
   -- T1: every erp.agg_* table is cleared by the body — with DELETE, which
   -- readers do not wait on, never with TRUNCATE (20261013150002).
@@ -34,10 +35,21 @@ begin
     raise exception 'T1 FAIL: refresh_territory_rollups() still truncates — use delete from, see 20261013150002';
   end if;
 
+  -- T1b: one refresh at a time — every rollup is locked SHARE ROW
+  -- EXCLUSIVE up front (20261013150002), or two overlapping runs collide
+  -- on the primary keys.
+  lock_stmt := substring(body from '(?i)lock\s+table\s+[^;]*?in\s+share\s+row\s+exclusive\s+mode');
+  if lock_stmt is null then
+    raise exception 'T1b FAIL: refresh_territory_rollups() takes no share row exclusive lock on the rollups';
+  end if;
+
   for t in
     select tablename from pg_tables
     where schemaname = 'erp' and tablename like 'agg\_%' order by 1
   loop
+    if lock_stmt !~* ('erp\.' || t.tablename || '\M') then
+      raise exception 'T1b FAIL: the refresh does not lock erp.%', t.tablename;
+    end if;
     if body !~* ('delete\s+from\s+erp\.' || t.tablename || '\s*;') then
       raise exception 'T1 FAIL: refresh_territory_rollups() never clears erp.% (expected: delete from erp.%;)', t.tablename, t.tablename;
     end if;
