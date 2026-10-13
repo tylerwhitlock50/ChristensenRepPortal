@@ -69,6 +69,14 @@
       BEFORE the per-rep cap, and this function filters them again before
       slicing (the same rule, for a database that still has 021's version),
       so a repeat call sees the next accounts, not the same top N;
+    - every account this function finishes — generated, cached (unchanged),
+      insufficient or failed — is stamped in public.ai_batch_checks, which
+      ai_batch_targets() also leaves out for 20 hours. Without it an
+      unchanged or failing account wrote nothing, kept its rep's top slots
+      on every repeat call, and a failing one was paid for again each time.
+      The reply's `checked` counts those stamps, and the ETL keeps calling
+      while `generated + checked > 0`: a call that only confirmed unchanged
+      accounts still moved down the list;
     - `max_accounts` caps PAID generations per call, not accounts looked at:
       an unchanged account comes back 'cached' for the price of its reads
       and does not use up the call, so a run of unchanged accounts at the
@@ -227,6 +235,29 @@ async function runPool(
 }
 
 /**
+ * Remember that tonight's run looked at this account, whatever came of it
+ * (ai_batch_checks, 20261013140000) — see the header. False when the stamp
+ * could not be written (a database without the table): the reply's
+ * `checked` then stays 0 and the ETL repeats on `generated` alone, as
+ * before, instead of re-reading the same accounts eight times.
+ */
+async function markChecked(
+  client: ReturnType<typeof serviceClient>,
+  customerKey: string,
+  outcome: Outcome,
+): Promise<boolean> {
+  const { error } = await client.from('ai_batch_checks').upsert(
+    { customer_key: customerKey, outcome, checked_at: new Date().toISOString() },
+    { onConflict: 'customer_key' },
+  )
+  if (error) {
+    console.warn('batch: could not stamp ai_batch_checks', customerKey, error)
+    return false
+  }
+  return true
+}
+
+/**
  * Drop targets whose summary is younger than MIN_AGE_HOURS, BEFORE the
  * cap: 20261013140000's ai_batch_targets() already does, 021's did not,
  * and without this a repeat call against the old function would spend its
@@ -291,19 +322,34 @@ async function handle(req: Request): Promise<Response> {
   const keys = await withoutFresh(client, ranked)
 
   const budget: Budget = { paid: 0, cap, deadline: Date.parse(started) + TIME_BUDGET_MS }
+  let checked = 0
   const { taken, ...tally } = await runPool(
     keys,
-    (k) => generateFor(client, k, budget),
+    async (k) => {
+      // 'failed' unless generateFor returns: a throw is stamped too, so a
+      // broken account is not paid for again by tonight's next call.
+      let outcome: Outcome = 'failed'
+      try {
+        outcome = await generateFor(client, k, budget)
+        return outcome
+      } finally {
+        // Deferred (no allowance left) and skipped (fresh) are not done.
+        if (outcome !== 'deferred' && outcome !== 'skipped') {
+          if (await markChecked(client, k, outcome)) checked += 1
+        }
+      }
+    },
     CONCURRENCY,
     budget,
   )
 
-  // `generated` is what the ETL's repeat_until_idle reads: 0 means this call
-  // found nothing left worth paying for.
+  // `generated + checked` is what the ETL's repeat_until_idle reads: 0 means
+  // this call found nothing left to look at.
   const summary = {
     targets: ranked.length,
     fresh: ranked.length - keys.length,
     attempted: taken,
+    checked,
     ...tally,
   }
   // Never let a cap silently look like full coverage.

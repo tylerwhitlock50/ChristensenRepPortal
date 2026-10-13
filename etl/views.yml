@@ -115,8 +115,10 @@ post_load_sql:
 # Small calls, repeated: each call pays for at most max_accounts briefings
 # (and stops starting new ones after ~75 s), so one request stays well inside
 # the Edge Function time limit. repeat_until_idle calls again while the reply
-# says generated > 0, up to 8 calls (120 briefings) a night. Runs after the
-# etl:run row is logged, so the freshness stamp never waits on it.
+# says generated + checked > 0 (checked: accounts looked at and found
+# unchanged, too thin or failing — stamped so the next call moves on), up to
+# 8 calls (120 briefings) a night. Runs after the etl:run row is logged, so
+# the freshness stamp never waits on it.
 post_load_http:
   - function: ai-summary-batch
     body: { per_rep: 5, max_accounts: 15 }

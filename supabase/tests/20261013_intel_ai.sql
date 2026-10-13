@@ -151,6 +151,35 @@ select pg_temp.assert(
   = array['IA-A3','IA-B1'],
   'a repeat call makes progress: A2 is now fresh, so rep A''s slot goes to A3');
 
+-- An account the batch looked at and left alone (cached: unchanged since
+-- its old summary) writes no ai_summaries row; its ai_batch_checks stamp
+-- is what moves the next call on to the account after it.
+reset role;
+insert into public.ai_batch_checks (customer_key, outcome)
+values ('IA-A3', 'cached');
+-- Last night's check (over 20 hours old) does not hide an account tonight.
+insert into public.ai_batch_checks (customer_key, outcome, checked_at)
+values ('IA-B1', 'failed', now() - interval '23 hours');
+select pg_temp.become_service();
+select pg_temp.assert(
+  (select array_agg(customer_key order by customer_key)
+     from public.ai_batch_targets(1) where customer_key like 'IA-%')
+  is not distinct from array['IA-B1'],
+  'a checked-tonight account (A3, cached) is done for tonight; yesterday''s '
+  'check on B1 is not');
+
+-- _local_harness_grants.sql grants every public table to authenticated
+-- after the migrations run; restate the migration's revoke first.
+reset role;
+revoke all on public.ai_batch_checks from anon, authenticated, public;
+select pg_temp.assert(
+  (select relrowsecurity from pg_class where oid = 'public.ai_batch_checks'::regclass)
+  and not has_table_privilege('authenticated', 'public.ai_batch_checks', 'select')
+  and not has_table_privilege('anon', 'public.ai_batch_checks', 'select')
+  and has_table_privilege('service_role', 'public.ai_batch_checks', 'insert')
+  and has_table_privilege('service_role', 'public.ai_batch_checks', 'update'),
+  'ai_batch_checks: RLS on, no app grant, the batch (service_role) can upsert');
+
 -- Job only. _local_harness_grants.sql grants every public function to
 -- authenticated after the migrations run; restate the migration's revoke
 -- (the dim_part pattern below) and prove a rep's call is refused.

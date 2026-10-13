@@ -87,13 +87,16 @@ def post_load_http(call):
     (TECH_STACK §4.2). A separate schedule is a second thing to drift.
 
     `repeat_until_idle: N` (optional, views.yml) calls the function again
-    while its JSON reply reports `generated > 0`, at most N calls in all. It
-    exists for ai-summary-batch, which now does a small bounded slice per call
-    so each request stays well inside the Edge Function time limit; the
-    function skips what it already wrote, so each repeat picks up the next
-    accounts and a reply of `generated: 0` means there is nothing left worth
-    paying for. Without the key: one call, exactly as before. A failed call
-    ends the loop — the next night picks up the rest.
+    while its JSON reply reports progress — `generated + checked > 0` — at
+    most N calls in all. It exists for ai-summary-batch, which does a small
+    bounded slice per call so each request stays well inside the Edge
+    Function time limit; the function skips what it already wrote or looked
+    at tonight (`checked`: unchanged, too thin or failed accounts it stamped),
+    so each repeat picks up the next accounts and a reply with neither means
+    there is nothing left to look at. A function without `checked` (older
+    deploy) is judged on `generated` alone. Without the key: one call,
+    exactly as before. A failed call ends the loop — the next night picks up
+    the rest.
     """
     import json
     import urllib.error
@@ -137,10 +140,11 @@ def post_load_http(call):
         if attempt == max_calls:
             break
         try:
-            generated = int((json.loads(reply) or {}).get("generated") or 0)
+            parsed = json.loads(reply) or {}
+            progress = int(parsed.get("generated") or 0) + int(parsed.get("checked") or 0)
         except (ValueError, TypeError, AttributeError):
-            generated = 0
-        if generated <= 0:
+            progress = 0
+        if progress <= 0:
             break
 
 
