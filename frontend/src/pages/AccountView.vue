@@ -91,15 +91,15 @@ const flags = useFeatureFlags()
 /* The quick-action strip only offers chips whose target panels exist under
    the current flags. Summary is data-side and always available.
 
-   Every one of these six ends in a write, "summary" included — its card's
-   button caches to public.ai_summaries — so an admin viewing as a rep gets
+   The other five each end in a write, so an admin viewing as a rep gets
    none of them. The database would refuse anyway (20260816140000), but
    refusing after someone has filled in a visit survey is not the same as
-   not offering it. The link chips below are different: they write nothing,
-   and stay. */
+   not offering it. Summary stays: it only scrolls, and while viewing as a
+   rep the card it lands on shows the cached brief without its Summarize
+   button. The link chips below write nothing either, and stay too. */
 const quickActions = computed<QuickAction[]>(() => {
-  if (!session.canWrite) return []
   const list: QuickAction[] = ['summary']
+  if (!session.canWrite) return list
   if (flags.visits.value) list.push('visit', 'photo')
   if (flags.actionLogging.value) list.push('contact', 'note')
   if (flags.tasks.value) list.push('task')

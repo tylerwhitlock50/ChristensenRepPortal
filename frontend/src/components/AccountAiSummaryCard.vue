@@ -15,9 +15,12 @@ import { useAiSummary, useGenerateAiSummary } from '@/composables/useAiSummary'
  * scrolls here; it never generates either (a paid call).
  *
  * `canWrite` false (an admin viewing as a rep) hides the button: generating
- * caches the result to public.ai_summaries, and the database refuses that
- * write while impersonating (20260816140000) — the same reason the page
- * drops its write chips. The cached summary itself still shows.
+ * caches the result to public.ai_summaries and meters it in
+ * ai_usage_events, and the view-as trigger (20260816140000) refuses both
+ * writes. ai-account-summary would still make the paid call and hand back
+ * an uncached, unmetered brief — a write in all but name, so it goes the
+ * way of the page's other write chips. The cached summary itself still
+ * shows.
  *
  * The `footer` slot is for things that hang off the summary shown — rating
  * it, say. It renders only while there is a summary, and gets that row.
