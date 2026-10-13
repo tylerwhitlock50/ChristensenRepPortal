@@ -58,7 +58,8 @@ const newCount = computed(
 
 const hint = computed(() => {
   if (feed.usingFallback.value) return 'Orders, last 14 days'
-  if (newCount.value > 0) return `${count(newCount.value)} new since you last looked`
+  // Short: the card title shares its header row on a phone.
+  if (newCount.value > 0) return `${count(newCount.value)} new since last look`
   return 'Last 14 days'
 })
 
