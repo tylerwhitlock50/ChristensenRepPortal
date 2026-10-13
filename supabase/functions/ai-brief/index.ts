@@ -43,7 +43,7 @@ import {
   requirePost,
   userClient,
 } from '../_shared/supabase.ts'
-import { MODEL, callOpenAI, canonical, envInt, sha256Hex } from '../_shared/ai.ts'
+import { MODEL, callOpenAI, canonical, envInt, sha256Hex, wasBilled } from '../_shared/ai.ts'
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 import { TERRITORY_BRIEF_PROMPT, TERRITORY_BRIEF_VERSION } from './prompts.ts'
 import {
@@ -208,24 +208,37 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // Ledger every paid call, tolerantly — a failed usage insert must not
+  // discard a paid generation, but a silent skip would also unmeter the
+  // cap, so log loudly.
+  const ledger = async () => {
+    const usageInsert = await client
+      .from('ai_usage_events')
+      .insert({ user_id: caller.id, action: actionKey })
+    if (usageInsert.error) {
+      console.error('ai_usage_events insert failed', usageInsert.error)
+    }
+  }
+
   const promptJson = JSON.stringify(canonical(action.promptPayload(built, today)))
-  const reply = await callOpenAI(
-    action.systemPrompt,
-    `${action.userIntro}\n\n<context>\n${promptJson}\n</context>`,
-    action.responseFormat,
-  )
+  let reply: string
+  try {
+    reply = await callOpenAI(
+      action.systemPrompt,
+      `${action.userIntro}\n\n<context>\n${promptJson}\n</context>`,
+      action.responseFormat,
+    )
+  } catch (err) {
+    // Cut off, empty or refused: billed all the same, so it counts.
+    if (wasBilled(err)) await ledger()
+    throw err
+  }
+  // Before parsing: a reply parseOutput rejects (cut off mid-JSON) was paid
+  // for too.
+  await ledger()
   const { content, items } = action.parseOutput
     ? action.parseOutput(reply, built)
     : { content: reply, items: null }
-
-  // Ledger first, tolerantly — a failed usage insert must not discard a paid
-  // generation, but a silent skip would also unmeter the cap, so log loudly.
-  const usageInsert = await client
-    .from('ai_usage_events')
-    .insert({ user_id: caller.id, action: actionKey })
-  if (usageInsert.error) {
-    console.error('ai_usage_events insert failed', usageInsert.error)
-  }
 
   const row: BriefRow = {
     user_id: caller.id,

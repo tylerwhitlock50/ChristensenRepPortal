@@ -55,6 +55,7 @@ import {
   PROMPT_VERSION,
   type SummaryRow,
 } from '../_shared/aiSummary.ts'
+import { wasBilled } from '../_shared/ai.ts'
 
 /**
  * Re-exported so the prompt version stays importable from this entrypoint.
@@ -185,16 +186,26 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  const briefing = await callOpenAI(prepared.promptJson)
-
   // Ledger the paid call, tolerantly — a failed insert must not discard the
   // generation, but log loudly because it un-meters the cap.
-  const usageInsert = await client
-    .from('ai_usage_events')
-    .insert({ user_id: caller.id, action: 'account.summary' })
-  if (usageInsert.error) {
-    console.error('ai_usage_events insert failed', usageInsert.error)
+  const ledger = async () => {
+    const usageInsert = await client
+      .from('ai_usage_events')
+      .insert({ user_id: caller.id, action: 'account.summary' })
+    if (usageInsert.error) {
+      console.error('ai_usage_events insert failed', usageInsert.error)
+    }
   }
+
+  let briefing: Awaited<ReturnType<typeof callOpenAI>>
+  try {
+    briefing = await callOpenAI(prepared.promptJson)
+  } catch (err) {
+    // Cut off, empty or refused: billed all the same, so it counts.
+    if (wasBilled(err)) await ledger()
+    throw err
+  }
+  await ledger()
 
   const row: SummaryRow = {
     customer_key: customerKey,
