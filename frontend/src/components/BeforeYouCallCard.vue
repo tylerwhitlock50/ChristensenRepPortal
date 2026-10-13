@@ -93,8 +93,12 @@ const owed = computed(() =>
 )
 
 /* ---- bought before, in stock now --------------------------------------- */
-const REORDER_LIMIT = 3
-const reorders = useReorderCandidates(key, REORDER_LIMIT)
+/* Three rows shown, but read with the Ready to ship card's limit (10): one
+   query key, so opening that card further down is a cache hit rather than
+   a second call of the same function. */
+const REORDER_SHOWN = 3
+const reorders = useReorderCandidates(key, 10)
+const reorderRows = computed(() => reorders.rows.value.slice(0, REORDER_SHOWN))
 /* Hidden outright when the function is missing (a preview database without
    20261013100000) or there is nothing to say; a real failure still shows. */
 const showReorders = computed(
@@ -236,7 +240,7 @@ const nothingToSay = computed(
                    drops under its line, so the description and "Bought 6 in
                    Jul 2026 · 40 available" keep the full row. -->
               <li
-                v-for="r in reorders.rows.value"
+                v-for="r in reorderRows"
                 :key="r.part_key"
                 class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2"
               >
