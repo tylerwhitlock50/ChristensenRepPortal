@@ -33,6 +33,9 @@ const pwa = VitePWA({
   registerType: 'prompt',
   // lib/pwa.ts registers it, from main.ts.
   injectRegister: false,
+  // The manifest is fetched with cookies, so a password-protected Vercel
+  // preview can still be installed (same origin; changes nothing in prod).
+  useCredentials: true,
   includeAssets: ['favicon.svg', 'apple-touch-icon-180x180.png'],
   manifest: {
     name: 'Rep Portal',
