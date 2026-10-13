@@ -867,6 +867,82 @@ const getSkuSales: ToolDef = {
   },
 }
 
+/**
+ * 'yyyy-mm' for month `m` (0-based) of year `y`. `m` may run negative or past
+ * 11; Date normalises it.
+ */
+function monthKey(y: number, m: number): string {
+  const d = new Date(Date.UTC(y, m, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+/**
+ * How many months get_sales_summary always reads, whatever `months` asks
+ * for. The summary's furthest look-back is January of last year: 24 months
+ * including this one, in December. 25 is the tool's default `months` and
+ * leaves a month of slack.
+ */
+export const SALES_SUMMARY_MONTHS = 25
+
+/**
+ * The `summary` block of get_sales_summary, from report_sales_by_month rows
+ * (any order; months with no invoices absent). Pure, so the month arithmetic
+ * is testable.
+ *
+ * The rows must reach back SALES_SUMMARY_MONTHS. A prior-year figure summed
+ * from fewer months is not null, it is wrong: with only 13 months read,
+ * year_to_date_last_year was last October alone and the YTD comparison
+ * read +829%.
+ */
+export function summariseSalesMonths(rows: Row[], now: Date = new Date()) {
+  // Index by 'yyyy-mm' for the lookups below.
+  const byMonth = new Map<string, Row>()
+  for (const r of rows) byMonth.set(String(r.sales_month).slice(0, 7), r)
+  const rev = (key: string) => num(byMonth.get(key)?.revenue)
+
+  const year = now.getUTCFullYear()
+  const month = now.getUTCMonth() // 0-based
+
+  // Sum of the months from `fromMonth` (0-based) through `month` in `y`,
+  // null when none of them had invoices.
+  const span = (y: number, fromMonth: number): number | null => {
+    let total = 0
+    let seen = false
+    for (let m = fromMonth; m <= month; m++) {
+      const v = rev(monthKey(y, m))
+      if (v !== null) {
+        total += v
+        seen = true
+      }
+    }
+    return seen ? total : null
+  }
+
+  const thisMonth = rev(monthKey(year, month))
+  const lastMonth = rev(monthKey(year, month - 1))
+  const sameMonthLastYear = rev(monthKey(year - 1, month))
+  const quarterStart = month - (month % 3)
+  const qtd = span(year, quarterStart)
+  const qtdLastYear = span(year - 1, quarterStart)
+  const ytd = span(year, 0)
+  const ytdLastYear = span(year - 1, 0)
+
+  return {
+    this_month: money(thisMonth),
+    this_month_note: 'Partial — through the last nightly load (see whoami data_through).',
+    last_month: money(lastMonth),
+    same_month_last_year: money(sameMonthLastYear),
+    this_month_vs_last_year_pct:
+      thisMonth !== null && sameMonthLastYear ? pct(thisMonth - sameMonthLastYear, sameMonthLastYear) : null,
+    quarter_to_date: money(qtd),
+    quarter_to_date_last_year: money(qtdLastYear),
+    year_to_date: money(ytd),
+    year_to_date_last_year: money(ytdLastYear),
+    ytd_vs_last_year_pct:
+      ytd !== null && ytdLastYear ? pct(ytd - ytdLastYear, ytdLastYear) : null,
+  }
+}
+
 const getSalesSummary: ToolDef = {
   name: 'get_sales_summary',
   title: 'Sales by month',
@@ -890,8 +966,9 @@ const getSalesSummary: ToolDef = {
         maximum: 48,
         default: 25,
         description:
-          'How many months back, newest month included. 25 (the default) is ' +
-          'enough for every year-over-year figure in `summary`.',
+          'How many months of the `months` series to return, newest month ' +
+          'included. `summary` (this month, QTD, YTD and their prior-year ' +
+          'figures) is complete whatever this is.',
       },
     },
     additionalProperties: false,
@@ -900,69 +977,28 @@ const getSalesSummary: ToolDef = {
     const months = clampInt(args.months, 25, 1, 48)
     const key = str(args.customer_key)
 
+    // Always read enough for the summary, then return only the months asked
+    // for. At 25 or more (the default) that is everything read, exactly the
+    // function's answer. Fewer: the newest `months`, counted back from the
+    // same "this month" the summary uses.
+    const fetched = Math.max(months, SALES_SUMMARY_MONTHS)
     const result = await db.rpc('report_sales_by_month', {
       p_customer_key: key,
-      p_months: months,
+      p_months: fetched,
     })
     const rows = rowsOf(result, 'monthly sales')
 
-    // Index by 'yyyy-mm' for the summary lookups below.
-    const byMonth = new Map<string, Row>()
-    for (const r of rows) byMonth.set(String(r.sales_month).slice(0, 7), r)
-    const rev = (ym: string) => num(byMonth.get(ym)?.revenue)
-
     const now = new Date()
-    const ym = (y: number, m: number) => {
-      // m may run negative or past 11; Date normalises it.
-      const d = new Date(Date.UTC(y, m, 1))
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
-    }
-    const year = now.getUTCFullYear()
-    const month = now.getUTCMonth() // 0-based
-
-    // Sum of the months from `fromMonth` (0-based) through `month` in `y`,
-    // null when none of them are inside the requested window.
-    const span = (y: number, fromMonth: number): number | null => {
-      let total = 0
-      let seen = false
-      for (let m = fromMonth; m <= month; m++) {
-        const v = rev(ym(y, m))
-        if (v !== null) {
-          total += v
-          seen = true
-        }
-      }
-      return seen ? total : null
-    }
-
-    const thisMonth = rev(ym(year, month))
-    const lastMonth = rev(ym(year, month - 1))
-    const sameMonthLastYear = rev(ym(year - 1, month))
-    const quarterStart = month - (month % 3)
-    const qtd = span(year, quarterStart)
-    const qtdLastYear = span(year - 1, quarterStart)
-    const ytd = span(year, 0)
-    const ytdLastYear = span(year - 1, 0)
+    const since = monthKey(now.getUTCFullYear(), now.getUTCMonth() - (months - 1))
+    const series =
+      fetched === months ? rows : rows.filter((r) => String(r.sales_month).slice(0, 7) >= since)
 
     return {
       scope: key ?? 'whole book',
       months_requested: months,
-      summary: {
-        this_month: money(thisMonth),
-        this_month_note: 'Partial — through the last nightly load (see whoami data_through).',
-        last_month: money(lastMonth),
-        same_month_last_year: money(sameMonthLastYear),
-        this_month_vs_last_year_pct:
-          thisMonth !== null && sameMonthLastYear ? pct(thisMonth - sameMonthLastYear, sameMonthLastYear) : null,
-        quarter_to_date: money(qtd),
-        quarter_to_date_last_year: money(qtdLastYear),
-        year_to_date: money(ytd),
-        year_to_date_last_year: money(ytdLastYear),
-        ytd_vs_last_year_pct:
-          ytd !== null && ytdLastYear ? pct(ytd - ytdLastYear, ytdLastYear) : null,
-      },
+      summary: summariseSalesMonths(rows, now),
       // Oldest first, so a model can read the trend left to right.
-      months: rows.map((r) =>
+      months: series.map((r) =>
         compact({
           month: String(r.sales_month).slice(0, 7),
           revenue: money(r.revenue),
