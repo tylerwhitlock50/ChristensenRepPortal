@@ -107,15 +107,28 @@ const CADENCE_RE = /^Usually orders every (\d+) days? — (\d+) since the last o
 const TREND_RE = /^\$[\d,]+ trailing 12 months, (down|up) (\d+)% from last year$/i
 const VALUE_RE = /^\$([\d,]+) trailing 12 months$/i
 const MIX_DROPPED_RE = /^Bought (\d+) product (family|families) last year that they have not this year$/i
+const RECENCY_DAYS_RE = /^No contact logged in (\d+) days?$/i
+const RECENCY_NEVER_RE = /^No contact ever logged$/i
+/** account_signals value factor = revenue percentile × 100 of the WHOLE book (019). */
+const BIG_ACCOUNT_PERCENTILE = 75
 
 /**
  * A `why` trimmed for a chip. Sentence case and still a sentence — these
- * are read by people who skip dashboards, so "Down 31% from last year"
- * rather than "YoY −31%". Only the long forms are shortened; anything this
- * does not recognise (a reworded SQL sentence, a future factor) is shown as
- * written rather than guessed at.
+ * are read by people who skip dashboards, so "Down 31% over the last 12
+ * months" rather than "YoY −31%". Only the long forms are reworded; anything
+ * this does not recognise (a reworded SQL sentence, a future factor) is
+ * shown as written rather than guessed at.
+ *
+ * Two rules on the wording. A window is always named: the row beside the
+ * chip shows money for this year so far, and a bare "from last year" next
+ * to it read as the same comparison with a different number. And it is the
+ * analyst's voice, not a manager's: when the rep last called, never "no
+ * contact logged in N days".
+ *
+ * `value` is the factor's own value (for 'value': the account's revenue
+ * percentile across the whole book), when the caller has it.
  */
-export function reasonLabel(factor: string, why: string): string {
+export function reasonLabel(factor: string, why: string, value?: number | null): string {
   const text = why.trim()
   if (factor === 'cadence' && CADENCE_RE.test(text)) {
     // Already the shortest true version: the rhythm AND how late. Keep it.
@@ -124,11 +137,27 @@ export function reasonLabel(factor: string, why: string): string {
   if (factor === 'trend') {
     const m = TREND_RE.exec(text)
     // The dollar half repeats the value factor, which usually sits beside it.
-    if (m) return `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1).toLowerCase()} ${m[2]}% from last year`
+    // The window stays: trailing 12 months against the 12 before.
+    if (m) {
+      return `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1).toLowerCase()} ${m[2]}% over the last 12 months`
+    }
   }
   if (factor === 'value') {
     const m = VALUE_RE.exec(text)
-    if (m) return `$${m[1]} in the last 12 months`
+    // Why the size is a reason at all: it is one of the bigger accounts.
+    if (m) {
+      return value != null && value >= BIG_ACCOUNT_PERCENTILE
+        ? `One of the bigger accounts ($${m[1]} over 12 months)`
+        : `$${m[1]} over the last 12 months`
+    }
+  }
+  if (factor === 'recency') {
+    const m = RECENCY_DAYS_RE.exec(text)
+    if (m) {
+      const n = Number(m[1])
+      return `Last call, visit or email ${n === 0 ? 'today' : n === 1 ? '1 day ago' : `${n} days ago`}`
+    }
+    if (RECENCY_NEVER_RE.test(text)) return 'No calls, visits or emails on record'
   }
   if (factor === 'mix') {
     const m = MIX_DROPPED_RE.exec(text)
@@ -144,7 +173,7 @@ export function topReasons(raw: unknown, n = 2): ScoreReason[] {
     .map(([factor, f]) => ({
       factor,
       why: f.why,
-      label: reasonLabel(factor, f.why),
+      label: reasonLabel(factor, f.why, f.value),
       contribution: f.contribution ?? 0,
     }))
 }
@@ -183,6 +212,13 @@ const SAME_TOPIC: Record<ObservationChip['kind'], string | null> = {
  * observation taking the last slot when it says something the score does
  * not — typically "$14,000 past promise date", which no factor measures.
  * Never two chips about the same thing.
+ *
+ * One exception to "the score's reason wins": a 'decline' observation
+ * replaces the trend chip in place. Both say the account is down, but the
+ * row's money (and the Accounts card, and the brief) compare this year so
+ * far with the same days last year, which is the observation's window; the
+ * trend factor's 12-month percentage beside that money read as a second,
+ * different "vs last year" number.
  */
 export function rowChips(
   reasons: ScoreReason[],
@@ -197,7 +233,14 @@ export function rowChips(
   if (observation) {
     const topic = SAME_TOPIC[observation.kind]
     const covered = topic != null && reasons.some((r) => r.factor === topic)
-    if (!covered) {
+    const trendAt = observation.kind === 'decline' ? chips.findIndex((c) => c.key === 'trend') : -1
+    if (trendAt >= 0) {
+      chips[trendAt] = {
+        key: `obs-${observation.kind}`,
+        label: observation.chip,
+        detail: observation.chip,
+      }
+    } else if (!covered) {
       const obsChip = {
         key: `obs-${observation.kind}`,
         label: observation.chip,

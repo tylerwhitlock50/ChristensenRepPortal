@@ -125,7 +125,7 @@ t(
     {
       factor: 'value',
       why: '$48,000 trailing 12 months',
-      label: '$48,000 in the last 12 months',
+      label: 'One of the bigger accounts ($48,000 over 12 months)',
       contribution: 20.3,
     },
   ],
@@ -134,19 +134,27 @@ t('topReasons n=0 is empty', topReasons(FACTORS, 0), [])
 t('topReasons n=5 is all five', topReasons(FACTORS, 5).length, 5)
 
 t(
-  'trend: the dollar half goes (the value chip carries it)',
+  'trend: the dollar half goes, the 12-month window stays (the row beside it is this year so far)',
   reasonLabel('trend', '$48,000 trailing 12 months, down 31% from last year'),
-  'Down 31% from last year',
+  'Down 31% over the last 12 months',
 )
 t(
   'trend up reads up',
   reasonLabel('trend', '$1,200,000 trailing 12 months, up 4% from last year'),
-  'Up 4% from last year',
+  'Up 4% over the last 12 months',
 )
 t(
-  'value: "trailing" becomes "in the last"',
-  reasonLabel('value', '$1,250,000 trailing 12 months'),
-  '$1,250,000 in the last 12 months',
+  'value: says why size is a reason when the account is in the top quarter of the book',
+  reasonLabel('value', '$1,250,000 trailing 12 months', 92),
+  'One of the bigger accounts ($1,250,000 over 12 months)',
+)
+t(
+  'value: just the window and the money otherwise (or when the percentile is unknown)',
+  [
+    reasonLabel('value', '$40,000 trailing 12 months', 40),
+    reasonLabel('value', '$40,000 trailing 12 months'),
+  ],
+  ['$40,000 over the last 12 months', '$40,000 over the last 12 months'],
 )
 t(
   'mix dropped, plural',
@@ -160,7 +168,21 @@ t(
 )
 t('mix breadth passes through', reasonLabel('mix', 'Buying 1 product family'), 'Buying 1 product family')
 t('unconfident cadence passes through', reasonLabel('cadence', 'No order in 96 days'), 'No order in 96 days')
-t('recency passes through', reasonLabel('recency', 'No contact ever logged'), 'No contact ever logged')
+t(
+  'recency: when they last heard from the rep, not a compliance count',
+  [
+    reasonLabel('recency', 'No contact logged in 36 days'),
+    reasonLabel('recency', 'No contact logged in 1 days'),
+    reasonLabel('recency', 'No contact logged in 0 days'),
+    reasonLabel('recency', 'No contact ever logged'),
+  ],
+  [
+    'Last call, visit or email 36 days ago',
+    'Last call, visit or email 1 day ago',
+    'Last call, visit or email today',
+    'No calls, visits or emails on record',
+  ],
+)
 t(
   'an unrecognised sentence is shown as written',
   reasonLabel('trend', 'Something new the SQL says'),
@@ -188,11 +210,17 @@ t(
   ['cadence', 'value'],
 )
 t(
-  'decline is covered when trend is among the reasons',
-  rowChips(topReasons({ trend: FACTORS.trend }), { kind: 'decline', chip: 'Down 50% vs this time last year' }).map(
-    (c) => c.key,
-  ),
-  ['trend'],
+  'decline replaces the trend chip in place: one "vs last year" number, in the row money\'s window',
+  rowChips(topReasons({ cadence: FACTORS.cadence, trend: FACTORS.trend }), {
+    kind: 'decline',
+    chip: 'Down 68% vs this time last year',
+  }).map((c) => c.label),
+  ['Usually orders every 34 days — 96 since the last one', 'Down 68% vs this time last year'],
+)
+t(
+  'without a decline observation the trend chip keeps its own window',
+  rowChips(topReasons({ trend: FACTORS.trend }), null).map((c) => c.label),
+  ['Down 31% over the last 12 months'],
 )
 t(
   'decline adds a chip when trend is not a reason',
