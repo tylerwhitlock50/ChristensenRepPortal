@@ -99,6 +99,12 @@ const pending = ref<PendingCall | null>(load())
 const sheetOpen = ref(false)
 /** When the rep left the app after the tap; null while they are here. */
 let leftAt: number | null = null
+/**
+ * The attempt came out of storage: this page load began mid-call, so the
+ * rep has already been away. Only such an attempt is offered without a
+ * return having been seen.
+ */
+let restored = pending.value !== null
 let listening = false
 /**
  * The mounted sheet's handlers. The document listeners are added once per
@@ -111,6 +117,7 @@ function clearPending() {
   pending.value = null
   sheetOpen.value = false
   leftAt = null
+  restored = false
   save(null)
 }
 
@@ -154,6 +161,7 @@ export function useQuickCallLog() {
       at: Date.now(),
     }
     leftAt = null
+    restored = false
     error.value = ''
     save(pending.value)
   }
@@ -192,18 +200,27 @@ export function useQuickCallLog() {
       window.addEventListener('blur', () => active?.onLeave())
       window.addEventListener('focus', () => active?.onReturn())
     }
-    if (pending.value && enabled.value) offerIfDue(session.user?.id)
+    recheckRestored()
   }
 
   function uninstall() {
     if (active === handlers) active = null
   }
 
-  /** The flags load after boot; a restored attempt waits for them. */
+  /**
+   * The log just became available (the flags loaded after boot, or the
+   * phone is back online): finish what happened while it was not. A
+   * restored attempt is asked about now; a return from the dialler that
+   * came while the log was off is handled as the return it was. A tap the
+   * rep has not left the app since is left alone — no sheet out of nowhere.
+   */
   function recheckRestored() {
-    if (pending.value && enabled.value && !sheetOpen.value && leftAt == null) {
-      offerIfDue(session.user?.id)
+    if (!pending.value || !enabled.value || sheetOpen.value) return
+    if (leftAt != null) {
+      if (document.visibilityState === 'visible') onReturn()
+      return
     }
+    if (restored) offerIfDue(session.user?.id)
   }
 
   async function logOutcome(outcome: CallOutcome, remind: boolean) {
