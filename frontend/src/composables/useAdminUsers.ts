@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { FunctionsHttpError } from '@supabase/supabase-js'
+import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
 import type { Tables } from '@/types/database.types'
@@ -126,10 +126,81 @@ export function useCreateUser() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.admin.users() })
+      void qc.invalidateQueries({ queryKey: qk.admin.unmappedReps() })
       void qc.invalidateQueries({ queryKey: qk.admin.activity() })
       void qc.invalidateQueries({ queryKey: qk.admin.execution() })
     },
   })
+}
+
+/* ---- reps who have no account yet ---------------------------------------- */
+
+/** One row from public.admin_unmapped_reps() (20261013170000). */
+export interface UnmappedRep {
+  sales_rep_key: string
+  sales_rep_name: string | null
+  /** Lower-cased and trimmed by the function; null when the ERP has none. */
+  sales_rep_email: string | null
+  vendor_id: string | null
+  sales_rep_type: string | null
+  customer_count: number
+  /** WEB / HOUSE / the ETL's own flags — not a person, never gets an account. */
+  is_placeholder: boolean
+  /** Set when a profile already carries this email: creating would 409. */
+  email_profile_user_id: string | null
+  email_profile_name: string | null
+}
+
+/** 20261013170000 lands after database.types.ts was last generated — same
+ *  untyped-handle convention as useViewAs.ts; delete after regenerating. */
+const db = supabase as unknown as SupabaseClient
+
+/**
+ * ERP reps whose sales_rep_key is on no profile, with the email the ERP has
+ * for them. The function returns nothing to a non-admin, so a wrong caller
+ * sees an empty list, not an error.
+ */
+export function useUnmappedReps() {
+  return useQuery({
+    queryKey: qk.admin.unmappedReps(),
+    staleTime: 60_000,
+    queryFn: async (): Promise<UnmappedRep[]> => {
+      const { data, error } = await db.rpc('admin_unmapped_reps')
+      if (error) throw error
+      return ((data ?? []) as UnmappedRep[]).map((r) => ({
+        ...r,
+        customer_count: Number(r.customer_count ?? 0),
+      }))
+    },
+  })
+}
+
+/* ---- password generation ------------------------------------------------- */
+
+/**
+ * No 0/O, 1/l/I: the admin reads this out or pastes it into an email, and
+ * the rep types it from a phone screen. 57 symbols × 16 places is ~93 bits,
+ * well past anything a password policy asks for.
+ */
+const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+export const GENERATED_PASSWORD_LENGTH = 16
+
+/** A random temporary password, from the browser's CSPRNG. */
+export function generatePassword(length = GENERATED_PASSWORD_LENGTH): string {
+  const n = PASSWORD_ALPHABET.length
+  // Rejection sampling so every symbol is equally likely: a plain `byte % n`
+  // would favour the first (256 mod n) symbols.
+  const limit = 256 - (256 % n)
+  const out: string[] = []
+  const bytes = new Uint8Array(length * 2)
+  while (out.length < length) {
+    crypto.getRandomValues(bytes)
+    for (const b of bytes) {
+      if (b < limit) out.push(PASSWORD_ALPHABET[b % n]!)
+      if (out.length === length) break
+    }
+  }
+  return out.join('')
 }
 
 export interface AdminUpdateUserResult {

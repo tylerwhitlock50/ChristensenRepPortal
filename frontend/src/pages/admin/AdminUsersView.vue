@@ -11,11 +11,14 @@ import { computed, ref } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useSessionStore } from '@/stores/session'
 import {
+  generatePassword,
   useAdminUpdateUser,
   useCreateUser,
   useProfiles,
+  useUnmappedReps,
   useUpdateProfile,
   type AdminProfile,
+  type UnmappedRep,
 } from '@/composables/useAdminUsers'
 import { useRepActivity } from '@/composables/useActivity'
 import DataGrid from '@/components/DataGrid.vue'
@@ -25,7 +28,7 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import ViewAsCard from '@/components/admin/ViewAsCard.vue'
 import { ROLES, type Role } from '@/types/domain'
-import { daysAgo } from '@/lib/format'
+import { count, daysAgo, humanize } from '@/lib/format'
 
 const MIN_PASSWORD_LENGTH = 12
 
@@ -73,6 +76,100 @@ const createdNotice = ref('')
 
 const create = useCreateUser()
 
+function regeneratePassword() {
+  cPassword.value = generatePassword()
+}
+
+/* ---- reps without an account -------------------------------------------- */
+const unmapped = useUnmappedReps()
+const showIdleReps = ref(false)
+
+/** Placeholders are never people; reps with no accounts are hidden until asked. */
+const unmappedRows = computed(() => {
+  const rows = (unmapped.data.value ?? []).filter((r) => !r.is_placeholder)
+  return showIdleReps.value ? rows : rows.filter((r) => r.customer_count > 0)
+})
+const idleRepCount = computed(
+  () =>
+    (unmapped.data.value ?? []).filter((r) => !r.is_placeholder && r.customer_count === 0)
+      .length,
+)
+
+/** Why a row's "Create account" is unavailable, or null when it is fine. */
+function repBlocker(rep: UnmappedRep): string | null {
+  if (rep.email_profile_user_id) {
+    return `${rep.email_profile_name || 'An existing user'} already has this email — set the rep code on that user instead.`
+  }
+  if (!rep.sales_rep_email) return 'No email in the ERP — add one there, or create the user by hand.'
+  return null
+}
+
+function existingProfileFor(rep: UnmappedRep): AdminProfile | null {
+  if (!rep.email_profile_user_id) return null
+  return (
+    (profiles.data.value ?? []).find((p) => p.user_id === rep.email_profile_user_id) ?? null
+  )
+}
+
+/** Opens the create panel with everything the ERP already knows filled in. */
+function startFromRep(rep: UnmappedRep) {
+  cEmail.value = rep.sales_rep_email ?? ''
+  cFullName.value = humanize(rep.sales_rep_name) || rep.sales_rep_key
+  cRole.value = 'rep'
+  cRepKey.value = rep.sales_rep_key
+  cVendorId.value = ''
+  cPassword.value = generatePassword()
+  createError.value = ''
+  createdCredentials.value = null
+  creating.value = true
+}
+
+/* ---- the one-time credentials hand-off ---------------------------------- */
+interface IssuedCredentials {
+  email: string
+  password: string
+  fullName: string
+}
+const createdCredentials = ref<IssuedCredentials | null>(null)
+const copiedCredentials = ref(false)
+
+const credentialsText = computed(() => {
+  const c = createdCredentials.value
+  if (!c) return ''
+  return [
+    `Sign in: ${window.location.origin}`,
+    `Email: ${c.email}`,
+    `Temporary password: ${c.password}`,
+  ].join('\n')
+})
+
+/** A mailto: draft the admin sends from their own mail client — nothing is
+ *  emailed by the app (there is no mailer, and Outlook's link scanner would
+ *  eat a one-shot link anyway). */
+const credentialsMailto = computed(() => {
+  const c = createdCredentials.value
+  if (!c) return ''
+  const firstName = c.fullName.trim().split(/\s+/)[0] || 'there'
+  const subject = 'Your Christensen Arms sales portal login'
+  const body =
+    `Hi ${firstName},\n\n` +
+    `Your sales portal account is ready.\n\n` +
+    `${credentialsText.value}\n\n` +
+    `Please change the password after your first sign-in — it's under Help in the portal.\n`
+  return `mailto:${encodeURIComponent(c.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+})
+
+async function copyCredentials() {
+  if (!credentialsText.value) return
+  try {
+    await navigator.clipboard.writeText(credentialsText.value)
+    copiedCredentials.value = true
+    window.setTimeout(() => (copiedCredentials.value = false), 2000)
+  } catch {
+    copiedCredentials.value = false
+  }
+}
+
 function resetCreate() {
   cEmail.value = ''
   cPassword.value = ''
@@ -113,6 +210,14 @@ async function submitCreate() {
     })
     createWarnings.value = result.warnings ?? []
     createdNotice.value = `${result.email} can sign in now.`
+    // Shown once, here, and nowhere else: the password is not stored
+    // anywhere readable after this.
+    createdCredentials.value = {
+      email: result.email,
+      password: cPassword.value,
+      fullName: cFullName.value,
+    }
+    copiedCredentials.value = false
     resetCreate()
     creating.value = false
   } catch (e) {
@@ -252,13 +357,16 @@ async function setActive(active: boolean) {
         </label>
         <label class="block">
           <span class="u-label mb-1.5 block">Password</span>
-          <input
-            v-model="cPassword"
-            type="text"
-            autocomplete="new-password"
-            class="field"
-            :placeholder="`At least ${MIN_PASSWORD_LENGTH} characters`"
-          />
+          <span class="flex gap-2">
+            <input
+              v-model="cPassword"
+              type="text"
+              autocomplete="new-password"
+              class="field min-w-0 flex-1 font-mono"
+              :placeholder="`At least ${MIN_PASSWORD_LENGTH} characters`"
+            />
+            <AppButton variant="secondary" @click="regeneratePassword">Generate</AppButton>
+          </span>
         </label>
         <label class="block">
           <span class="u-label mb-1.5 block">Full name</span>
@@ -322,6 +430,121 @@ async function setActive(active: boolean) {
         {{ w }}
       </li>
     </ul>
+
+    <!-- The password, exactly once. Closing this is the only way it goes away. -->
+    <AppCard v-if="createdCredentials">
+      <template #header>
+        <div>
+          <h2 class="u-label text-ink">Send them their login</h2>
+          <p class="text-muted mt-1 text-[13px]">
+            {{ createdCredentials.fullName }} · shown once — it is not stored anywhere
+            you can read it back from.
+          </p>
+        </div>
+        <AppButton variant="ghost" @click="createdCredentials = null">Done</AppButton>
+      </template>
+      <dl class="grid gap-x-6 gap-y-2 text-[15px] sm:grid-cols-[auto_1fr]">
+        <dt class="u-label">Email</dt>
+        <dd class="text-ink break-all">{{ createdCredentials.email }}</dd>
+        <dt class="u-label">Password</dt>
+        <dd class="text-ink font-mono break-all select-all">{{ createdCredentials.password }}</dd>
+      </dl>
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        <AppButton variant="primary" @click="copyCredentials">
+          {{ copiedCredentials ? 'Copied' : 'Copy login details' }}
+        </AppButton>
+        <a
+          :href="credentialsMailto"
+          class="tap-target font-label text-ink border-ink hover:bg-ink hover:text-canvas inline-flex min-h-12 items-center rounded-[2px] border-[1.5px] px-4 text-[15px] font-semibold tracking-[0.12em] uppercase transition-colors"
+        >
+          Draft the email
+        </a>
+        <p class="text-muted text-[13px]">
+          Opens in your own mail client — the portal sends nothing.
+        </p>
+      </div>
+    </AppCard>
+
+    <!-- Reps the ERP knows that the portal doesn't -->
+    <AppCard>
+      <template #header>
+        <div>
+          <h2 class="u-label text-ink">Reps without an account</h2>
+          <p class="text-muted mt-1 text-[13px]">
+            Rep codes in the ERP that no user carries. Create the account from
+            the row and the email, name and rep code are filled in for you.
+          </p>
+        </div>
+        <AppButton
+          v-if="idleRepCount > 0"
+          variant="ghost"
+          @click="showIdleReps = !showIdleReps"
+        >
+          {{ showIdleReps ? 'Hide' : 'Show' }} {{ idleRepCount }} with no accounts
+        </AppButton>
+      </template>
+
+      <AsyncState
+        :loading="unmapped.isPending.value"
+        :error="unmapped.error.value"
+        :has-data="unmapped.data.value !== undefined"
+        :updated-at="unmapped.dataUpdatedAt.value"
+        :empty="unmappedRows.length === 0"
+        empty-title="Everyone is mapped"
+        :empty-body="
+          idleRepCount > 0
+            ? 'Every rep with accounts has a user. The rest have no accounts in the ERP.'
+            : 'Every rep code in the ERP is on a user.'
+        "
+        @retry="unmapped.refetch()"
+      >
+        <ul class="divide-line -mx-1 divide-y">
+          <li
+            v-for="rep in unmappedRows"
+            :key="rep.sales_rep_key"
+            class="flex flex-wrap items-center gap-x-4 gap-y-2 px-1 py-3"
+          >
+            <div class="min-w-0 flex-1 basis-56">
+              <p class="text-ink truncate font-semibold">
+                {{ humanize(rep.sales_rep_name) || rep.sales_rep_key }}
+              </p>
+              <p class="text-muted mt-0.5 text-[13px]">
+                {{ rep.sales_rep_key }}
+                <template v-if="rep.sales_rep_type"> · {{ rep.sales_rep_type }}</template>
+                · {{ count(rep.customer_count) }}
+                {{ rep.customer_count === 1 ? 'account' : 'accounts' }}
+              </p>
+            </div>
+            <div class="min-w-0 flex-1 basis-56">
+              <p v-if="rep.sales_rep_email" class="text-ink-2 truncate text-[15px]">
+                {{ rep.sales_rep_email }}
+              </p>
+              <p v-else class="text-muted text-[15px]">No email in the ERP</p>
+              <p v-if="repBlocker(rep)" class="text-muted mt-0.5 text-[13px]">
+                {{ repBlocker(rep) }}
+              </p>
+            </div>
+            <div class="shrink-0">
+              <AppButton
+                v-if="rep.email_profile_user_id && existingProfileFor(rep)"
+                variant="ghost"
+                @click="manage(existingProfileFor(rep)!)"
+              >
+                Open that user
+              </AppButton>
+              <AppButton
+                v-else
+                variant="secondary"
+                :disabled="repBlocker(rep) !== null"
+                @click="startFromRep(rep)"
+              >
+                Create account
+              </AppButton>
+            </div>
+          </li>
+        </ul>
+      </AsyncState>
+    </AppCard>
 
     <!-- The grid -->
     <AppCard>
