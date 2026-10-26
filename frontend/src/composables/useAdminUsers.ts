@@ -149,6 +149,34 @@ export interface UnmappedRep {
   /** Set when a profile already carries this email: creating would 409. */
   email_profile_user_id: string | null
   email_profile_name: string | null
+  /** An admin parked this rep in unmapped_rep_ignores (20261026120000). */
+  ignored: boolean
+  ignore_note: string | null
+}
+
+/**
+ * Ignore / restore a rep on the "Reps without an account" list. A row in
+ * unmapped_rep_ignores is the whole state: insert to ignore, delete to
+ * restore. Admin-only by RLS; the view-as trigger refuses both while
+ * viewing as a rep.
+ */
+export function useIgnoreRep() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: { salesRepKey: string; ignore: boolean; note?: string }) => {
+      const table = db.from('unmapped_rep_ignores')
+      const { error } = input.ignore
+        ? await table.insert({
+            sales_rep_key: input.salesRepKey,
+            note: input.note?.trim() || null,
+          })
+        : await table.delete().eq('sales_rep_key', input.salesRepKey)
+      if (error) throw new Error(error.message || 'Could not update the ignore list.')
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.admin.unmappedReps() })
+    },
+  })
 }
 
 /** 20261013170000 lands after database.types.ts was last generated — same

@@ -14,6 +14,7 @@ import {
   generatePassword,
   useAdminUpdateUser,
   useCreateUser,
+  useIgnoreRep,
   useProfiles,
   useUnmappedReps,
   useUpdateProfile,
@@ -82,18 +83,38 @@ function regeneratePassword() {
 
 /* ---- reps without an account -------------------------------------------- */
 const unmapped = useUnmappedReps()
+const ignoreRep = useIgnoreRep()
 const showIdleReps = ref(false)
+const showIgnoredReps = ref(false)
+const ignoreError = ref('')
 
-/** Placeholders are never people; reps with no accounts are hidden until asked. */
+/** Placeholders are never people. Ignored reps and reps with no accounts
+ *  are hidden until asked for, each behind its own toggle. */
 const unmappedRows = computed(() => {
-  const rows = (unmapped.data.value ?? []).filter((r) => !r.is_placeholder)
-  return showIdleReps.value ? rows : rows.filter((r) => r.customer_count > 0)
+  let rows = (unmapped.data.value ?? []).filter((r) => !r.is_placeholder)
+  if (!showIgnoredReps.value) rows = rows.filter((r) => !r.ignored)
+  if (!showIdleReps.value) rows = rows.filter((r) => r.customer_count > 0 || r.ignored)
+  return rows
 })
 const idleRepCount = computed(
   () =>
-    (unmapped.data.value ?? []).filter((r) => !r.is_placeholder && r.customer_count === 0)
-      .length,
+    (unmapped.data.value ?? []).filter(
+      (r) => !r.is_placeholder && !r.ignored && r.customer_count === 0,
+    ).length,
 )
+const ignoredRepCount = computed(
+  () => (unmapped.data.value ?? []).filter((r) => !r.is_placeholder && r.ignored).length,
+)
+
+/** Ignore = park the rep out of the list; restore = bring them back. */
+async function setIgnored(rep: UnmappedRep, ignore: boolean) {
+  ignoreError.value = ''
+  try {
+    await ignoreRep.mutateAsync({ salesRepKey: rep.sales_rep_key, ignore })
+  } catch (e) {
+    ignoreError.value = (e as Error).message
+  }
+}
 
 /** Why a row's "Create account" is unavailable, or null when it is fine. */
 function repBlocker(rep: UnmappedRep): string | null {
@@ -150,12 +171,20 @@ const credentialsMailto = computed(() => {
   const c = createdCredentials.value
   if (!c) return ''
   const firstName = c.fullName.trim().split(/\s+/)[0] || 'there'
-  const subject = 'Your Christensen Arms sales portal login'
+  const sender = (session.profile?.full_name ?? '').trim().split(/\s+/)[0] || ''
+  const subject = 'Your Christensen Arms field rep portal login'
   const body =
     `Hi ${firstName},\n\n` +
-    `Your sales portal account is ready.\n\n` +
-    `${credentialsText.value}\n\n` +
-    `Please change the password after your first sign-in — it's under Help in the portal.\n`
+    `Christensen Arms has been working on a field rep portal that we hope will give you ` +
+    `a better feel for your accounts and what's going on in your territory. It's live at:\n` +
+    `${credentialsText.value}\n` +
+    `Please change the password after your first sign-in — it's under Help in the portal.\n` +
+    `Once you're in, you'll be able to view account activity, see order history, track ` +
+    `what's moving in your territory, and view the ATS list. It's still a work in progress, ` +
+    `so we'd really value your feedback. If something's confusing, missing, or not working ` +
+    `right, let me know. Your input will help shape where we take it next.\n\n` +
+    `If you have any trouble logging in, just reply to this email and I'll get you sorted out.\n\n` +
+    `Thanks,\n${sender}\n`
   return `mailto:${encodeURIComponent(c.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
 })
 
@@ -475,13 +504,22 @@ async function setActive(active: boolean) {
             the row and the email, name and rep code are filled in for you.
           </p>
         </div>
-        <AppButton
-          v-if="idleRepCount > 0"
-          variant="ghost"
-          @click="showIdleReps = !showIdleReps"
-        >
-          {{ showIdleReps ? 'Hide' : 'Show' }} {{ idleRepCount }} with no accounts
-        </AppButton>
+        <div class="flex flex-wrap gap-2">
+          <AppButton
+            v-if="idleRepCount > 0"
+            variant="ghost"
+            @click="showIdleReps = !showIdleReps"
+          >
+            {{ showIdleReps ? 'Hide' : 'Show' }} {{ idleRepCount }} with no accounts
+          </AppButton>
+          <AppButton
+            v-if="ignoredRepCount > 0"
+            variant="ghost"
+            @click="showIgnoredReps = !showIgnoredReps"
+          >
+            {{ showIgnoredReps ? 'Hide' : 'Show' }} {{ ignoredRepCount }} ignored
+          </AppButton>
+        </div>
       </template>
 
       <AsyncState
@@ -524,25 +562,47 @@ async function setActive(active: boolean) {
                 {{ repBlocker(rep) }}
               </p>
             </div>
-            <div class="shrink-0">
-              <AppButton
-                v-if="rep.email_profile_user_id && existingProfileFor(rep)"
-                variant="ghost"
-                @click="manage(existingProfileFor(rep)!)"
-              >
-                Open that user
-              </AppButton>
-              <AppButton
-                v-else
-                variant="secondary"
-                :disabled="repBlocker(rep) !== null"
-                @click="startFromRep(rep)"
-              >
-                Create account
-              </AppButton>
+            <div class="flex shrink-0 items-center gap-2">
+              <template v-if="rep.ignored">
+                <AppBadge tone="neutral">Ignored</AppBadge>
+                <AppButton
+                  variant="ghost"
+                  :loading="ignoreRep.isPending.value"
+                  @click="setIgnored(rep, false)"
+                >
+                  Restore
+                </AppButton>
+              </template>
+              <template v-else>
+                <AppButton
+                  variant="ghost"
+                  :loading="ignoreRep.isPending.value"
+                  @click="setIgnored(rep, true)"
+                >
+                  Ignore
+                </AppButton>
+                <AppButton
+                  v-if="rep.email_profile_user_id && existingProfileFor(rep)"
+                  variant="ghost"
+                  @click="manage(existingProfileFor(rep)!)"
+                >
+                  Open that user
+                </AppButton>
+                <AppButton
+                  v-else
+                  variant="secondary"
+                  :disabled="repBlocker(rep) !== null"
+                  @click="startFromRep(rep)"
+                >
+                  Create account
+                </AppButton>
+              </template>
             </div>
           </li>
         </ul>
+        <p v-if="ignoreError" role="alert" class="text-danger mt-3 text-sm font-medium">
+          {{ ignoreError }}
+        </p>
       </AsyncState>
     </AppCard>
 
