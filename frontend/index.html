@@ -2,8 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- ?v= is a cache-buster, not a file: browsers key their favicon cache
+         on the URL and never revalidate it, so the RP monogram (b067e95)
+         stayed the purple template bolt in every tab that had seen it. Bump it
+         whenever favicon.svg changes, after `node scripts/render-icons.mjs`. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=2" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
