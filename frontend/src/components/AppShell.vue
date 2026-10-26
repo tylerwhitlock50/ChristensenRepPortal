@@ -125,6 +125,11 @@ const nav = computed<NavItem[]>(() => {
     // permanent tab rather than living inside one account's page.
     { to: { name: 'lookup' }, label: 'Find', icon: 'lookup' },
   ]
+  // A principal runs reps, not just accounts: their agency sits next to
+  // their own morning briefing. Admins find it under Admin → Agencies.
+  if (session.isPrincipal) {
+    items.splice(1, 0, { to: { name: 'agency' }, label: 'Agency', icon: 'agency' })
+  }
   if (flags.orders.value) {
     // Path, like Intel: stays lit on the writer, the detail, the queue.
     items.push({ to: '/orders', label: 'Orders', icon: 'orders' })
@@ -171,9 +176,12 @@ const nav = computed<NavItem[]>(() => {
   return items
 })
 
-// Admin and Sales Intel widen past 1024px — grids of SKUs earn the room.
+// Admin, Sales Intel and Agency widen past 1024px — grids earn the room.
 const wide = computed(
-  () => route.path.startsWith('/admin') || route.path.startsWith('/intel'),
+  () =>
+    route.path.startsWith('/admin') ||
+    route.path.startsWith('/intel') ||
+    route.path.startsWith('/agency'),
 )
 
 const initials = computed(() => {
@@ -476,6 +484,14 @@ async function signOut() {
               <rect x="5" y="4" width="14" height="17" />
               <path d="M9 2h6v4H9z" />
               <path d="M9 11h6M9 15h4" />
+            </template>
+            <!-- Three people: the reps a principal runs. -->
+            <template v-else-if="item.icon === 'agency'">
+              <circle cx="12" cy="7" r="3" />
+              <path d="M6.5 20a5.5 5.5 0 0 1 11 0" />
+              <circle cx="5" cy="10" r="2" />
+              <circle cx="19" cy="10" r="2" />
+              <path d="M2 18a3.5 3.5 0 0 1 3.5-3M22 18a3.5 3.5 0 0 0-3.5-3" />
             </template>
             <template v-else-if="item.icon === 'accounts'">
               <path d="M3 21h18" />

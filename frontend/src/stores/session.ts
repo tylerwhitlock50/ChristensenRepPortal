@@ -96,6 +96,21 @@ export const useSessionStore = defineStore('session', () => {
   const isAdmin = computed(() => role.value === 'admin')
   const isOrderEntry = computed(() => role.value === 'order_entry')
 
+  /**
+   * The agency (erp vendor id) the EFFECTIVE user is principal of, or null.
+   * Same source as the group-book branch of my_customer_keys(): the
+   * profile's rep_group_vendor_id, or the view-as target's. It only decides
+   * whether the Agency tab is offered — what the tab shows is scoped by
+   * agency_rep_activity() and RLS, never by this value.
+   */
+  const repGroupVendorId = computed<string | null>(() => {
+    const vendor = isViewingAs.value
+      ? acting.value?.target_rep_group_vendor_id
+      : profile.value?.rep_group_vendor_id
+    return vendor?.trim() || null
+  })
+  const isPrincipal = computed(() => role.value === 'rep' && repGroupVendorId.value !== null)
+
   /** The account menu is about YOUR account, so it keeps the real name. */
   const displayName = computed(
     () => profile.value?.full_name || user.value?.email || 'Signed in',
@@ -693,6 +708,8 @@ export const useSessionStore = defineStore('session', () => {
     role,
     isAdmin,
     isOrderEntry,
+    repGroupVendorId,
+    isPrincipal,
     realRole,
     isRealAdmin,
     isViewingAs,

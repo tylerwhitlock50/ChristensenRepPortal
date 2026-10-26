@@ -15,6 +15,8 @@ const tabs = computed(() => {
     { to: { name: 'admin-execution' }, label: 'Execution' },
     { to: { name: 'admin-goals' }, label: 'Goals' },
     { to: { name: 'admin-reports' }, label: 'Reports' },
+    // The page a principal sees, for any agency.
+    { to: { name: 'admin-agencies' }, label: 'Agencies' },
     { to: { name: 'admin-users' }, label: 'Users' },
   ]
   if (flags.recommendations.value) {

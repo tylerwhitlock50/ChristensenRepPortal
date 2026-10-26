@@ -188,7 +188,15 @@ function onExport() {
         @rows-change="visibleRows = $event"
       >
         <template #cell-rep_group_id="{ row }">
-          <span class="text-ink font-semibold">{{ row.rep_group_id }}</span>
+          <!-- Into the group's Agency page: its reps, as its principal sees them. -->
+          <RouterLink
+            v-if="row.rep_group_id !== '(No rep group)'"
+            :to="{ name: 'admin-agencies', query: { vendor: row.rep_group_id } }"
+            class="text-ink font-semibold underline-offset-2 hover:underline"
+          >
+            {{ row.rep_group_id }}
+          </RouterLink>
+          <span v-else class="text-ink font-semibold">{{ row.rep_group_id }}</span>
           <span class="text-muted block text-[13px]">{{ whoLabel(row) }}</span>
           <!-- Who signs in for this group. A group with revenue and nobody
                signed up is the row an admin needs to notice. -->
@@ -271,7 +279,14 @@ function onExport() {
         <template #card="{ row }">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <p class="text-ink truncate font-semibold">{{ row.rep_group_id }}</p>
+              <RouterLink
+                v-if="row.rep_group_id !== '(No rep group)'"
+                :to="{ name: 'admin-agencies', query: { vendor: row.rep_group_id } }"
+                class="text-ink block truncate font-semibold underline-offset-2 hover:underline"
+              >
+                {{ row.rep_group_id }}
+              </RouterLink>
+              <p v-else class="text-ink truncate font-semibold">{{ row.rep_group_id }}</p>
               <p class="text-muted mt-0.5 text-[15px]">{{ whoLabel(row) }}</p>
               <p class="text-muted mt-0.5 text-[15px] tabular-nums">
                 {{ money(row.revenue_ytd) }} ·

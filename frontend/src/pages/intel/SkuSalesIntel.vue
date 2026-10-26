@@ -9,6 +9,7 @@ import {
 } from '@/composables/useIntel'
 import TerritoryAccountPicker from './TerritoryAccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
+import SkuProspectsSheet from '@/components/SkuProspectsSheet.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
@@ -27,6 +28,10 @@ import { count, money, shortDate } from '@/lib/format'
  * is labelled "all of" and never set against this year as a percentage: in
  * October a flat territory read "−20% vs last year" because ten months were
  * being compared with twelve.
+ *
+ * "My territory" rolls the book up per SKU, which hides who bought it — so
+ * each row opens the dealers who did (the ATS list's sheet), with their rep
+ * when the book spans several, as a principal's does.
  */
 const mode = ref<'territory' | 'account'>('territory')
 const accountKey = ref('')
@@ -55,6 +60,14 @@ const totals = computed(() => {
   return { rev, revLY, qty, skus: rows.filter((r) => r.qtyThisYear > 0).length }
 })
 
+/* ---- who bought it --------------------------------------------------------- */
+const buyersPart = ref<SkuPivotRow | null>(null)
+const buyersOpen = ref(false)
+function showBuyers(row: SkuPivotRow) {
+  buyersPart.value = row
+  buyersOpen.value = true
+}
+
 const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
   { id: 'part_id', header: 'SKU', accessorKey: 'part_id', meta: { filter: 'text' } },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
@@ -75,6 +88,11 @@ const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
   { id: 'qtyLastYear', header: `Qty all ${yearNow - 1}`, accessorKey: 'qtyLastYear' },
   { id: 'revenueLastYear', header: `Rev all ${yearNow - 1}`, accessorKey: 'revenueLastYear' },
   { id: 'lastInvoiceDate', header: 'Last invoice', accessorKey: 'lastInvoiceDate' },
+  // One account already IS the buyer; the territory roll-up is where the
+  // question comes from.
+  ...(mode.value === 'territory'
+    ? [{ id: 'buyers', header: 'Buyers', accessorFn: () => '', enableSorting: false }]
+    : []),
 ])
 
 /** What's on screen is what exports — DataGrid emits its visible rows. */
@@ -211,6 +229,15 @@ function onExport() {
             <template #cell-lastInvoiceDate="{ row }">
               {{ shortDate(row.lastInvoiceDate) }}
             </template>
+            <template #cell-buyers="{ row }">
+              <button
+                type="button"
+                class="tap-target text-ink font-semibold whitespace-nowrap underline-offset-2 hover:underline"
+                @click="showBuyers(row)"
+              >
+                Who bought it
+              </button>
+            </template>
             <template #card="{ row }">
               <div class="px-1">
                 <p class="text-ink text-[15px] font-semibold">
@@ -228,11 +255,21 @@ function onExport() {
                   {{ count(row.qtyLastYear) }} units,
                   {{ money(row.revenueLastYear) }}
                 </p>
+                <AppButton
+                  v-if="mode === 'territory'"
+                  variant="ghost"
+                  class="mt-1 -ml-3"
+                  @click="showBuyers(row)"
+                >
+                  Who bought it
+                </AppButton>
               </div>
             </template>
           </DataGrid>
         </AppCard>
       </template>
     </AsyncState>
+
+    <SkuProspectsSheet v-model:open="buyersOpen" :part="buyersPart" title="Who bought it" />
   </div>
 </template>
