@@ -12,9 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir pyodbc "psycopg[binary]" pyyaml python-dotenv
-
 WORKDIR /app
+COPY etl/requirements.txt ./requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
 COPY etl/views.yml etl/push_to_supabase.py etl/deploy_migrations.py ./
 COPY supabase/migrations /supabase/migrations
 

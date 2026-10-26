@@ -53,15 +53,22 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
 - `push_to_supabase.py` — the job (pyodbc → psycopg COPY)
 - `deploy_migrations.py` — applies `../supabase/migrations/*.sql` to Supabase
   (same box, same `.env`, needs only `PG_CONN`)
+- `requirements.txt` — pinned Python packages, shared by local setup and the ETL container
 - `.env.example` — required environment variables
 
 ## Setup
 
+Run from `etl/` with the ETL virtual environment activated:
+
 ```bash
-pip install pyodbc "psycopg[binary]" pyyaml
+python -m pip install -r requirements.txt
 cp .env.example .env   # fill in real connection strings
 python push_to_supabase.py
 ```
+
+For the Windows scheduled task's existing environment, install packages with
+`venv\Scripts\python.exe -m pip install -r requirements.txt` from `etl/`.
+Python and Microsoft ODBC Driver 18 for SQL Server must be installed separately.
 
 Notes:
 - `PG_CONN` must use the **direct / session-pooler** connection with the
