@@ -107,3 +107,15 @@ MCP), commit it to the folder and record it the same day:
 python deploy_migrations.py --dry-run          # it must NOT list the file
 python deploy_migrations.py --baseline-through <that-file>   # if it does
 ```
+
+**Prove it first.** `run_sql_guard.py` runs a migration and one of the
+`supabase/tests/*.sql` guards in a single transaction against the live
+database and rolls it back, so a new file is checked against the real
+catalog before the deployer makes it permanent (there is no psql on this
+box; the runner strips the tests' psql-isms). Run it from this folder so it
+finds `.env` — a git worktree has none of its own:
+
+```bash
+venv/Scripts/python.exe run_sql_guard.py ../supabase/migrations/<new>.sql ../supabase/tests/<guard>.sql
+venv/Scripts/python.exe run_sql_guard.py ../supabase/tests/<guard>.sql     # the guard alone, against what is live
+```
