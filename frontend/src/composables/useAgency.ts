@@ -10,13 +10,14 @@ import { isViewMissing } from '@/composables/useOverview'
  * The Agency page — a rep-group principal's agency cut by rep — over
  * migration 20261026180000.
  *
- * Scope is never decided here. Every query takes `vendor`:
- *   ''      a principal's own agency: the reads are UNFILTERED, because the
- *           principal's book IS the agency (my_customer_keys(), group book)
- *           and RLS is the filter — the same rule as useOverview.ts;
- *   'XYZ'   an admin's pick: the same reads narrowed to one vendor. For a
- *           principal a vendor can only narrow (RLS already removed every
- *           other agency's rows), and agency_rep_activity() ignores it.
+ * Scope is never decided here: RLS is the boundary, as everywhere. Every
+ * query takes `vendor`, the agency to NARROW the caller's book to:
+ *   - a principal passes their own. Their book is the agency plus their
+ *     own rep code's accounts and any explicit grants (my_customer_keys()),
+ *     and only the agency belongs on this page. Naming another vendor
+ *     returns nothing — RLS already removed every other agency's rows — and
+ *     agency_rep_activity() ignores the argument for them entirely;
+ *   - an admin passes the agency they picked.
  *
  * Every measure arrives as a raw sum at (rep, channel) grain; the per-rep,
  * per-channel and agency figures are added up below, never averaged — the
@@ -55,7 +56,7 @@ function text(value: unknown): string | null {
   return value == null || value === '' ? null : String(value)
 }
 
-/** The rpc argument: null for "my own agency". */
+/** The rpc argument; null (an admin who has not picked) narrows nothing. */
 function vendorArg(vendor: string): string | null {
   return vendor.trim() || null
 }
@@ -277,13 +278,26 @@ export function useAgencySalesByMonth(
     staleTime: AGENCY_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<AgencyMonthRow[]> => {
-      // 24 months × an agency's reps: a few hundred rows at most.
-      const { data, error } = await db.rpc('report_agency_sales_by_month', {
-        p_months: 24,
-        p_vendor_id: vendorArg(v.value),
-      })
-      if (error) throw asDisplayError(error)
-      return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      // 24 months × the agency's reps passes PostgREST's 1,000-row cap at
+      // ~42 reps, and the cut would fall on the NEWEST months — page it.
+      // (month, rep) is the function's grain, so the order is total.
+      let data: Record<string, unknown>[]
+      try {
+        data = await fetchAllRows<Record<string, unknown>>((from, to) =>
+          db
+            .rpc(
+              'report_agency_sales_by_month',
+              { p_months: 24, p_vendor_id: vendorArg(v.value) },
+              { count: 'exact' },
+            )
+            .order('sales_month')
+            .order('sales_rep_key', { nullsFirst: false })
+            .range(from, to),
+        )
+      } catch (error) {
+        throw asDisplayError(error)
+      }
+      return data.map((r) => ({
         sales_month: String(r.sales_month).slice(0, 10),
         sales_rep_key: text(r.sales_rep_key),
         revenue: num(r.revenue),

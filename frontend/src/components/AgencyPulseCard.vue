@@ -9,6 +9,7 @@
  * after the Overview costs nothing.
  */
 import { computed } from 'vue'
+import { useSessionStore } from '@/stores/session'
 import {
   activeWithin,
   buildRepLines,
@@ -23,9 +24,13 @@ import { daysAgo, money } from '@/lib/format'
 
 const SHOWN = 5
 
-// '' = the principal's own agency: their book, RLS-scoped.
-const perf = useAgencyRepPerformance('')
-const activity = useAgencyActivity('')
+// Their own agency, named — the same narrowing (and the same query keys)
+// as the Agency page.
+const session = useSessionStore()
+const vendor = computed(() => session.repGroupVendorId ?? '')
+const ready = computed(() => vendor.value !== '')
+const perf = useAgencyRepPerformance(vendor, ready)
+const activity = useAgencyActivity(vendor, ready)
 
 const lines = computed(() => buildRepLines(perf.data.value ?? [], activity.data.value ?? []))
 /** Rep codes with accounts in the agency. Login-only rows (the principal's

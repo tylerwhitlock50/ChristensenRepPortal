@@ -129,8 +129,8 @@ export const qk = {
     queue: () => ['orders', 'queue'] as const,
   },
   /**
-   * The Agency page (20261026180000). `vendor` is the agency an admin
-   * picked, '' for a principal's own (their book — RLS is the scope).
+   * The Agency page (20261026180000). `vendor` is the agency the reads
+   * are narrowed to: a principal's own, or the one an admin picked.
    * Not ERP-only: the rep rollup joins goals and actions, and activity is
    * portal logins, so none of these is on the ERP allow-list below.
    */

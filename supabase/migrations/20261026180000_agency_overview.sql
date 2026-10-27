@@ -42,9 +42,11 @@
   my_customer_keys(), so they are the caller's book and nothing else: a
   principal sees their agency, a rep sees their own accounts cut by rep (one
   row, harmless), an empty book sees nothing. view-as follows for free.
-  `p_vendor_id` / `.eq('vendor_id', …)` only NARROW that — an admin uses it
-  to pick one agency out of the company; a principal passing someone else's
-  vendor gets an empty result, because RLS already removed those rows.
+  `p_vendor_id` / `.eq('vendor_id', …)` only NARROW that. The Agency page
+  always passes one: an admin's pick out of the company, or the principal's
+  own vendor — a principal's book also holds their own rep code's accounts
+  and any explicit grants, which are not the agency's. A principal passing
+  someone else's vendor gets an empty result: RLS already removed those rows.
 
   2 is the only new disclosure. It resolves the agency from the EFFECTIVE
   user (view-as aware, like every access rule since 20260816140000):

@@ -99,9 +99,10 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * The agency (erp vendor id) the EFFECTIVE user is principal of, or null.
    * Same source as the group-book branch of my_customer_keys(): the
-   * profile's rep_group_vendor_id, or the view-as target's. It only decides
-   * whether the Agency tab is offered — what the tab shows is scoped by
-   * agency_rep_activity() and RLS, never by this value.
+   * profile's rep_group_vendor_id, or the view-as target's. It decides
+   * whether the Agency tab is offered and narrows that tab's reads to the
+   * agency — a filter inside RLS, never the boundary: what the tab can show
+   * at all is decided by agency_rep_activity() and RLS.
    */
   const repGroupVendorId = computed<string | null>(() => {
     const vendor = isViewingAs.value

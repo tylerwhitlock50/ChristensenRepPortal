@@ -11,8 +11,8 @@
  * → the largest recent orders → channel mix, each one filterable to a rep.
  *
  * Two doors, one page:
- *   /agency            a principal; their book IS the agency, so every read
- *                      is unfiltered and RLS is the scope (useAgency.ts).
+ *   /agency            a principal; the reads name their own agency, which
+ *                      narrows their book to it (useAgency.ts).
  *   /admin/agencies    an admin picks any agency (?vendor=) and sees exactly
  *                      what its principal would.
  */
@@ -61,16 +61,20 @@ const router = useRouter()
    between them remounts this page. */
 const adminView = route.name === 'admin-agencies'
 
+/**
+ * The agency every read is narrowed to. A principal's book is the agency
+ * PLUS their own rep code's accounts and any explicit grants, so their
+ * reads name it too — otherwise a granted house account would be counted
+ * as agency revenue, under a rep who is not in the agency.
+ */
 const vendor = computed(() => {
-  if (!adminView) return ''
+  if (!adminView) return session.repGroupVendorId ?? ''
   const q = route.query.vendor
   return typeof q === 'string' ? q.trim() : ''
 })
 /** A principal always has theirs; an admin has nothing until they pick. */
-const ready = computed(() => (adminView ? vendor.value !== '' : true))
-const agencyName = computed(() =>
-  adminView ? vendor.value : (session.repGroupVendorId ?? ''),
-)
+const ready = computed(() => vendor.value !== '')
+const agencyName = vendor
 
 /* The admin's picker: the Reports tab's rep-group rollup, which already
    names every agency with its reps. Never read for a principal. */

@@ -384,10 +384,45 @@ select pg_temp.assert(
   (select backlog_amount from public.v_backlog_by_sku where customer_key = 'AO-A1') = 12000,
   'backlog grain unchanged by the appended columns (two open lines on A1, one SKU)');
 
+--------------------------------------------------------------------------
+-- 6. A principal's BOOK is wider than their agency: an explicit grant on
+--    another agency's account is in it. The Agency page names the
+--    principal's vendor on every read, and that must leave the grant out
+--    of the agency's figures (PR review, Codex P2).
+--------------------------------------------------------------------------
+reset role;
+insert into public.account_assignments (customer_key, user_id, access)
+values ('AO-X1', (select id from t_user where label = 'principal'), 'grant');
+
+select pg_temp.become('principal');
+select pg_temp.assert(
+  (select count(*) from public.v_agency_rep_performance where sales_rep_key = 'AO REPX') = 1,
+  'control: unfiltered, the granted account''s rep is in the principal''s book');
+select pg_temp.assert(
+  (select (array_agg(distinct sales_rep_key order by sales_rep_key), sum(revenue_ytd))::text
+     from public.v_agency_rep_performance where vendor_id = 'AO AGENCY')
+  = '("{""AO REPA"",""AO REPB""}",60000)',
+  'narrowed to their vendor: the agency''s reps and figures only — the grant is left out');
+select pg_temp.assert(
+  (select count(*) from public.report_agency_sales_by_month(24, 'AO AGENCY')
+    where sales_rep_key = 'AO REPX') = 0
+  and (select count(*) from public.report_agency_sales_by_month(24)
+        where sales_rep_key = 'AO REPX') = 1,
+  'monthly: the grant is in the book, and out of the agency once narrowed');
+select pg_temp.assert(
+  (select array_agg(order_id order by amount desc)
+     from public.report_agency_large_orders(30, 15, 'AO AGENCY'))
+  = array['AO-O2', 'AO-O1'],
+  'large orders narrowed to the agency leave the granted account''s order out');
+select pg_temp.assert(
+  (select array_agg(full_name order by full_name) from public.agency_rep_activity())
+  = array['Gone Princ', 'Principal', 'Rep A', 'Rep B'],
+  'activity was agency-only all along — a grant adds no one');
+
 reset role;
 
 --------------------------------------------------------------------------
--- 6. Shape: definer only where it has to be; grants.
+-- 7. Shape: definer only where it has to be; grants.
 --------------------------------------------------------------------------
 select pg_temp.assert(
   (select prosecdef from pg_proc where oid = 'public.agency_rep_activity(text)'::regprocedure)
