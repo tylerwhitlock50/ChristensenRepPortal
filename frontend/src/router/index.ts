@@ -115,6 +115,21 @@ const router = createRouter({
           meta: { title: 'Backlog' },
         },
         {
+          // Every open order line in the book (G03) — the Tableau open-order
+          // list, grouped by account and order.
+          path: 'open-orders',
+          name: 'intel-open-orders',
+          component: () => import('@/pages/intel/OpenOrdersIntel.vue'),
+          meta: { title: 'Open orders' },
+        },
+        {
+          // Every packlist line in the book for a date range (G04).
+          path: 'shipments',
+          name: 'intel-shipments',
+          component: () => import('@/pages/intel/ShipmentsIntel.vue'),
+          meta: { title: 'Shipments' },
+        },
+        {
           path: 'ats',
           name: 'intel-ats',
           component: () => import('@/pages/intel/AtsIntel.vue'),

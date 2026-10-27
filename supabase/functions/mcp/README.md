@@ -114,7 +114,9 @@ header, and the Connect page says so.
 
 All read-only, all scoped automatically. `whoami` first — it reports
 `data_through`, the newest invoice date in the warehouse, which is what "today"
-means for every other answer.
+means for every other answer, plus when orders/shipments/invoices
+(`etl_loaded_at`, hourly on weekdays) and stock (`ats_loaded_at`, every 15
+minutes on weekdays) were last loaded.
 
 | Tool | Reads | Answers |
 |---|---|---|
@@ -131,7 +133,7 @@ means for every other answer.
 | `list_backlog` | `v_backlog_by_sku` | What customers are owed, and when it ships |
 | `check_availability` | `v_ats_list` | Company-wide stock / available-to-sell |
 | `list_orders` | `v_account_recent_order_headers`, `v_account_order_lines` | Order history and one order's lines |
-| `list_shipments` | `v_account_recent_shipment_headers`, `v_account_shipment_lines` | Did it ship, where is it, tracking number |
+| `list_shipments` | `v_account_recent_shipment_headers`, `v_account_shipment_lines` | Did it ship, where is it, tracking number; `shipped_value` is packlist value, not revenue |
 | `lookup_order` | `lookup_orders()` | Which order is PO 44182 / tracking 1Z…, across the whole book |
 | `get_goal_progress` | `v_account_goal_progress`, `v_my_goal_rollup` | Goal attainment and seasonal pace |
 | `list_recommendations` | `recommendations` | The generated work list, with why-now |

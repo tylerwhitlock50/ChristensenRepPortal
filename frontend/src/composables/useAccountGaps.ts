@@ -49,7 +49,9 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
+// One stock load: "in stock" is half of every answer here, and stock
+// reloads every 15 minutes (isAtsQueryKey covers this key).
+import { ATS_STALE_TIME } from '@/lib/queryClient'
 
 /**
  * `limit` is how many of the ranked suggestions come back — 25 fits the
@@ -64,7 +66,7 @@ export function useAccountSkuGaps(customerKey: MaybeRef<string>, limit = 25) {
   return useQuery({
     queryKey: computed(() => [...qk.account.skuGaps(key.value), limit] as const),
     enabled: computed(() => !!key.value),
-    staleTime: ERP_STALE_TIME,
+    staleTime: ATS_STALE_TIME,
     retry: (failureCount, error) => !isViewMissing(error) && failureCount < 1,
     queryFn: async (): Promise<SkuGapRow[]> => {
       const { data, error } = await db.rpc('report_account_sku_gaps', {

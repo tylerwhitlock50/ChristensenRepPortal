@@ -84,6 +84,28 @@ export function daysAgo(value: string | Date | null | undefined): string {
   return years === 1 ? 'over a year ago' : `${years} years ago`
 }
 
+/**
+ * A load time, as a clock: "4:43 AM" today, "yesterday 5:12 PM", "Mon
+ * 5:12 PM" within the week, "Oct 20, 5:12 PM" before that. Loads now run
+ * every 15 minutes (stock) and hourly (orders), so "Loaded today" no longer
+ * says anything — the rep needs to know whether it was this morning or ten
+ * minutes ago. The rep's own clock, like every other time on the page. A
+ * future time (a phone clock running slow) reads as today.
+ */
+export function clockStamp(
+  value: string | Date | null | undefined,
+  now: Date = new Date(),
+): string {
+  const d = toDate(value)
+  if (!d) return '—'
+  const time = format(d, 'h:mm a')
+  const days = differenceInCalendarDays(now, d)
+  if (days <= 0) return time
+  if (days === 1) return `yesterday ${time}`
+  if (days < 7) return `${format(d, 'EEE')} ${time}`
+  return `${format(d, 'MMM d')}, ${time}`
+}
+
 /** Negative when overdue. Null when there is no due date. */
 export function daysUntilDue(
   value: string | Date | null | undefined,

@@ -26,9 +26,8 @@ export interface DimCustomerRow {
   credit_status: string | null
   /**
    * Compliance and credit, landed since 002 and surfaced for the first time
-   * on the account page's "Can we ship?" strip. useAccount() already does
-   * select('*'), so these arrived in the payload long before anything read
-   * them.
+   * on the account page's "Can we ship?" strip. useAccount() names every
+   * field of this interface (ACCOUNT_DETAIL_COLUMNS) rather than select('*').
    *
    * ffl_expiration_raw is FREE-FORM (bi.vw_DimCustomer sources it from
    * CUSTOMER.USER_5, a user-defined field) — parse it through lib/ffl.ts,
@@ -41,7 +40,7 @@ export interface DimCustomerRow {
   /**
    * Street address (002) for Directions — lib/maps.ts soldToAddress(). For
    * chains the sold-to is head office, not the store. Optional because only
-   * useAccount()'s select('*') carries them; v_account_list rows do not.
+   * useAccount() selects them; v_account_list rows do not.
    */
   sold_to_address1?: string | null
   sold_to_address2?: string | null

@@ -9,6 +9,7 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
 import { trackingList, upsTrackUrl } from '@/lib/tracking'
+import { shippedValue } from '@/lib/shippedValue'
 import {
   useAccountOrderHeaders,
   useAccountOrderLines,
@@ -507,8 +508,15 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                 <span class="text-ink truncate font-semibold tabular-nums">
                   {{ row.packlist_id }}
                 </span>
-                <span class="u-display text-ink shrink-0 text-lg tabular-nums">
-                  {{ money(row.shipped_revenue) }}
+                <!-- Packlist value, never "revenue": shipping runs ahead of
+                     invoicing (lib/shippedValue.ts). -->
+                <span class="shrink-0 text-right">
+                  <span class="u-display text-ink block text-lg tabular-nums">
+                    {{ money(shippedValue(row)) }}
+                  </span>
+                  <span class="font-label text-muted block text-[11px] font-semibold tracking-[0.12em] uppercase">
+                    Shipped value
+                  </span>
                 </span>
               </span>
               <span class="text-muted text-[13px] tabular-nums">
@@ -536,7 +544,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                 <th scope="col" class="u-label py-2 pr-3 text-left">Shipped</th>
                 <th scope="col" class="u-label py-2 pr-3 text-left">Tracking</th>
                 <th scope="col" class="u-label py-2 pr-3 text-right">Qty</th>
-                <th scope="col" class="u-label py-2 pr-3 text-right">Value</th>
+                <th scope="col" class="u-label py-2 pr-3 text-right">Shipped value</th>
                 <th scope="col" class="u-label py-2 text-left">Status</th>
               </tr>
             </thead>
@@ -578,7 +586,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                   {{ count(row.shipped_qty) }}
                 </td>
                 <td class="py-2.5 pr-3 text-right whitespace-nowrap tabular-nums">
-                  {{ money(row.shipped_revenue) }}
+                  {{ money(shippedValue(row)) }}
                 </td>
                 <td class="py-2.5 whitespace-nowrap">
                   <AppBadge v-if="row.actual_delivery_date" tone="good">
@@ -766,7 +774,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
     :title="`Packlist ${openPacklistId ?? ''}`"
     :subtitle="
       openShipment
-        ? `Shipped ${shortDate(openShipment.ship_date)} · ${count(openShipment.line_count)} lines · ${money(openShipment.shipped_revenue)}`
+        ? `Shipped ${shortDate(openShipment.ship_date)} · ${count(openShipment.line_count)} lines · ${money(shippedValue(openShipment))} shipped value`
         : undefined
     "
     @update:open="openPacklistId = null"
@@ -815,7 +823,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
             {{ line.part_description }}
           </p>
           <p class="text-ink-2 mt-1 text-[13px] tabular-nums">
-            {{ count(line.shipped_qty) }} pcs · {{ money(line.shipped_revenue) }}
+            {{ count(line.shipped_qty) }} pcs · {{ money(shippedValue(line)) }} shipped value
             <template v-if="line.order_id"> · order {{ line.order_id }}</template>
           </p>
         </li>
@@ -827,7 +835,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
             <tr class="border-line border-b">
               <th scope="col" class="u-label py-2 pr-3 text-left">Part</th>
               <th scope="col" class="u-label py-2 pr-3 text-right">Qty</th>
-              <th scope="col" class="u-label py-2 pr-3 text-right">Value</th>
+              <th scope="col" class="u-label py-2 pr-3 text-right">Shipped value</th>
               <th scope="col" class="u-label py-2 pr-3 text-left">Order</th>
               <th scope="col" class="u-label py-2 text-left">Tracking</th>
             </tr>
@@ -854,7 +862,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                 {{ count(line.shipped_qty) }}
               </td>
               <td class="py-2.5 pr-3 text-right whitespace-nowrap tabular-nums">
-                {{ money(line.shipped_revenue) }}
+                {{ money(shippedValue(line)) }}
               </td>
               <td class="py-2.5 pr-3 whitespace-nowrap">
                 {{ line.order_id ?? '—' }}

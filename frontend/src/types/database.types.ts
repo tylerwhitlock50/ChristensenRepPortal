@@ -1709,6 +1709,7 @@ export type Database = {
           shipment_state: string | null
           shipped_qty: number | null
           shipped_revenue: number | null
+          shipped_value: number | null
           shipper_status_desc: string | null
           tracking_number: string | null
         }
@@ -1757,6 +1758,7 @@ export type Database = {
           ship_date: string | null
           shipped_qty: number | null
           shipped_revenue: number | null
+          shipped_value: number | null
           tracking_number: string | null
         }
         Relationships: []
@@ -1791,6 +1793,8 @@ export type Database = {
           part_description: string | null
           part_id: string | null
           part_key: string | null
+          product_code: string | null
+          product_code_description: string | null
           product_family: string | null
           upc: string | null
         }
@@ -1798,6 +1802,8 @@ export type Database = {
       }
       v_backlog_by_sku: {
         Row: {
+          assigned_sales_rep_id: string | null
+          assigned_sales_rep_name: string | null
           backlog_amount: number | null
           backlog_qty: number | null
           chambering: string | null
@@ -1811,14 +1817,17 @@ export type Database = {
           part_description: string | null
           part_id: string | null
           part_key: string | null
+          product_code: string | null
           product_family: string | null
         }
         Relationships: []
       }
       v_data_freshness: {
         Row: {
+          ats_loaded_at: string | null
           data_loaded_at: string | null
           data_through: string | null
+          orders_through: string | null
         }
         Relationships: []
       }
@@ -1868,6 +1877,41 @@ export type Database = {
         }
         Relationships: []
       }
+      v_open_order_lines: {
+        Row: {
+          assigned_sales_rep_id: string | null
+          assigned_sales_rep_name: string | null
+          backlog_amount: number | null
+          backlog_qty: number | null
+          credit_status: string | null
+          customer_id: string | null
+          customer_key: string | null
+          customer_name: string | null
+          customer_po_number: string | null
+          customer_reporting_name: string | null
+          desired_ship_date: string | null
+          is_non_part: boolean | null
+          is_past_promise: boolean | null
+          is_past_want: boolean | null
+          is_rma: boolean | null
+          line_num: number | null
+          order_date: string | null
+          order_id: string | null
+          order_status: string | null
+          order_status_desc: string | null
+          part_description: string | null
+          part_id: string | null
+          part_key: string | null
+          product_code: string | null
+          product_family: string | null
+          program_code: string | null
+          promise_date: string | null
+          trade_discount_pct: number | null
+          unit_price: number | null
+          upc: string | null
+        }
+        Relationships: []
+      }
       v_rep_activity: {
         Row: {
           actions_30d: number | null
@@ -1910,6 +1954,7 @@ export type Database = {
           part_description: string | null
           part_id: string | null
           part_key: string | null
+          product_code: string | null
           product_family: string | null
           qty: number | null
           revenue: number | null
@@ -1955,6 +2000,7 @@ export type Database = {
           part_description: string | null
           part_id: string | null
           part_key: string | null
+          product_code: string | null
           product_family: string | null
           qty: number | null
           revenue: number | null
@@ -2068,6 +2114,34 @@ export type Database = {
         Returns: {
           rollup_name: string
           row_count: number
+        }[]
+      }
+      report_book_shipments: {
+        Args: { p_customer_key?: string; p_from: string; p_to: string }
+        Returns: {
+          assigned_sales_rep_name: string
+          customer_key: string
+          customer_name: string
+          customer_po_number: string
+          invoice_id: string
+          invoice_status: string
+          line_num: number
+          order_id: string
+          order_line_no: number
+          packlist_id: string
+          part_description: string
+          part_id: string
+          product_code: string
+          ship_date: string
+          ship_to_city: string
+          ship_to_name: string
+          ship_to_state: string
+          ship_via: string
+          shipped_qty: number
+          shipped_value: number
+          tracking_number: string
+          trade_discount_pct: number
+          unit_price: number
         }[]
       }
       report_global_product_sales: {

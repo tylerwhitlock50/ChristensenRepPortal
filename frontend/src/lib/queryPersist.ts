@@ -41,7 +41,14 @@ import {
   type PersistedClient,
 } from '@tanstack/query-persist-client-core'
 import { hydrate, type QueryCacheNotifyEvent } from '@tanstack/vue-query'
-import { freshnessStamp, isErpQueryKey, qk, queryClient } from '@/lib/queryClient'
+import {
+  atsStamp,
+  freshnessStamp,
+  isAtsQueryKey,
+  isErpQueryKey,
+  qk,
+  queryClient,
+} from '@/lib/queryClient'
 
 /** Replaced at build time (vite.config.ts): a hash of the data-shaping code. */
 declare const __CACHE_SCHEMA__: string
@@ -260,22 +267,39 @@ export async function restorePersistedCache(
     if (!stillWanted()) return
     // By now the heartbeat may already have seen today's load stamp, so it
     // would never flag this copy as older. Compare here instead, on the
-    // same stamp the heartbeat watches.
-    const stamp = (data: unknown) =>
-      freshnessStamp(data as Parameters<typeof freshnessStamp>[0])
+    // same two stamps the heartbeat watches.
     const current = queryClient.getQueryData(qk.freshness())
     const savedFreshness = saved?.clientState.queries.find(
       (q) => q.queryKey[0] === qk.freshness()[0],
     )
     if (!apply(userId, saved)) return
-    if (current !== undefined && stamp(savedFreshness?.state.data) !== stamp(current)) {
+    if (current === undefined) return
+    const predicate = lateRestoreInvalidation(savedFreshness?.state.data, current)
+    if (predicate) {
       void queryClient.invalidateQueries({
-        predicate: (q) => isErpQueryKey(q.queryKey),
+        predicate: (q) => predicate(q.queryKey),
         refetchType: 'none',
       })
     }
   })
   return false
+}
+
+/**
+ * Which restored queries a late restore must mark stale, given the
+ * freshness row saved with the copy and the one the app already has: every
+ * ERP query when the load stamp moved, only the in-stock reads when just
+ * the stock stamp did (a 15-minute stock load since the copy was saved),
+ * null when neither moved. Pure, for the unit test.
+ */
+export function lateRestoreInvalidation(
+  saved: unknown,
+  current: unknown,
+): ((queryKey: readonly unknown[]) => boolean) | null {
+  type Row = Parameters<typeof freshnessStamp>[0]
+  if (freshnessStamp(saved as Row) !== freshnessStamp(current as Row)) return isErpQueryKey
+  if (atsStamp(saved as Row) !== atsStamp(current as Row)) return isAtsQueryKey
+  return null
 }
 
 /** When the saved copy was written, for the offline banner; null if none. */

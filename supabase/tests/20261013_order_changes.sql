@@ -417,7 +417,9 @@ select pg_temp.assert(
   = array['customer_key','customer_name','kind','occurred_on','order_id',
           'customer_po_number','packlist_id','line_no','part_id',
           'part_description','amount','qty','line_count','tracking_numbers',
-          'ship_via','promise_before','promise_after','has_backlog','event_id'],
+          'ship_via','promise_before','promise_after','has_backlog','event_id',
+          -- appended by 20261027090300 (the packlist value of 'shipped' rows)
+          'shipped_value'],
   'T7 the feed''s columns, in order (append-only from here)');
 
 select pg_temp.assert(

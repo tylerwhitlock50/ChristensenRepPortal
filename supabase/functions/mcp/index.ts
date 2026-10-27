@@ -54,13 +54,18 @@ Scope is automatic: every tool returns only the accounts assigned to the
 connected rep. There is no way to widen it and no need to filter for it.
 
 Start with \`whoami\` — it reports \`data_through\`, the newest invoice date in
-the warehouse. The data is loaded nightly, so "today" in the ERP is that date,
-not the calendar date.
+the warehouse, and when the data was last loaded. Orders, shipments and
+invoices load hourly on weekdays (6 AM–4 PM Mountain), stock every 15 minutes
+on weekdays (5 AM–5:45 PM), and everything again at 4:30 AM and 5 PM. "This
+month" means through \`data_through\`, not the calendar date: billing can lag
+shipping by days.
 
-Three money words that are NOT interchangeable:
+Money words that are NOT interchangeable:
   • revenue / invoiced — shipped and billed. This is what "sales" means here.
   • bookings / order value — placed, not yet shipped.
   • backlog — the unshipped remainder of open orders. Money owed, not earned.
+  • shipped value — what a packlist shipped, at net price. Not revenue until
+    it is invoiced.
 
 Typical path: \`get_territory_summary\` for the shape of the book →
 \`list_territory_accounts\` to rank → \`search_accounts\` to resolve a name to a

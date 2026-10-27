@@ -290,7 +290,8 @@ select pg_temp.assert(
   (select array_agg(column_name::text order by ordinal_position)
      from information_schema.columns
     where table_schema = 'public' and table_name = 'v_data_freshness')
-  = array['data_loaded_at','data_through','orders_through','facts_loaded_at'],
+  -- ats_loaded_at appended after it by 20261027090100 (the stock tier's stamp)
+  = array['data_loaded_at','data_through','orders_through','facts_loaded_at','ats_loaded_at'],
   'v_data_freshness: existing columns in place, facts_loaded_at appended');
 
 select public.log_job_run('etl:erp.fact_invoice_line', 'success', 10, null, now() - interval '2 days');

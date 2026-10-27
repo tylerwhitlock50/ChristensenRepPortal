@@ -41,7 +41,7 @@ function retryUnlessMissing(failureCount: number, error: unknown): boolean {
   return !isViewMissing(error) && failureCount < 1
 }
 
-import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
+import { ATS_STALE_TIME, ERP_STALE_TIME } from '@/lib/queryClient' // the load-driven cache policy
 
 /* ------------------------------------------------------------- SKU sales */
 
@@ -51,6 +51,13 @@ export interface SkuYearRow {
   part_id: string | null
   part_description: string | null
   product_family: string | null
+  /**
+   * dim_part.product_code — the ERP product line ("Family" in Tableau,
+   * "Product line" here). Null on a database without 20261027090500: the
+   * read is select('*'), so a missing column just leaves this empty and the
+   * page hides the filter.
+   */
+  product_code: string | null
   chambering: string | null
   upc: string | null
   sales_year: number
@@ -67,6 +74,7 @@ function mapSkuRow(r: Record<string, unknown>): SkuYearRow {
     part_id: (r.part_id as string | null) ?? null,
     part_description: (r.part_description as string | null) ?? null,
     product_family: (r.product_family as string | null) ?? null,
+    product_code: (r.product_code as string | null) ?? null,
     chambering: (r.chambering as string | null) ?? null,
     upc: (r.upc as string | null) ?? null,
     sales_year: num(r.sales_year),
@@ -141,6 +149,7 @@ export interface SkuPivotRow {
   part_id: string | null
   part_description: string | null
   product_family: string | null
+  product_code: string | null
   chambering: string | null
   upc: string | null
   /** qty / revenue by calendar year, newest years first in `years`. */
@@ -169,6 +178,7 @@ export function pivotSkuYears(
         part_id: r.part_id,
         part_description: r.part_description,
         product_family: r.product_family,
+        product_code: r.product_code,
         chambering: r.chambering,
         upc: r.upc,
         byYear: {},
@@ -213,6 +223,8 @@ export interface BacklogSkuRow {
   part_id: string | null
   part_description: string | null
   product_family: string | null
+  /** dim_part.product_code (20261027090500); null before that migration. */
+  product_code: string | null
   chambering: string | null
   backlog_qty: number
   backlog_amount: number
@@ -236,6 +248,7 @@ function mapBacklogRow(r: Record<string, unknown>): BacklogSkuRow {
     part_id: (r.part_id as string | null) ?? null,
     part_description: (r.part_description as string | null) ?? null,
     product_family: (r.product_family as string | null) ?? null,
+    product_code: (r.product_code as string | null) ?? null,
     chambering: (r.chambering as string | null) ?? null,
     backlog_qty: num(r.backlog_qty),
     backlog_amount: num(r.backlog_amount),
@@ -308,6 +321,13 @@ export interface AtsRow {
   part_id: string | null
   part_description: string | null
   product_family: string | null
+  /**
+   * dim_part.product_code and its description (20261027090200). Null on a
+   * database without that migration — select('*') — which hides the
+   * Product line filter and leaves "Guns only" to the spec test alone.
+   */
+  product_code: string | null
+  product_code_description: string | null
   chambering: string | null
   barrel_length: string | null
   upc: string | null
@@ -327,7 +347,10 @@ export interface AtsRow {
 export function useAtsList() {
   return useQuery({
     queryKey: qk.intel.ats(),
-    staleTime: ERP_STALE_TIME,
+    // One stock load, not the ERP's hours: this list reloads every 15
+    // minutes, and the heartbeat's stock stamp (atsStamp) refreshes it
+    // sooner when a load lands.
+    staleTime: ATS_STALE_TIME,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<AtsRow[]> => {
       // One row per part, but a full catalog can top 1,000 SKUs — page it.
@@ -349,6 +372,8 @@ export function useAtsList() {
         part_id: (r.part_id as string | null) ?? null,
         part_description: (r.part_description as string | null) ?? null,
         product_family: (r.product_family as string | null) ?? null,
+        product_code: (r.product_code as string | null) ?? null,
+        product_code_description: (r.product_code_description as string | null) ?? null,
         chambering: (r.chambering as string | null) ?? null,
         barrel_length: (r.barrel_length as string | null) ?? null,
         upc: (r.upc as string | null) ?? null,
@@ -433,9 +458,37 @@ function hasSpec(value: string | null): boolean {
  * with family and chambering blank/'N/A' (see vw_DimPart: Z_PRODUCT_DETAIL
  * only specs finished goods). Pure, unit-testable.
  */
-export function isGunRow(r: GlobalSkuRow): boolean {
+export function isGunRow(
+  r: Pick<GlobalSkuRow, 'product_code' | 'product_family' | 'chambering'>,
+): boolean {
   if (r.product_code && COMPONENT_PRODUCT_CODE.test(r.product_code)) return false
   return hasSpec(r.product_family) || hasSpec(r.chambering)
+}
+
+/** Barreled actions: finished goods with a chambering, so isGunRow keeps
+ *  them, but not a gun a dealer puts on the rack (G07). */
+export const BARRELED_ACTION_PRODUCT_CODE = 'FG-BARACT'
+
+/**
+ * The In stock page's "Guns only": isGunRow, minus barreled actions. The
+ * product-code half only bites once v_ats_list carries product_code
+ * (20261027090200); before that a null code passes and the spec test alone
+ * decides, exactly as isGunRow does. Pure, unit-testable.
+ */
+export function isGunStockRow(
+  r: Pick<AtsRow, 'product_code' | 'product_family' | 'chambering'>,
+): boolean {
+  if ((r.product_code ?? '').trim().toUpperCase() === BARRELED_ACTION_PRODUCT_CODE) return false
+  return isGunRow(r)
+}
+
+/**
+ * True when any row carries a product line. False both on a database whose
+ * view predates the product_code column and on a book where it is blank
+ * everywhere — either way a "Product line" filter would offer nothing.
+ */
+export function hasProductLine(rows: readonly { product_code?: string | null }[]): boolean {
+  return rows.some((r) => (r.product_code ?? '').trim() !== '')
 }
 
 /** SMU screen for the best-sellers list. Special makeup units are

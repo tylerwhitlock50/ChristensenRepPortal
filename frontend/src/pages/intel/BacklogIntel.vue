@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
-import { useTerritoryBacklog, type BacklogSkuRow } from '@/composables/useIntel'
+import {
+  hasProductLine,
+  useTerritoryBacklog,
+  type BacklogSkuRow,
+} from '@/composables/useIntel'
 import DataGrid from '@/components/DataGrid.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
@@ -90,13 +94,19 @@ const totals = computed(() => {
   }
 })
 
+/* "Product line" (dim_part.product_code, 20261027090500) beside Family —
+   Tableau calls it Family, and reps coming off Tableau filter by it. Shown
+   only once the view carries it; before that migration it is null on every
+   row and a filter with no options would only confuse. */
+const showProductLine = computed(() => hasProductLine(rows.value))
+
 const repColumn: ColumnDef<BacklogSkuRow, any> = {
   id: 'rep',
   header: 'Rep',
   accessorFn: (r) => r.assigned_sales_rep_name || r.assigned_sales_rep_id || '',
 }
 
-const baseColumns: ColumnDef<BacklogSkuRow, any>[] = [
+const baseColumns = computed<ColumnDef<BacklogSkuRow, any>[]>(() => [
   {
     id: 'account',
     header: 'Account',
@@ -112,6 +122,16 @@ const baseColumns: ColumnDef<BacklogSkuRow, any>[] = [
     accessorKey: 'product_family',
     meta: { filter: 'select' },
   },
+  ...(showProductLine.value
+    ? [
+        {
+          id: 'product_code',
+          header: 'Product line',
+          accessorKey: 'product_code',
+          meta: { filter: 'select' },
+        } as ColumnDef<BacklogSkuRow, any>,
+      ]
+    : []),
   {
     id: 'chambering',
     header: 'Chambering',
@@ -126,14 +146,16 @@ const baseColumns: ColumnDef<BacklogSkuRow, any>[] = [
     accessorKey: 'earliest_desired_ship_date',
   },
   { id: 'earliest_promise_date', header: 'Promise', accessorKey: 'earliest_promise_date' },
-]
+])
 
 const columns = computed(() =>
-  multiRep.value ? [baseColumns[0], repColumn, ...baseColumns.slice(1)] : baseColumns,
+  multiRep.value
+    ? [baseColumns.value[0], repColumn, ...baseColumns.value.slice(1)]
+    : baseColumns.value,
 )
 
 const visible = ref<BacklogSkuRow[]>([])
-const csvColumns: CsvColumn<BacklogSkuRow>[] = [
+const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
   { key: 'customer_key', header: 'Customer key' },
   { key: 'customer_id', header: 'Account ID' },
   { key: 'customer_name', header: 'Account' },
@@ -142,6 +164,7 @@ const csvColumns: CsvColumn<BacklogSkuRow>[] = [
   { key: 'part_id', header: 'SKU' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
+  ...(showProductLine.value ? [{ key: 'product_code', header: 'Product line' }] : []),
   { key: 'chambering', header: 'Chambering' },
   { key: 'backlog_qty', header: 'Backlog qty' },
   { key: 'backlog_amount', header: 'Backlog value' },
@@ -149,7 +172,7 @@ const csvColumns: CsvColumn<BacklogSkuRow>[] = [
   { key: 'earliest_desired_ship_date', header: 'Est. production date' },
   { key: 'earliest_promise_date', header: 'Earliest promise' },
   { key: 'latest_order_date', header: 'Latest order' },
-]
+])
 </script>
 
 <template>
@@ -166,8 +189,12 @@ const csvColumns: CsvColumn<BacklogSkuRow>[] = [
       @retry="query.refetch()"
     >
       <div class="border-line bg-line grid grid-cols-2 gap-px border md:grid-cols-4">
+        <!-- "Open orders", not "On backorder" (G10): this is every open
+             order line's unshipped value — Firmed and Hold included — not
+             just what is waiting on stock. Same words as the Overview tile
+             and the Open orders tab. -->
         <StatTile
-          label="On backorder"
+          label="Open orders"
           :value="money(totals.amount)"
           :tone="totals.amount > 0 ? 'alert' : 'default'"
         />
