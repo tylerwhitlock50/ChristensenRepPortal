@@ -13,7 +13,9 @@
   What
   ----
   dim_part.product_code appended (last) to:
-    v_backlog_by_sku         restated from LIVE = 031_backlog_ship_date.sql
+    v_backlog_by_sku         restated from 20261026180000_agency_overview.sql
+                             (live since 2026-10-27 10:21), after its
+                             assigned_sales_rep_id / _name
     v_territory_sku_sales    restated from LIVE = 030_territory_rollups.sql
     v_sku_sales_by_account   restated from LIVE = 20260818212142_intel_rollups.sql
   The two aggregating views add p.product_code to their GROUP BY. It is a
@@ -46,6 +48,8 @@ select
     min(o.promise_date)                            as earliest_promise_date,
     min(o.desired_ship_date)                       as earliest_desired_ship_date,
     max(o.order_date)                              as latest_order_date,
+    c.assigned_sales_rep_id,
+    c.assigned_sales_rep_name,
     p.product_code
 from erp.fact_order_line o
 join erp.dim_customer c on c.customer_key = o.customer_key
@@ -54,12 +58,14 @@ where o.is_backlog_line
 group by
     o.customer_key, c.customer_id, c.customer_name, o.part_key,
     p.part_id, p.part_description, p.product_family, p.chambering,
+    c.assigned_sales_rep_id, c.assigned_sales_rep_name,
     p.product_code;
 
 comment on view public.v_backlog_by_sku is
   'Open backlog rolled up to (account, SKU): qty, value, line count, '
   'earliest promise date, earliest desired ship date (surfaced as '
-  '"estimated production date"), and the ERP product line (product_code, '
+  '"estimated production date"), the account''s assigned rep '
+  '(20261026180000) and the ERP product line (product_code, '
   '20261027090500). security_invoker. Unfiltered = the caller''s territory '
   'backlog; .eq(customer_key) = one account''s card.';
 

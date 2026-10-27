@@ -68,8 +68,9 @@ select pg_temp.assert(
   = array['customer_key', 'customer_id', 'customer_name', 'part_key', 'part_id',
           'part_description', 'product_family', 'chambering', 'backlog_qty',
           'backlog_amount', 'open_line_count', 'earliest_promise_date',
-          'earliest_desired_ship_date', 'latest_order_date', 'product_code'],
-  'v_backlog_by_sku: product_code appended last');
+          'earliest_desired_ship_date', 'latest_order_date',
+          'assigned_sales_rep_id', 'assigned_sales_rep_name', 'product_code'],
+  'v_backlog_by_sku: product_code appended last, after 20261026180000''s rep columns');
 
 select pg_temp.assert(
   pg_temp.cols('v_territory_sku_sales')

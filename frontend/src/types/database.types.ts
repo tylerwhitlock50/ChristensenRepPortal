@@ -1802,6 +1802,8 @@ export type Database = {
       }
       v_backlog_by_sku: {
         Row: {
+          assigned_sales_rep_id: string | null
+          assigned_sales_rep_name: string | null
           backlog_amount: number | null
           backlog_qty: number | null
           chambering: string | null
