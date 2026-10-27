@@ -13,8 +13,14 @@
  * Two doors, one page:
  *   /agency            a principal; the reads name their own agency, which
  *                      narrows their book to it (useAgency.ts).
- *   /admin/agencies    an admin picks any agency (?vendor=) and sees exactly
- *                      what its principal would.
+ *   /admin/agencies    an admin picks any agency (?vendor=) and sees its book
+ *                      as the ERP assigns it. A principal's own grant/revoke
+ *                      overrides are not applied — View as shows their exact
+ *                      screen.
+ *
+ * Goal attainment and its pace come from goalProgress(): revenue on the goal
+ * accounts against their goals, at seasonal pace — the rule the Overview's
+ * Goal tile follows, so the two pages never disagree about one book.
  */
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -24,7 +30,9 @@ import {
   activeWithin,
   agencyTotals,
   buildRepLines,
+  goalProgress,
   monthlySeriesRows,
+  portalState,
   rollUpAgencyChannels,
   useAgencyActivity,
   useAgencyLargeOrders,
@@ -32,13 +40,7 @@ import {
   useAgencySalesByMonth,
   type AgencyRepLine,
 } from '@/composables/useAgency'
-import {
-  attainmentPct,
-  shareOf,
-  useRepGroupPerformance,
-  yearElapsedPct,
-  yoyPct,
-} from '@/composables/useAdminReports'
+import { shareOf, useRepGroupPerformance, yoyPct } from '@/composables/useAdminReports'
 import { buildCalendarYearSeries, deltaLabel } from '@/composables/useAccountMetrics'
 import DataGrid from '@/components/DataGrid.vue'
 import FreshnessStamp from '@/components/FreshnessStamp.vue'
@@ -60,6 +62,22 @@ const router = useRouter()
    Decided once per mount: the two routes are different records, so moving
    between them remounts this page. */
 const adminView = route.name === 'admin-agencies'
+
+/* The router guard keeps /agency to principals, but a view-as switch in the
+   banner changes who that is without navigating (the page just remounts),
+   and a non-principal here would be stranded on "Pick an agency" with no
+   picker. Send them where the guard would have. */
+if (!adminView) {
+  watch(
+    () => session.isPrincipal,
+    (principal) => {
+      if (!principal) {
+        void router.replace(session.isAdmin ? { name: 'admin-agencies' } : { name: 'overview' })
+      }
+    },
+    { immediate: true },
+  )
+}
 
 /**
  * The agency every read is narrowed to. A principal's book is the agency
@@ -99,11 +117,11 @@ const totals = computed(() => agencyTotals(perfRows.value))
 const lines = computed(() => buildRepLines(perfRows.value, activity.data.value ?? []))
 
 const loaded = computed(() => perf.data.value !== undefined)
+/** Activity not loaded (or failed) is "unknown", never "no login". */
+const activityLoaded = computed(() => activity.data.value !== undefined)
 const dash = '—'
 
 /* ---- headline ------------------------------------------------------------ */
-const expectedPct = computed(() => yearElapsedPct())
-
 function signedPct(pct: number | null): string {
   if (pct == null) return ''
   return `${pct >= 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%`
@@ -117,7 +135,14 @@ const revenueSub = computed(() => {
     : `${signedPct(pct)} vs last year (${money(t.revenue_prior_ytd)})`
 })
 
-const goalPct = computed(() => attainmentPct(totals.value.revenue_ytd, totals.value.goal_total))
+const goal = computed(() => goalProgress(totals.value))
+
+/** "12% ahead of pace" — the Overview's Goal tile wording. */
+function paceLabel(g: { attainmentPct: number; expectedPct: number }): string {
+  const points = Math.round(g.attainmentPct) - Math.round(g.expectedPct)
+  if (points === 0) return 'on pace'
+  return points > 0 ? `${points}% ahead of pace` : `${Math.abs(points)}% behind pace`
+}
 
 const bookedSub = computed(() => {
   const t = totals.value
@@ -125,13 +150,14 @@ const bookedSub = computed(() => {
   return pct == null ? 'orders written' : `${signedPct(pct)} vs last year`
 })
 
-/** Reps (not principals) with a portal login, and how many used it this week. */
-const portalReps = computed(() => lines.value.filter((l) => l.portal && !l.is_principal))
+/** Reps (not principals) with a working portal login, and how many used it
+ *  this week. A deactivated login is no login. */
+const portalReps = computed(() => lines.value.filter((l) => l.portal?.active && !l.is_principal))
 const activeThisWeek = computed(
   () => portalReps.value.filter((l) => activeWithin(l.portal, 7)).length,
 )
 const withoutLogin = computed(
-  () => lines.value.filter((l) => l.sales_rep_key && !l.portal).length,
+  () => lines.value.filter((l) => l.sales_rep_key && !l.portal?.active).length,
 )
 
 /* ---- reps table ---------------------------------------------------------- */
@@ -156,26 +182,36 @@ function yoyTone(pct: number | null): string {
 }
 
 function attainment(row: AgencyRepLine) {
-  return attainmentPct(row.revenue_ytd, row.goal_total)
+  return goalProgress(row)?.attainmentPct ?? null
 }
 
+/** Touched in 30 days, of the accounts still being worked (deactivated ones
+ *  are out of coverage, as on every coverage surface). */
 function coveragePct(row: AgencyRepLine): number | null {
-  if (row.accounts <= 0) return null
-  return (row.contacted_30d / row.accounts) * 100
+  if (row.workable_accounts <= 0) return null
+  return (row.contacted_30d / row.workable_accounts) * 100
 }
 
 /** What the "Last active" column says about a rep's login. */
 function portalLabel(row: AgencyRepLine): string {
-  if (!row.portal) return row.sales_rep_key ? 'No portal login' : '—'
-  if (!row.portal.active) return 'Login deactivated'
-  if (!row.portal.last_login_at) return 'Never signed in'
-  return daysAgo(row.portal.last_login_at)
+  switch (portalState(row, activityLoaded.value)) {
+    case 'unknown':
+      return '—'
+    case 'none':
+      return row.sales_rep_key ? 'No portal login' : '—'
+    case 'deactivated':
+      return 'Login deactivated'
+    case 'never':
+      return 'Never signed in'
+    case 'active':
+      return daysAgo(row.portal?.last_login_at)
+  }
 }
 
 /** The same, as a sentence for the phone card. */
 function portalSentence(row: AgencyRepLine): string {
   const label = portalLabel(row)
-  return row.portal?.active && row.portal.last_login_at ? `Last active ${label}` : label
+  return portalState(row, activityLoaded.value) === 'active' ? `Last active ${label}` : label
 }
 
 /** A login with no accounts of its own (the principal, a rep not yet
@@ -222,12 +258,15 @@ function onExport() {
     { key: 'open_order_value', header: 'Open Order Value' },
     { key: 'backlog_amount', header: 'Past Promise Amount' },
     { key: 'goal_total', header: 'Goal Total' },
+    { key: 'goal_revenue_ytd', header: 'Revenue YTD On Goal Accounts' },
+    { key: 'goal_expected', header: 'Expected By Today (Seasonal)' },
     {
       key: 'attainment_pct',
       header: 'Percent Of Goal',
       format: (r) => attainment(r)?.toFixed(1) ?? '',
     },
-    { key: 'contacted_30d', header: 'Accounts Contacted In 30 Days' },
+    { key: 'workable_accounts', header: 'Accounts Being Worked' },
+    { key: 'contacted_30d', header: 'Worked Accounts Contacted In 30 Days' },
     { key: 'last_login', header: 'Last Active', format: (r) => r.portal?.last_login_at },
     { key: 'logins_30d', header: 'App Opens 30 Days', format: (r) => r.portal?.logins_30d },
     { key: 'active_days_30d', header: 'Active Days 30 Days', format: (r) => r.portal?.active_days_30d },
@@ -283,6 +322,12 @@ const orderDays = ref<number>(30)
 const largeOrders = useAgencyLargeOrders(vendor, orderDays, ready)
 
 /* ---- empty states -------------------------------------------------------- */
+/** Decided by the book. The principal is always in their own activity list,
+ *  so their login must not cancel the empty state — only other people's
+ *  (an admin looking at an agency whose reps sign in but carry nothing yet). */
+const empty = computed(
+  () => loaded.value && perfRows.value.length === 0 && !lines.value.some((l) => !l.is_principal),
+)
 const emptyBody = computed(() =>
   adminView
     ? `No active accounts are assigned to a rep billing through ${vendor.value}.`
@@ -308,7 +353,7 @@ const emptyBody = computed(() =>
         <FreshnessStamp class="mt-1" />
       </div>
 
-      <!-- An admin sees any agency the way its principal does. -->
+      <!-- An admin sees any agency's book, as the ERP assigns it. -->
       <div v-if="adminView" class="max-w-md">
         <label for="agency-pick" class="u-label mb-1.5 block">Agency</label>
         <select
@@ -332,12 +377,28 @@ const emptyBody = computed(() =>
             {{ g.rep_group_id }} — {{ money(g.revenue_ytd) }} YTD
           </option>
         </select>
+        <!-- An empty list must never read as "the company has no agencies". -->
+        <div
+          v-if="groups?.error.value && !groups.data.value"
+          role="alert"
+          class="text-danger mt-2 flex items-center gap-2 text-sm"
+        >
+          <span>The agency list didn't load.</span>
+          <button
+            type="button"
+            class="tap-target inline-flex min-w-11 items-center justify-center px-1 font-semibold underline underline-offset-2"
+            @click="groups?.refetch()"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     </header>
 
     <p v-if="!ready" class="text-muted text-[15px]">
-      Pick an agency to see its reps, its year and its big orders, exactly as
-      its principal sees them.
+      Pick an agency to see its reps, its year and its big orders — its book
+      as the ERP assigns it. A principal's own account grants and revokes
+      aren't applied here; View as shows their exact screen.
     </p>
 
     <AsyncState
@@ -346,7 +407,7 @@ const emptyBody = computed(() =>
       :error="perf.error.value"
       :has-data="loaded"
       :updated-at="perf.dataUpdatedAt.value"
-      :empty="loaded && perfRows.length === 0 && lines.length === 0"
+      :empty="empty"
       empty-title="Nothing in this agency yet"
       :empty-body="emptyBody"
       :rows="4"
@@ -358,12 +419,8 @@ const emptyBody = computed(() =>
           <StatTile label="Revenue YTD" :value="money(totals.revenue_ytd)" :sub="revenueSub" />
           <StatTile
             label="Goal"
-            :value="goalPct == null ? dash : `${Math.round(goalPct)}%`"
-            :sub="
-              goalPct == null
-                ? 'no goals set'
-                : `of ${money(totals.goal_total)} · year ${Math.round(expectedPct)}% gone`
-            "
+            :value="goal ? `${Math.round(goal.attainmentPct)}%` : dash"
+            :sub="goal ? `of ${money(totals.goal_total)} · ${paceLabel(goal)}` : 'no goals set'"
           />
           <StatTile label="Booked YTD" :value="money(totals.bookings_ytd)" :sub="bookedSub" />
           <StatTile
@@ -395,8 +452,8 @@ const emptyBody = computed(() =>
           <div>
             <h2 class="u-label text-ink">{{ adminView ? 'Reps' : 'Your reps' }}</h2>
             <p class="text-muted mt-1 text-[13px]">
-              Year to date · pace marker at {{ Math.round(expectedPct) }}% of the year ·
-              portal use over 30 days
+              Year to date · goal pace is seasonal, each account against its own
+              last year · portal use over 30 days
             </p>
           </div>
           <AppButton variant="ghost" :disabled="!visibleLines.length" @click="onExport">
@@ -404,10 +461,20 @@ const emptyBody = computed(() =>
           </AppButton>
         </template>
 
-        <p v-if="activity.error.value" role="alert" class="text-danger mb-3 text-sm">
-          Portal activity didn't load — sales figures below are still current.
-          <button type="button" class="underline" @click="activity.refetch()">Retry</button>
-        </p>
+        <div
+          v-if="activity.error.value"
+          role="alert"
+          class="text-danger mb-3 flex flex-wrap items-center gap-x-2 text-sm"
+        >
+          <span>Portal activity didn't load — sales figures below are still current.</span>
+          <button
+            type="button"
+            class="tap-target inline-flex min-w-11 items-center justify-center px-1 font-semibold underline underline-offset-2"
+            @click="activity.refetch()"
+          >
+            Retry
+          </button>
+        </div>
 
         <DataGrid
           v-model:globalFilter="search"
@@ -456,8 +523,8 @@ const emptyBody = computed(() =>
                 height="sm"
                 class="mt-1"
                 :attainment-pct="attainment(row) ?? 0"
-                :expected-pct="expectedPct"
-                :on-track="(attainment(row) ?? 0) >= expectedPct"
+                :expected-pct="goalProgress(row)?.expectedPct ?? 0"
+                :on-track="goalProgress(row)?.onTrack ?? null"
                 :label="`${row.name} goal attainment`"
               />
               <span class="text-muted block text-[13px] tabular-nums">
@@ -492,8 +559,8 @@ const emptyBody = computed(() =>
             <span class="text-ink tabular-nums">
               {{ coveragePct(row) == null ? '—' : `${Math.round(coveragePct(row) ?? 0)}%` }}
             </span>
-            <span v-if="row.accounts" class="text-muted block text-[13px] tabular-nums">
-              {{ count(row.contacted_30d) }} of {{ count(row.accounts) }}
+            <span v-if="row.workable_accounts" class="text-muted block text-[13px] tabular-nums">
+              {{ count(row.contacted_30d) }} of {{ count(row.workable_accounts) }} worked
             </span>
           </template>
 
@@ -553,8 +620,8 @@ const emptyBody = computed(() =>
                   height="sm"
                   class="mt-1"
                   :attainment-pct="attainment(row) ?? 0"
-                  :expected-pct="expectedPct"
-                  :on-track="(attainment(row) ?? 0) >= expectedPct"
+                  :expected-pct="goalProgress(row)?.expectedPct ?? 0"
+                  :on-track="goalProgress(row)?.onTrack ?? null"
                   :label="`${row.name} goal attainment`"
                 />
               </template>
@@ -697,7 +764,7 @@ const emptyBody = computed(() =>
           </div>
         </template>
         <p v-if="channels.length === 0" class="text-muted p-4 text-[15px]">
-          No active accounts for this rep.
+          {{ channelRep ? 'No active accounts for this rep.' : 'No active accounts in this agency yet.' }}
         </p>
         <ul v-else class="divide-line divide-y">
           <li v-for="c in channels" :key="c.channel" class="px-4 py-3">

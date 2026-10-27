@@ -361,6 +361,8 @@ function useInvalidateGoals() {
     void qc.invalidateQueries({ queryKey: qk.account.root(customerKey) })
     void qc.invalidateQueries({ queryKey: qk.goals.root() })
     void qc.invalidateQueries({ queryKey: qk.admin.repGoals() })
+    // The Agency page sums goals per rep.
+    void qc.invalidateQueries({ queryKey: qk.agency.root() })
   }
 }
 

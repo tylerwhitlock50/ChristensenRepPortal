@@ -53,6 +53,13 @@ const multiRep = computed(
   () => reps.value.length > 1 && rows.value.some((r) => r.assigned_sales_rep_id),
 )
 
+/** The data reloaded (the nightly load moved a rep) and the pick names
+ *  nobody now: back to all reps, rather than an empty grid under a blank
+ *  dropdown. Same rule as the account pick below. */
+watch(reps, (list) => {
+  if (repKey.value && !list.some((r) => r.key === repKey.value)) repKey.value = ''
+})
+
 const byRep = computed(() =>
   multiRep.value && repKey.value
     ? rows.value.filter((r) => repOf(r) === repKey.value)

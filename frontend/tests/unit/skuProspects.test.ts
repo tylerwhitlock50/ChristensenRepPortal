@@ -6,7 +6,7 @@
  *
  * Same harness as ffl.test.ts.
  */
-import { rankProspects } from '../../src/composables/useSkuProspects'
+import { listProspects, rankProspects } from '../../src/composables/useSkuProspects'
 
 let pass = 0
 let fail = 0
@@ -44,6 +44,30 @@ t('latest year and its units, plus the four-year total',
 t('rows in any order give the same answer',
   rankProspects([...rows].reverse()).map((r) => r.customer_key), ['B', 'A', 'E', 'C'])
 t('nothing bought → nobody', rankProspects([]), [])
+
+/* --- who gets listed: the call list vs who bought it --------------------- */
+const acct = (key: string, over: Record<string, unknown> = {}) => [
+  key,
+  { customer_key: key, customer_name: `Dealer ${key}`, active_flag: 'Y', deactivated_at: null, ...over },
+] as [string, Record<string, unknown>]
+const accounts = new Map([
+  acct('A'),
+  acct('B', { deactivated_at: '2026-06-01T00:00:00Z' }), // the rep stopped working it
+  acct('C', { active_flag: 'N' }), // closed in the ERP
+  // E: not readable as an account at all
+])
+
+const forCall = listProspects(ranked, accounts, 'call')
+t('call list: a deactivated buyer is left off, and counted',
+  [forCall.dealers.map((d) => d.customer_key), forCall.hidden], [['A'], 1])
+
+const forBuyers = listProspects(ranked, accounts, 'buyers')
+t('who bought it: a deactivated buyer stays, marked',
+  forBuyers.dealers.map((d) => [d.customer_key, d.deactivated]), [['B', true], ['A', false]])
+t('who bought it: nothing hidden', forBuyers.hidden, 0)
+t('both: an ERP-closed or unreadable account is never listed',
+  [...forCall.dealers, ...forBuyers.dealers].some((d) => d.customer_key === 'C' || d.customer_key === 'E'),
+  false)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

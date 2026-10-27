@@ -3,7 +3,11 @@ import { computed } from 'vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { useBestContacts } from '@/composables/useBestContacts'
-import { useSkuProspects, type ProspectPart } from '@/composables/useSkuProspects'
+import {
+  useSkuProspects,
+  type ProspectPart,
+  type ProspectPurpose,
+} from '@/composables/useSkuProspects'
 import { count, shortDate, telHref } from '@/lib/format'
 
 /**
@@ -13,23 +17,45 @@ import { count, shortDate, telHref } from '@/lib/format'
  * into the account. When nobody bought that exact part, the dealers who
  * bought the same family / chambering, and the sheet says so.
  *
+ * The same sheet answers SKU Sales' "who bought it" (`purpose="buyers"`):
+ * every buyer in the book, the accounts the rep stopped working included and
+ * marked, so the list is the population of the SKU row it opened from.
+ *
  * A bottom sheet on a phone (AppModal). Nothing is fetched until it opens.
  */
 const props = withDefaults(
   defineProps<{
     open: boolean
     part: ProspectPart | null
-    /** The ATS list asks who to call; SKU Sales asks who bought it. */
-    title?: string
+    /** The In stock list asks who to call; SKU Sales asks who bought it. */
+    purpose?: ProspectPurpose
   }>(),
-  { title: 'Who should I call?' },
+  { purpose: 'call' },
 )
 
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
-const prospects = useSkuProspects(() => (props.open ? props.part : null))
+const title = computed(() => (props.purpose === 'buyers' ? 'Who bought it' : 'Who should I call?'))
+
+const prospects = useSkuProspects(() => (props.open ? props.part : null), props.purpose)
 const dealers = computed(() => prospects.data.value?.dealers ?? [])
 const match = computed(() => prospects.data.value?.match ?? 'none')
+/** Exact buyers the call list left off because the rep stopped working them. */
+const hidden = computed(() => prospects.data.value?.hidden ?? 0)
+
+const emptyTitle = computed(() =>
+  hidden.value > 0
+    ? 'Only accounts you stopped working bought this'
+    : 'Nobody in your book has bought this',
+)
+const emptyBody = computed(() => {
+  if (hidden.value > 0) {
+    return `${count(hidden.value)} ${hidden.value === 1 ? 'account' : 'accounts'} in your book bought it, all deactivated — they're left off a call list. Reactivate one from its account page to see it here.`
+  }
+  return similarTo.value
+    ? `No dealer in your book has bought this SKU, or another ${similarTo.value}, in the last four years.`
+    : 'No dealer in your book has bought this SKU in the last four years.'
+})
 
 const reach = useBestContacts(() => dealers.value.map((d) => d.customer_key))
 
@@ -89,12 +115,8 @@ function whereAndWhose(d: { city: string | null; state: string | null; repName: 
       :has-data="prospects.data.value !== undefined"
       :updated-at="prospects.dataUpdatedAt.value"
       :empty="dealers.length === 0"
-      empty-title="Nobody in your book has bought this"
-      :empty-body="
-        similarTo
-          ? `No dealer in your book has bought this SKU, or another ${similarTo}, in the last four years.`
-          : 'No dealer in your book has bought this SKU in the last four years.'
-      "
+      :empty-title="emptyTitle"
+      :empty-body="emptyBody"
       :rows="3"
       @retry="prospects.refetch()"
     >
@@ -104,6 +126,10 @@ function whereAndWhose(d: { city: string | null; state: string | null; repName: 
           other {{ similarTo }}, most recent first.
         </template>
         <template v-else>Dealers in your book who bought it, most recent first.</template>
+        <template v-if="hidden > 0">
+          {{ count(hidden) }} {{ hidden === 1 ? 'buyer' : 'buyers' }} of this SKU you
+          stopped working {{ hidden === 1 ? 'is' : 'are' }} left off.
+        </template>
       </p>
 
       <ul class="divide-line mt-2 divide-y">
@@ -117,6 +143,7 @@ function whereAndWhose(d: { city: string | null; state: string | null; repName: 
               <span aria-hidden="true" class="text-muted">→</span>
             </span>
             <span v-if="whereAndWhose(d)" class="text-muted text-xs">{{ whereAndWhose(d) }}</span>
+            <span v-if="d.deactivated" class="text-muted text-xs">Not being worked — deactivated</span>
           </RouterLink>
           <p class="text-ink-2 text-sm tabular-nums">
             Bought {{ count(d.unitsLastYear) }} in {{ d.lastYear }}

@@ -6,13 +6,16 @@
  * the Agency tab.
  *
  * Same queries (and query keys) as the Agency page, so opening the tab
- * after the Overview costs nothing.
+ * after the Overview costs nothing. Portal use is only stated once the
+ * activity read has answered: until then (or if it fails) a rep is not
+ * "no portal login", they are unknown.
  */
 import { computed } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import {
   activeWithin,
   buildRepLines,
+  portalState,
   useAgencyActivity,
   useAgencyRepPerformance,
   type AgencyRepLine,
@@ -32,6 +35,7 @@ const ready = computed(() => vendor.value !== '')
 const perf = useAgencyRepPerformance(vendor, ready)
 const activity = useAgencyActivity(vendor, ready)
 
+const activityLoaded = computed(() => activity.data.value !== undefined)
 const lines = computed(() => buildRepLines(perf.data.value ?? [], activity.data.value ?? []))
 /** Rep codes with accounts in the agency. Login-only rows (the principal's
  *  own, a rep with no accounts yet) have no book to rank. */
@@ -40,8 +44,13 @@ const reps = computed(() =>
 )
 const top = computed(() => reps.value.slice(0, SHOWN))
 
-const quiet = computed(
-  () => reps.value.filter((l) => l.portal && !l.is_principal && !activeWithin(l.portal, 7)).length,
+/** Working logins that have not opened the app this week. A deactivated
+ *  login is not "quiet", it is gone. */
+const quiet = computed(() =>
+  activityLoaded.value
+    ? reps.value.filter((l) => l.portal?.active && !l.is_principal && !activeWithin(l.portal, 7))
+        .length
+    : 0,
 )
 
 function yoyLabel(row: AgencyRepLine): string {
@@ -60,9 +69,20 @@ function yoyTone(row: AgencyRepLine): string {
   return 'text-muted'
 }
 
+/** '' while activity is unknown — the row then says nothing about it. */
 function lastActive(row: AgencyRepLine): string {
-  if (!row.portal) return 'no portal login'
-  return `active ${daysAgo(row.portal.last_login_at)}`
+  switch (portalState(row, activityLoaded.value)) {
+    case 'unknown':
+      return ''
+    case 'none':
+      return 'no portal login'
+    case 'deactivated':
+      return 'login deactivated'
+    case 'never':
+      return 'never signed in'
+    case 'active':
+      return `active ${daysAgo(row.portal?.last_login_at)}`
+  }
 }
 </script>
 
@@ -71,7 +91,7 @@ function lastActive(row: AgencyRepLine): string {
     <template #header>
       <div>
         <h2 class="u-label text-ink">Your reps</h2>
-        <p class="text-muted mt-1 text-[13px]">
+        <p v-if="perf.data.value !== undefined" class="text-muted mt-1 text-[13px]">
           {{ reps.length }} {{ reps.length === 1 ? 'rep' : 'reps' }} in your agency<template
             v-if="quiet"
           > · {{ quiet }} not on the portal this week</template>
@@ -84,6 +104,21 @@ function lastActive(row: AgencyRepLine): string {
         See all →
       </RouterLink>
     </template>
+
+    <div
+      v-if="activity.error.value && top.length"
+      role="alert"
+      class="border-line text-danger flex flex-wrap items-center gap-x-2 border-b px-4 py-1 text-sm"
+    >
+      <span>Portal activity didn't load.</span>
+      <button
+        type="button"
+        class="tap-target inline-flex min-w-11 items-center justify-center px-1 font-semibold underline underline-offset-2"
+        @click="activity.refetch()"
+      >
+        Retry
+      </button>
+    </div>
 
     <div :class="top.length ? '' : 'p-4'">
       <AsyncState
@@ -106,7 +141,8 @@ function lastActive(row: AgencyRepLine): string {
               <span class="min-w-0">
                 <span class="text-ink block truncate text-[15px] font-semibold">{{ r.name }}</span>
                 <span class="text-muted block text-xs">
-                  <span :class="yoyTone(r)">{{ yoyLabel(r) }}</span> · {{ lastActive(r) }}
+                  <span :class="yoyTone(r)">{{ yoyLabel(r) }}</span
+                  ><template v-if="lastActive(r)"> · {{ lastActive(r) }}</template>
                 </span>
               </span>
               <span class="text-ink shrink-0 text-[15px] font-bold tabular-nums">

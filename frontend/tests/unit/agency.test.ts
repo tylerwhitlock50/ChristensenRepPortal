@@ -15,8 +15,10 @@ import {
   activeWithin,
   agencyTotals,
   buildRepLines,
+  goalProgress,
   monthlySeriesRows,
   NO_REP_LABEL,
+  portalState,
   rollUpAgencyChannels,
   type AgencyActivityRow,
   type AgencyMonthRow,
@@ -63,6 +65,9 @@ function perf(
     backlog_amount: 5,
     goal_total: 0,
     last_invoice_date: '2026-10-01',
+    goal_revenue_ytd: 0,
+    goal_expected: 0,
+    workable_accounts: 1,
     ...over,
   }
 }
@@ -159,7 +164,44 @@ t(
   ['live'],
 )
 
+t(
+  'a code with no accounts and two logins (an old deactivated, a new live one) is one row',
+  buildRepLines(
+    [],
+    [
+      login('gone', 'Z', { active: false, last_login_at: '2026-10-25T00:00:00Z' }),
+      login('live', 'Z', { last_login_at: '2026-01-01T00:00:00Z' }),
+    ],
+  ).map((l) => [l.id, l.portal?.user_id]),
+  [['user:live', 'live']],
+)
+
 t('no rows, no logins → no lines', buildRepLines([], []), [])
+
+/* --- goal pace ---------------------------------------------------------- */
+// Revenue on goal accounts only; pace from what should be in by today.
+const g = goalProgress({ goal_total: 100_000, goal_revenue_ytd: 40_000, goal_expected: 50_000 })
+t('goal: attainment from goal-account revenue', g?.attainmentPct, 40)
+t('goal: seasonal expected', g?.expectedPct, 50)
+t('goal: behind pace', g?.onTrack, false)
+t(
+  'goal: ahead of pace',
+  goalProgress({ goal_total: 100_000, goal_revenue_ytd: 45_000, goal_expected: 30_000 })?.onTrack,
+  true,
+)
+t('goal: none set → null, not 0%', goalProgress({ goal_total: 0, goal_revenue_ytd: 9, goal_expected: 0 }), null)
+t(
+  'goal: totals carry the goal measures through the sums',
+  goalProgress(agencyTotals(rows.map((r, i) => ({ ...r, goal_total: 100, goal_revenue_ytd: 10 * (i + 1), goal_expected: 25 })))),
+  { attainmentPct: 25, expectedPct: 25, onTrack: true },
+)
+
+/* --- portal state ------------------------------------------------------- */
+t('portal: activity not loaded → unknown, never "no login"', portalState({ portal: null }, false), 'unknown')
+t('portal: no login', portalState({ portal: null }, true), 'none')
+t('portal: deactivated', portalState({ portal: login('x', 'A', { active: false }) }, true), 'deactivated')
+t('portal: never signed in', portalState({ portal: login('x', 'A', { last_login_at: null }) }, true), 'never')
+t('portal: active', portalState({ portal: login('x', 'A') }, true), 'active')
 
 /* --- channels ----------------------------------------------------------- */
 t(

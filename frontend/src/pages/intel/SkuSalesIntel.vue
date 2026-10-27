@@ -31,8 +31,9 @@ import { count, money, shortDate } from '@/lib/format'
  * being compared with twelve.
  *
  * "My territory" rolls the book up per SKU, which hides who bought it — so
- * each row opens the dealers who did (the ATS list's sheet), with their rep
- * when the book spans several, as a principal's does.
+ * each row opens the dealers who did (the In stock list's sheet, in its
+ * buyers mode), with their rep when the book spans several, as a
+ * principal's does.
  */
 const mode = ref<'territory' | 'account'>('territory')
 const accountKey = ref('')
@@ -286,6 +287,6 @@ function onExport() {
       </template>
     </AsyncState>
 
-    <SkuProspectsSheet v-model:open="buyersOpen" :part="buyersPart" title="Who bought it" />
+    <SkuProspectsSheet v-model:open="buyersOpen" :part="buyersPart" purpose="buyers" />
   </div>
 </template>

@@ -168,6 +168,9 @@ export function useLogAccountAction() {
         queryKey: qk.account.root(vars.customerKey),
         predicate: (q) => !isErpQueryKey(q.queryKey),
       })
+      // The Agency page's coverage and logged-work counts. Not an ERP read,
+      // and only marked stale until that page is open.
+      void qc.invalidateQueries({ queryKey: qk.agency.root() })
     },
   })
 }

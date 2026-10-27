@@ -31,7 +31,7 @@ import { yoyPct, type ChannelRow } from '@/composables/useAdminReports'
 const props = defineProps<{ rows: ChannelRow[] }>()
 
 // Only the controllers this chart draws — same reasoning as
-// AccountRevenueChart.vue: `registerables` would pull in every chart type.
+// RevenueYearChart.vue: `registerables` would pull in every chart type.
 ChartJS.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip)
 
 // The same two-series pairing the account revenue chart uses: brand green for
@@ -137,7 +137,7 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
   },
 }))
 
-/** Same cast-at-the-boundary reasoning as AccountRevenueChart.vue. */
+/** Same cast-at-the-boundary reasoning as RevenueYearChart.vue. */
 const dataProp = computed(() => chartData.value as unknown as ChartProps['data'])
 const optionsProp = computed(
   () => chartOptions.value as unknown as ChartProps['options'],
