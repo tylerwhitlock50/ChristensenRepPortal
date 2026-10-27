@@ -28,6 +28,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import ViewAsCard from '@/components/admin/ViewAsCard.vue'
+import BroadcastEmailCard from '@/components/admin/BroadcastEmailCard.vue'
 import { ROLES, type Role } from '@/types/domain'
 import { count, daysAgo, humanize } from '@/lib/format'
 import {
@@ -678,6 +679,9 @@ async function setActive(active: boolean) {
         </p>
       </AsyncState>
     </AppCard>
+
+    <!-- Bcc a whole group from your own mail client -->
+    <BroadcastEmailCard />
 
     <!-- Reps with an account who are not using it — the poke -->
     <AppCard>
