@@ -31,6 +31,7 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import { money } from '@/lib/format'
 import RecentActivityCard from '@/components/RecentActivityCard.vue'
+import AgencyPulseCard from '@/components/AgencyPulseCard.vue'
 
 /**
  * The morning briefing (data-first restructure). Top to bottom on a phone:
@@ -132,6 +133,16 @@ watch(
   { immediate: true },
 )
 
+/* A principal's book is the agency's: every account its reps carry. Empty
+   almost always means the agency on their profile is missing or wrong, not
+   that the agency sells nothing — say so, rather than "check your rep
+   assignment", which points at the wrong field. */
+const emptyBody = computed(() =>
+  session.isPrincipal
+    ? `Your book is every account the ERP assigns to reps who bill through ${session.repGroupVendorId}, and none came back. If that seems wrong, ask your admin to check the rep group vendor on your profile.`
+    : 'Your book is empty. If that seems wrong, ask your admin to check your rep assignment.',
+)
+
 /* ---- header -------------------------------------------------------------- */
 const firstName = computed(() => session.displayName.split('@')[0].split(' ')[0])
 const greeting = computed(() => {
@@ -198,7 +209,7 @@ const goalSub = computed(() => {
       :updated-at="accountsQuery.dataUpdatedAt.value"
       :empty="!accountsQuery.isPending.value && rows.length === 0"
       empty-title="No accounts yet"
-      empty-body="Your book is empty. If that seems wrong, ask your admin to check your rep assignment."
+      :empty-body="emptyBody"
       :rows="4"
       @retry="accountsQuery.refetch()"
     >
@@ -236,6 +247,10 @@ const goalSub = computed(() => {
           />
         </div>
       </section>
+
+      <!-- A principal runs reps as well as accounts: who is carrying the
+           year, and who has gone quiet, before the call list. -->
+      <AgencyPulseCard v-if="session.isPrincipal" class="mt-5" />
 
       <!-- 2 · Worth a call today, then 3 · the analyst's read and 4 · the
            movers. A phone stacks them in that order: the list a rep acts on

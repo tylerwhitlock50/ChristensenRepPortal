@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import {
   hasProductLine,
@@ -19,17 +19,49 @@ import { count, isoDate, money } from '@/lib/format'
  * Backlog by SKU by account — everything the territory is still owed. Free
  * text still covers SKU/chambering/account, and the account dropdown is the
  * one-click version of "show me Scheels' backorders". The stat tiles follow
- * the dropdown, so filtering to an account turns the page into that
+ * the dropdowns, so filtering to an account turns the page into that
  * account's backorder summary.
+ *
+ * A book that spans reps (a principal's agency, an admin's company) also
+ * gets a Rep column and a rep dropdown, so "whose store is waiting" is on
+ * the row. A single rep's book never shows them — it would be their own
+ * name on every line.
  */
 const search = ref('')
 const accountKey = ref('')
+const repKey = ref('')
 const query = useTerritoryBacklog()
 const rows = computed(() => query.data.value ?? [])
 
+/** The rep dropdown's value for accounts with no assigned rep. */
+const NO_REP = '(none)'
+const repOf = (r: BacklogSkuRow) => r.assigned_sales_rep_id ?? NO_REP
+
+const reps = computed(() => {
+  const byKey = new Map<string, string>()
+  for (const r of rows.value) {
+    if (!byKey.has(repOf(r))) {
+      byKey.set(repOf(r), r.assigned_sales_rep_name || r.assigned_sales_rep_id || 'No rep assigned')
+    }
+  }
+  return [...byKey.entries()]
+    .map(([key, name]) => ({ key, name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+/** Rep columns only once the data really carries more than one rep. */
+const multiRep = computed(
+  () => reps.value.length > 1 && rows.value.some((r) => r.assigned_sales_rep_id),
+)
+
+const byRep = computed(() =>
+  multiRep.value && repKey.value
+    ? rows.value.filter((r) => repOf(r) === repKey.value)
+    : rows.value,
+)
+
 const accounts = computed(() => {
   const byKey = new Map<string, { key: string; id: string; name: string }>()
-  for (const r of rows.value) {
+  for (const r of byRep.value) {
     if (!byKey.has(r.customer_key)) {
       byKey.set(r.customer_key, {
         key: r.customer_key,
@@ -41,10 +73,15 @@ const accounts = computed(() => {
   return [...byKey.values()].sort((a, b) => a.id.localeCompare(b.id))
 })
 
+/** An account picked under one rep and then hidden by another rep's pick. */
+watch(accounts, (list) => {
+  if (accountKey.value && !list.some((a) => a.key === accountKey.value)) accountKey.value = ''
+})
+
 const filtered = computed(() =>
   accountKey.value
-    ? rows.value.filter((r) => r.customer_key === accountKey.value)
-    : rows.value,
+    ? byRep.value.filter((r) => r.customer_key === accountKey.value)
+    : byRep.value,
 )
 
 const totals = computed(() => {
@@ -63,7 +100,13 @@ const totals = computed(() => {
    row and a filter with no options would only confuse. */
 const showProductLine = computed(() => hasProductLine(rows.value))
 
-const columns = computed<ColumnDef<BacklogSkuRow, any>[]>(() => [
+const repColumn: ColumnDef<BacklogSkuRow, any> = {
+  id: 'rep',
+  header: 'Rep',
+  accessorFn: (r) => r.assigned_sales_rep_name || r.assigned_sales_rep_id || '',
+}
+
+const baseColumns = computed<ColumnDef<BacklogSkuRow, any>[]>(() => [
   {
     id: 'account',
     header: 'Account',
@@ -105,11 +148,19 @@ const columns = computed<ColumnDef<BacklogSkuRow, any>[]>(() => [
   { id: 'earliest_promise_date', header: 'Promise', accessorKey: 'earliest_promise_date' },
 ])
 
+const columns = computed(() =>
+  multiRep.value
+    ? [baseColumns.value[0], repColumn, ...baseColumns.value.slice(1)]
+    : baseColumns.value,
+)
+
 const visible = ref<BacklogSkuRow[]>([])
 const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
   { key: 'customer_key', header: 'Customer key' },
   { key: 'customer_id', header: 'Account ID' },
   { key: 'customer_name', header: 'Account' },
+  { key: 'assigned_sales_rep_id', header: 'Rep code' },
+  { key: 'assigned_sales_rep_name', header: 'Rep' },
   { key: 'part_id', header: 'SKU' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
@@ -174,6 +225,13 @@ const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
               @input="search = ($event.target as HTMLInputElement).value"
             />
           </label>
+          <label v-if="multiRep" class="block w-full sm:max-w-xs">
+            <span class="sr-only">Filter by rep</span>
+            <select v-model="repKey" class="field">
+              <option value="">All reps</option>
+              <option v-for="r in reps" :key="r.key" :value="r.key">{{ r.name }}</option>
+            </select>
+          </label>
           <label class="block w-full sm:max-w-xs">
             <span class="sr-only">Filter by account</span>
             <select v-model="accountKey" class="field">
@@ -202,6 +260,11 @@ const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
             </RouterLink>
             <span class="text-muted block max-w-[12rem] truncate text-xs">
               {{ row.customer_name }}
+            </span>
+          </template>
+          <template #cell-rep="{ row }">
+            <span class="text-ink-2 block whitespace-nowrap">
+              {{ row.assigned_sales_rep_name || row.assigned_sales_rep_id || '—' }}
             </span>
           </template>
           <!-- The picture lives on the website — the family page. -->
@@ -237,6 +300,9 @@ const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
                 {{ row.customer_id || row.customer_key }}
                 <span class="text-muted text-xs font-normal">{{ row.customer_name }}</span>
               </RouterLink>
+              <p v-if="multiRep" class="text-muted text-xs">
+                {{ row.assigned_sales_rep_name || row.assigned_sales_rep_id || 'No rep assigned' }}
+              </p>
               <p class="text-ink-2 mt-0.5 truncate text-sm">
                 {{ row.part_id }} · {{ row.part_description }}
               </p>

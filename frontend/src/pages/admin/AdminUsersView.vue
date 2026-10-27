@@ -167,8 +167,27 @@ function existingProfileFor(rep: UnmappedRep): AdminProfile | null {
   )
 }
 
+/** The unmapped-rep row the create panel was opened from, if any. */
+const cFromRep = ref<UnmappedRep | null>(null)
+
+/**
+ * The principal trap. A principal is usually an ERP rep too, and their own
+ * code often has no accounts — the agency's book sits on their reps' codes.
+ * Created from the row with only the rep code, they sign in to an empty
+ * Overview. The vendor is right there on the row, so offer it rather than
+ * guess: a rep with no accounts can also just be new.
+ */
+const principalHint = computed(() => {
+  const rep = cFromRep.value
+  if (!rep || rep.customer_count > 0 || !rep.vendor_id) return null
+  if (cRole.value !== 'rep' || cVendorId.value.trim()) return null
+  if (cRepKey.value.trim() !== rep.sales_rep_key) return null
+  return { vendor: rep.vendor_id, name: humanize(rep.sales_rep_name) || rep.sales_rep_key }
+})
+
 /** Opens the create panel with everything the ERP already knows filled in. */
 function startFromRep(rep: UnmappedRep) {
+  cFromRep.value = rep
   cEmail.value = rep.sales_rep_email ?? ''
   cFullName.value = humanize(rep.sales_rep_name) || rep.sales_rep_key
   cRole.value = 'rep'
@@ -235,6 +254,7 @@ async function copyCredentials() {
 }
 
 function resetCreate() {
+  cFromRep.value = null
   cEmail.value = ''
   cPassword.value = ''
   cFullName.value = ''
@@ -455,6 +475,24 @@ async function setActive(active: boolean) {
             </span>
             <input v-model="cVendorId" type="text" class="field" />
           </label>
+          <div
+            v-if="principalHint"
+            class="border-l-accent text-ink-2 border-l-[3px] pl-3 text-sm sm:col-span-2"
+          >
+            <p>
+              {{ principalHint.name }} has no accounts of their own in the ERP, so
+              with only the rep code they will sign in to an empty book. If they
+              run {{ principalHint.vendor }} as its principal, give them the
+              agency's book — every account its reps carry, and the Agency tab.
+            </p>
+            <AppButton
+              variant="secondary"
+              class="mt-2"
+              @click="cVendorId = principalHint.vendor"
+            >
+              Make principal of {{ principalHint.vendor }}
+            </AppButton>
+          </div>
         </template>
         <p v-else class="text-muted text-[13px] sm:col-span-2">
           Order entry users have no account book — they see the entry queue,

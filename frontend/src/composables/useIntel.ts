@@ -233,6 +233,10 @@ export interface BacklogSkuRow {
   /** min(desired_ship_date) — shown to reps as "estimated production date". */
   earliest_desired_ship_date: string | null
   latest_order_date: string | null
+  /** The account's assigned rep (20261026180000) — who the store belongs to.
+   *  Null on a database without that migration. */
+  assigned_sales_rep_id: string | null
+  assigned_sales_rep_name: string | null
 }
 
 function mapBacklogRow(r: Record<string, unknown>): BacklogSkuRow {
@@ -253,6 +257,8 @@ function mapBacklogRow(r: Record<string, unknown>): BacklogSkuRow {
     earliest_desired_ship_date:
       (r.earliest_desired_ship_date as string | null) ?? null,
     latest_order_date: (r.latest_order_date as string | null) ?? null,
+    assigned_sales_rep_id: (r.assigned_sales_rep_id as string | null) ?? null,
+    assigned_sales_rep_name: (r.assigned_sales_rep_name as string | null) ?? null,
   }
 }
 
