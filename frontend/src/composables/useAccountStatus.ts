@@ -67,6 +67,10 @@ function useInvalidateAccountStatus() {
     void qc.invalidateQueries({ queryKey: ['intel', 'call-list'] })
     void qc.invalidateQueries({ queryKey: ['call-list', 'deactivations'] })
     void qc.invalidateQueries({ queryKey: qk.intel.signals() })
+    // Coverage leaves deactivated accounts out, and the In stock / SKU Sales
+    // buyer sheets mark or skip them.
+    void qc.invalidateQueries({ queryKey: qk.agency.root(), refetchType: 'none' })
+    void qc.invalidateQueries({ queryKey: ['intel', 'sku-prospects'] })
   }
 }
 

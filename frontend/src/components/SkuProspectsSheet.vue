@@ -37,7 +37,10 @@ const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
 const title = computed(() => (props.purpose === 'buyers' ? 'Who bought it' : 'Who should I call?'))
 
-const prospects = useSkuProspects(() => (props.open ? props.part : null), props.purpose)
+const prospects = useSkuProspects(
+  () => (props.open ? props.part : null),
+  () => props.purpose,
+)
 const dealers = computed(() => prospects.data.value?.dealers ?? [])
 const match = computed(() => prospects.data.value?.match ?? 'none')
 /** Exact buyers the call list left off because the rep stopped working them. */
@@ -121,14 +124,20 @@ function whereAndWhose(d: { city: string | null; state: string | null; repName: 
       @retry="prospects.refetch()"
     >
       <p class="text-muted text-[13px]">
-        <template v-if="match === 'similar'">
+        <template v-if="match === 'similar' && hidden > 0">
+          The only {{ hidden === 1 ? 'buyer' : `${count(hidden)} buyers` }} of this
+          exact SKU in your book {{ hidden === 1 ? 'is an account' : 'are accounts' }}
+          you stopped working, left off a call list. These dealers bought other
+          {{ similarTo }}, most recent first.
+        </template>
+        <template v-else-if="match === 'similar'">
           Nobody in your book has bought this exact SKU. These dealers bought
           other {{ similarTo }}, most recent first.
         </template>
-        <template v-else>Dealers in your book who bought it, most recent first.</template>
-        <template v-if="hidden > 0">
-          {{ count(hidden) }} {{ hidden === 1 ? 'buyer' : 'buyers' }} of this SKU you
-          stopped working {{ hidden === 1 ? 'is' : 'are' }} left off.
+        <template v-else>
+          Dealers in your book who bought it, most recent first.<template v-if="hidden > 0">
+            {{ count(hidden) }} {{ hidden === 1 ? 'buyer' : 'buyers' }} you stopped
+            working {{ hidden === 1 ? 'is' : 'are' }} left off.</template>
         </template>
       </p>
 

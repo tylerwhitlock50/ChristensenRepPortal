@@ -1,7 +1,7 @@
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { erp, isMissingDbObject, supabase } from '@/lib/supabase'
 
 /**
  * "Who should I call about this?" — the reverse of the account page's
@@ -158,10 +158,11 @@ export type ProspectAccount = Record<string, unknown>
 
 /**
  * Ranked buyers → the dealers to list, joined to their account rows. An
- * account missing from the list view (not readable as an account) or no
- * longer active in the ERP is skipped for every purpose; one the rep
- * deactivated is skipped and counted for 'call', kept and marked for
- * 'buyers'. Stops at MAX_DEALERS. Pure and exported for unit tests.
+ * account missing from the list view (not readable as an account), no
+ * longer active in the ERP, or internal (internal_customer_flag 'Y' — the
+ * territory views leave those out, 029) is skipped for every purpose; one
+ * the rep deactivated is skipped and counted for 'call', kept and marked
+ * for 'buyers'. Stops at MAX_DEALERS. Pure and exported for unit tests.
  */
 export function listProspects(
   candidates: RankedProspect[],
@@ -174,7 +175,7 @@ export function listProspects(
   for (const d of candidates) {
     used += 1
     const a = accounts.get(d.customer_key)
-    if (!a || a.active_flag !== 'Y') continue
+    if (!a || a.active_flag !== 'Y' || a.internal_customer_flag === 'Y') continue
     const deactivated = !!a.deactivated_at
     if (deactivated && purpose === 'call') {
       hidden += 1
@@ -198,34 +199,48 @@ export function listProspects(
 
 export function useSkuProspects(
   part: MaybeRefOrGetter<ProspectPart | null>,
-  purpose: ProspectPurpose = 'call',
+  purposeIn: MaybeRefOrGetter<ProspectPurpose> = 'call',
 ) {
   const current = computed(() => toValue(part))
   const partKey = computed(() => current.value?.part_key ?? '')
+  const purpose = computed(() => toValue(purposeIn))
 
   /** Ranked buyers → listed dealers, reading names for a few extra keys so
    *  skipping inactive ones still fills the list. */
   async function list(ranked: RankedProspect[]) {
     if (ranked.length === 0) return { dealers: [], used: 0, hidden: 0 }
     const candidates = ranked.slice(0, MAX_DEALERS + 15)
-    const { data, error } = await db
-      .from('v_account_list')
-      .select(
-        'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, active_flag, deactivated_at',
-      )
-      .in(
-        'customer_key',
-        candidates.map((d) => d.customer_key),
-      )
-    if (error) throw error
-    const accounts = new Map(
-      ((data ?? []) as ProspectAccount[]).map((a) => [String(a.customer_key), a]),
+    const keys = candidates.map((d) => d.customer_key)
+    // v_account_list has the names and deactivations but not the internal
+    // flag; dim_customer has it. Side by side, same keys, same RLS.
+    const [list, flags] = await Promise.all([
+      db
+        .from('v_account_list')
+        .select(
+          'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, active_flag, deactivated_at',
+        )
+        .in('customer_key', keys),
+      erp.from('dim_customer').select('customer_key, internal_customer_flag').in('customer_key', keys),
+    ])
+    if (list.error) throw list.error
+    if (flags.error) throw flags.error
+    const internal = new Map(
+      ((flags.data ?? []) as Record<string, unknown>[]).map((c) => [
+        String(c.customer_key),
+        c.internal_customer_flag,
+      ]),
     )
-    return listProspects(candidates, accounts, purpose)
+    const accounts = new Map(
+      ((list.data ?? []) as ProspectAccount[]).map((a) => [
+        String(a.customer_key),
+        { ...a, internal_customer_flag: internal.get(String(a.customer_key)) ?? null },
+      ]),
+    )
+    return listProspects(candidates, accounts, purpose.value)
   }
 
   const query = useQuery({
-    queryKey: computed(() => skuProspectsKey(partKey.value, purpose)),
+    queryKey: computed(() => skuProspectsKey(partKey.value, purpose.value)),
     enabled: computed(() => !!partKey.value),
     staleTime: 10 * 60_000,
     retry: (failureCount, error) => !isMissingDbObject(error) && failureCount < 1,

@@ -4,10 +4,11 @@
 
   Why
   ---
-  A principal's book already holds the whole agency (003/010: every account
-  whose assigned rep bills through profiles.rep_group_vendor_id — plus their
-  own rep code's accounts and any explicit grants), but every screen they
-  could open reads that book as ONE territory. Nothing said
+  A principal's book already holds their agency (003/010: every account
+  whose assigned rep bills through profiles.rep_group_vendor_id, less any
+  revoked from them — plus their own rep code's accounts and any explicit
+  grants), but every screen they could open reads that book as ONE
+  territory. Nothing said
   which rep an account, an order or a backlog line belongs to, how each rep
   is tracking against goal, or whether the reps are using the portal at all.
   The admin has all of that (Execution, Goals, Reports, Activity); the
@@ -71,9 +72,13 @@
 
   Territory definition everywhere: active, external accounts (029/030), so
   the revenue, bookings and backlog figures reconcile with
-  v_territory_account_yoy. Goal attainment follows v_account_goal_progress
-  (and so the Overview's Goal tile): this year's CRM goal, else an ERP goal
-  above zero, revenue counted on those accounts only, seasonal pace.
+  v_territory_account_yoy. Goal attainment uses v_account_goal_progress's
+  rules — this year's CRM goal, else an ERP goal above zero, revenue counted
+  on those accounts only, seasonal pace — over the same active external
+  accounts. The Overview's Goal tile applies the same rules to the whole
+  book, so it also counts goals on closed or internal accounts and on a
+  principal's own or granted accounts outside the agency: the two are
+  close, not identical.
 
   Additive only: new objects, one view and one function with appended
   columns.
@@ -91,11 +96,12 @@
 --    so an admin's `.eq('vendor_id', X)` is pushed into the scan instead of
 --    filtering a whole-company aggregate after the fact.
 --
---    Goal columns follow v_account_goal_progress so the page and the
---    Overview's Goal tile can never disagree about the same book:
---    goal_total over goal accounts, goal_revenue_ytd = revenue on those same
---    accounts, goal_expected = what should be in by today at each account's
---    own seasonal pace. Coverage (contacted_30d / workable_accounts) leaves
+--    Goal columns use v_account_goal_progress's rules over these active
+--    external accounts: goal_total over goal accounts, goal_revenue_ytd =
+--    revenue on those same accounts, goal_expected = what should be in by
+--    today at each account's own seasonal pace. (The Overview's tile counts
+--    the whole book — closed and internal goal accounts too — so it can
+--    differ by those.) Coverage (contacted_30d / workable_accounts) leaves
 --    out accounts a rep has deactivated, like every coverage surface (023);
 --    revenue keeps them — what shipped is still the agency's year.
 --------------------------------------------------------------------------
@@ -217,7 +223,8 @@ comment on view public.v_agency_rep_performance is
   'revenue YTD / prior YTD / trailing 12m / prior full year, bookings, open '
   'and past-promise order value; goal_total, goal_revenue_ytd and '
   'goal_expected on v_account_goal_progress''s rules (CRM goal, else an ERP '
-  'goal > 0; seasonal pace); contacted_30d over workable_accounts '
+  'goal > 0; seasonal pace) over these active external accounts; '
+  'contacted_30d over workable_accounts '
   '(deactivated accounts left out). Raw sums only; the Agency page rolls rows '
   'up per rep and per channel. vendor_id is the rep''s agency, the Agency '
   'page''s narrowing filter. (20261026180000)';
@@ -275,8 +282,9 @@ as $$
     -- (is_admin() or customer_key in my_customer_keys()). Definer rights are
     -- for logins and profiles only; a member's work on an account outside
     -- this book — revoked from the principal, a house grant, another
-    -- agency's — is not the principal's to count.
-    book as (
+    -- agency's — is not the principal's to count. Materialized once; the
+    -- per-member lookups below probe it.
+    book as materialized (
         select k as customer_key from public.my_customer_keys() k
     ),
     members as (
@@ -312,20 +320,6 @@ as $$
               and not (p.sales_rep_key = any (public.placeholder_rep_keys()))
         ) m
         group by m.user_id
-    ),
-    acts as (
-        select a.user_id,
-               count(*) filter (where a.action_date >= current_date - 30)
-                                                        as actions_30d,
-               count(*) filter (where a.action_type = 'visit'
-                                  and a.action_date >= current_date - 30)
-                                                        as visits_30d,
-               max(a.action_date)                       as last_action_date
-        from public.actions a
-        cross join scope s
-        where a.user_id in (select m.user_id from members m)
-          and (s.by_admin or a.customer_key in (select b.customer_key from book b))
-        group by a.user_id
     )
     select
         p.user_id,
@@ -346,12 +340,28 @@ as $$
            from public.login_events le
           where le.user_id = p.user_id
             and le.logged_at >= now() - interval '30 days'),
-        coalesce(ac.actions_30d, 0),
-        coalesce(ac.visits_30d, 0),
-        ac.last_action_date
+        -- Per member, through idx_actions_user (user_id, action_date desc):
+        -- bounded range scans and a first row, never the whole company's
+        -- actions. Each keeps only what the caller's book may read.
+        (select count(*) from public.actions a
+          where a.user_id = p.user_id
+            and a.action_date >= current_date - 30
+            and ((select s.by_admin from scope s)
+                 or a.customer_key in (select b.customer_key from book b))),
+        (select count(*) from public.actions a
+          where a.user_id = p.user_id
+            and a.action_date >= current_date - 30
+            and a.action_type = 'visit'
+            and ((select s.by_admin from scope s)
+                 or a.customer_key in (select b.customer_key from book b))),
+        (select a.action_date from public.actions a
+          where a.user_id = p.user_id
+            and ((select s.by_admin from scope s)
+                 or a.customer_key in (select b.customer_key from book b))
+          order by a.action_date desc
+          limit 1)
     from members m
     join public.profiles p on p.user_id = m.user_id
-    left join acts ac on ac.user_id = m.user_id
     order by m.is_principal desc, p.full_name, p.user_id;
 $$;
 

@@ -493,7 +493,7 @@ export function useSubmitQueue(): UseSubmitQueue {
     if (result.customerKeys.length > 0) {
       void qc.invalidateQueries({ queryKey: qk.me.needsAttention() })
       // Visits replayed from the queue move the Agency page's coverage.
-      void qc.invalidateQueries({ queryKey: qk.agency.root() })
+      void qc.invalidateQueries({ queryKey: qk.agency.root(), refetchType: 'none' })
     }
     return result
   }

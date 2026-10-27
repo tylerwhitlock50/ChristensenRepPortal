@@ -105,12 +105,15 @@ function lastActive(row: AgencyRepLine): string {
       </RouterLink>
     </template>
 
+    <!-- Loud only when there is nothing to show; a failed refresh over
+         activity on screen is a quiet "couldn't refresh" (AsyncState's rule). -->
     <div
       v-if="activity.error.value && top.length"
-      role="alert"
-      class="border-line text-danger flex flex-wrap items-center gap-x-2 border-b px-4 py-1 text-sm"
+      :role="activityLoaded ? 'status' : 'alert'"
+      class="border-line flex flex-wrap items-center gap-x-2 border-b px-4 py-1 text-sm"
+      :class="activityLoaded ? 'text-muted' : 'text-danger'"
     >
-      <span>Portal activity didn't load.</span>
+      <span>{{ activityLoaded ? "Couldn't refresh portal activity." : "Portal activity didn't load." }}</span>
       <button
         type="button"
         class="tap-target inline-flex min-w-11 items-center justify-center px-1 font-semibold underline underline-offset-2"

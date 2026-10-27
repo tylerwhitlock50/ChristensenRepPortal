@@ -116,26 +116,33 @@ values ('AO-A1', date_trunc('month', current_date)::date,                       
        ('AO-X1', date_trunc('month', current_date)::date,                          9999, 9, 1);
 
 -- As the ERP writes them (vw_FactOrderLine): a cancelled header (X) is never
--- a backlog line. AO-O1 is two open lines of one part.
+-- a backlog line. Part AO-P1 is open on two orders of A1 (AO-O1, and AO-O5
+-- from over a year ago, outside every order window here), so the backlog
+-- grain check fails if the view ever splits by order.
 insert into erp.fact_order_line (order_id, line_num, customer_key, part_key, order_date_key,
                                  bookings, backlog_qty, backlog_amount,
                                  is_backlog_line, order_status)
 values ('AO-O1',   1, 'AO-A1', 'AO-P1', to_char(current_date - 2,   'YYYYMMDD')::int,   3000, 2, 3000, true,  'R'),
-       ('AO-O1',   2, 'AO-A1', 'AO-P1', to_char(current_date - 2,   'YYYYMMDD')::int,   2000, 1, 2000, true,  'R'),
+       ('AO-O1',   2, 'AO-A1', null,    to_char(current_date - 2,   'YYYYMMDD')::int,   2000, 0,    0, false, 'R'),
+       ('AO-O5',   1, 'AO-A1', 'AO-P1', to_char(current_date - 400, 'YYYYMMDD')::int,   2000, 1, 2000, true,  'R'),
        ('AO-O2',   1, 'AO-B1', null,    to_char(current_date - 10,  'YYYYMMDD')::int,   7000, 0,    0, false, null),
        ('AO-OX',   1, 'AO-A1', null,    to_char(current_date - 1,   'YYYYMMDD')::int, 900000, 0,    0, false, 'X'),
        ('AO-OOLD', 1, 'AO-A1', null,    to_char(current_date - 100, 'YYYYMMDD')::int,  50000, 0,    0, false, 'R'),
        ('AO-O3',   1, 'AO-X1', null,    to_char(current_date - 1,   'YYYYMMDD')::int, 123456, 1,  500, true,  'R'),
        ('AO-O4',   1, 'AO-A3', null,    to_char(current_date - 1,   'YYYYMMDD')::int,   8888, 0,    0, false, 'R');
 
--- Portal use. Rep A: three app opens in 30 days on two business days, plus
+-- Portal use. Rep A: four app opens in 30 days on three Mountain days, plus
 -- one long ago; a visit and a call. Rep B: never. Rep X: busy, other agency.
--- Today's two opens share one instant, so they are one Mountain day at any
--- hour the file runs (two minutes apart straddled midnight at 00:01).
+-- Two opens an hour apart on one fixed Mountain date three days back prove
+-- active_days_30d groups by day (counting distinct timestamps would say 4),
+-- at any hour the file runs.
 insert into public.login_events (user_id, logged_at)
 select (select id from t_user where label = 'rep_a'), at
 from (values (now() - interval '1 minute'),
-             (now() - interval '1 minute'),
+             ((((now() at time zone 'America/Denver')::date - 3) + time '10:00')
+                at time zone 'America/Denver'),
+             ((((now() at time zone 'America/Denver')::date - 3) + time '11:00')
+                at time zone 'America/Denver'),
              (now() - interval '20 days'),
              (now() - interval '60 days')) v(at)
 union all
@@ -266,8 +273,9 @@ select pg_temp.assert(
   (select (is_principal, logins_7d, logins_30d, active_days_30d, actions_30d, visits_30d,
            last_action_date = current_date - 3, last_login_at > now() - interval '2 hours')::text
      from public.agency_rep_activity() where full_name = 'Rep A')
-  = '(f,2,3,2,1,1,t,t)',
-  'rep A: 2 opens this week, 3 in 30 days on 2 days, 1 action (a visit) in 30 days');
+  = '(f,3,4,3,1,1,t,t)',
+  'rep A: 3 opens this week, 4 in 30 days on 3 days (two the same day), 1 action '
+  '(a visit) in 30 days');
 
 select pg_temp.assert(
   (select (is_principal, logins_30d, last_login_at is null, actions_30d)::text
@@ -406,8 +414,8 @@ select pg_temp.assert(
 select pg_temp.assert(
   (select (backlog_amount, open_line_count, part_key)::text
      from public.v_backlog_by_sku where customer_key = 'AO-A1') = '(5000,2,AO-P1)',
-  'backlog grain unchanged by the appended columns: two open lines of one part on A1 '
-  'collapse to one (account, part) row');
+  'backlog grain unchanged by the appended columns: one part open on two orders of A1 '
+  'collapses to one (account, part) row');
 
 --------------------------------------------------------------------------
 -- 6. A principal's BOOK is wider than their agency: an explicit grant on

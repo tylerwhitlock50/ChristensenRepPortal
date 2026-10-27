@@ -14,9 +14,10 @@ import { isViewMissing } from '@/composables/useOverview'
  * query takes `vendor`, the agency to NARROW the caller's book to:
  *   - a principal passes their own. Their book is the agency plus their
  *     own rep code's accounts and any explicit grants (my_customer_keys()),
- *     and only the agency belongs on this page. Naming another vendor
- *     returns nothing — RLS already removed every other agency's rows — and
- *     agency_rep_activity() ignores the argument for them entirely;
+ *     and only the agency belongs on this page. A vendor can only narrow:
+ *     naming another one returns just what of it they already hold by
+ *     grant (usually nothing), and agency_rep_activity() ignores the
+ *     argument for them entirely;
  *   - an admin passes the agency they picked.
  *
  * Every measure arrives as a raw sum at (rep, channel) grain; the per-rep,
@@ -526,9 +527,10 @@ export interface GoalProgress {
 }
 
 /**
- * Attainment and pace from the raw sums, the way v_my_goal_rollup reads the
- * same accounts for the Overview's Goal tile — so a principal is never told
- * two different things about one book. Null when no account has a goal.
+ * Attainment and pace from the raw sums, on the rules v_my_goal_rollup uses
+ * for the Overview's Goal tile (goal accounts only, seasonal pace). The tile
+ * reads the whole book, closed and internal goal accounts included, so the
+ * two are close rather than identical. Null when no account has a goal.
  * Pure, unit-tested.
  */
 export function goalProgress(

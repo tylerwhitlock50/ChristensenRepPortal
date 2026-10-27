@@ -69,5 +69,12 @@ t('both: an ERP-closed or unreadable account is never listed',
   [...forCall.dealers, ...forBuyers.dealers].some((d) => d.customer_key === 'C' || d.customer_key === 'E'),
   false)
 
+const withInternal = new Map([...accounts, acct('E', { internal_customer_flag: 'Y' })])
+t('both: an internal account (left out of the SKU row too) is never listed',
+  [listProspects(ranked, withInternal, 'call'), listProspects(ranked, withInternal, 'buyers')]
+    .flatMap((r) => r.dealers.map((d) => d.customer_key))
+    .includes('E'),
+  false)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

@@ -19,8 +19,8 @@
  *                      screen.
  *
  * Goal attainment and its pace come from goalProgress(): revenue on the goal
- * accounts against their goals, at seasonal pace — the rule the Overview's
- * Goal tile follows, so the two pages never disagree about one book.
+ * accounts against their goals, at seasonal pace — the Overview Goal tile's
+ * rules, over this page's active agency accounts.
  */
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -66,14 +66,14 @@ const adminView = route.name === 'admin-agencies'
 /* The router guard keeps /agency to principals, but a view-as switch in the
    banner changes who that is without navigating (the page just remounts),
    and a non-principal here would be stranded on "Pick an agency" with no
-   picker. Send them where the guard would have. */
+   picker. Send them to the Overview — where Exit is headed anyway, so an
+   exiting admin never sees the admin Agencies page flash by. Signed out is
+   AppShell's case: it keeps the way back to this page. */
 if (!adminView) {
   watch(
     () => session.isPrincipal,
     (principal) => {
-      if (!principal) {
-        void router.replace(session.isAdmin ? { name: 'admin-agencies' } : { name: 'overview' })
-      }
+      if (!principal && session.isSignedIn) void router.replace({ name: 'overview' })
     },
     { immediate: true },
   )
@@ -137,9 +137,15 @@ const revenueSub = computed(() => {
 
 const goal = computed(() => goalProgress(totals.value))
 
+/** Whole percent the way the Overview gets it: the rollup rounds to one
+ *  decimal in SQL, the tile rounds that. */
+function wholePct(pct: number): number {
+  return Math.round(Math.round(pct * 10) / 10)
+}
+
 /** "12% ahead of pace" — the Overview's Goal tile wording. */
 function paceLabel(g: { attainmentPct: number; expectedPct: number }): string {
-  const points = Math.round(g.attainmentPct) - Math.round(g.expectedPct)
+  const points = wholePct(g.attainmentPct) - wholePct(g.expectedPct)
   if (points === 0) return 'on pace'
   return points > 0 ? `${points}% ahead of pace` : `${Math.abs(points)}% behind pace`
 }
@@ -156,8 +162,11 @@ const portalReps = computed(() => lines.value.filter((l) => l.portal?.active && 
 const activeThisWeek = computed(
   () => portalReps.value.filter((l) => activeWithin(l.portal, 7)).length,
 )
+/** Rep codes carrying accounts with no working login. A departed rep's
+ *  deactivated login on a code with no accounts is not a rep to chase. */
 const withoutLogin = computed(
-  () => lines.value.filter((l) => l.sales_rep_key && !l.portal?.active).length,
+  () => lines.value.filter((l) => l.id.startsWith('rep:') && l.sales_rep_key && !l.portal?.active)
+    .length,
 )
 
 /* ---- reps table ---------------------------------------------------------- */
@@ -241,6 +250,15 @@ const columns: ColumnDef<AgencyRepLine, any>[] = [
   { id: 'actions_30d', accessorFn: (row) => row.portal?.actions_30d ?? -1, header: 'Logged 30d' },
 ]
 
+/** A forwarded CSV must not read "no login" where the page said "unknown". */
+function portalCell(
+  row: AgencyRepLine,
+  pick: (p: NonNullable<AgencyRepLine['portal']>) => string | number | null,
+): string | number | null {
+  if (!activityLoaded.value) return 'not loaded'
+  return row.portal ? pick(row.portal) : null
+}
+
 function onExport() {
   const csvColumns: CsvColumn<AgencyRepLine>[] = [
     { key: 'name', header: 'Rep' },
@@ -267,11 +285,11 @@ function onExport() {
     },
     { key: 'workable_accounts', header: 'Accounts Being Worked' },
     { key: 'contacted_30d', header: 'Worked Accounts Contacted In 30 Days' },
-    { key: 'last_login', header: 'Last Active', format: (r) => r.portal?.last_login_at },
-    { key: 'logins_30d', header: 'App Opens 30 Days', format: (r) => r.portal?.logins_30d },
-    { key: 'active_days_30d', header: 'Active Days 30 Days', format: (r) => r.portal?.active_days_30d },
-    { key: 'actions_30d', header: 'Actions Logged 30 Days', format: (r) => r.portal?.actions_30d },
-    { key: 'visits_30d', header: 'Visits Logged 30 Days', format: (r) => r.portal?.visits_30d },
+    { key: 'last_login', header: 'Last Active', format: (r) => portalCell(r, (p) => p.last_login_at) },
+    { key: 'logins_30d', header: 'App Opens 30 Days', format: (r) => portalCell(r, (p) => p.logins_30d) },
+    { key: 'active_days_30d', header: 'Active Days 30 Days', format: (r) => portalCell(r, (p) => p.active_days_30d) },
+    { key: 'actions_30d', header: 'Actions Logged 30 Days', format: (r) => portalCell(r, (p) => p.actions_30d) },
+    { key: 'visits_30d', header: 'Visits Logged 30 Days', format: (r) => portalCell(r, (p) => p.visits_30d) },
   ]
   exportCsv(`agency-reps-${agencyName.value || 'agency'}`, visibleLines.value, csvColumns)
 }
@@ -326,7 +344,10 @@ const largeOrders = useAgencyLargeOrders(vendor, orderDays, ready)
  *  so their login must not cancel the empty state — only other people's
  *  (an admin looking at an agency whose reps sign in but carry nothing yet). */
 const empty = computed(
-  () => loaded.value && perfRows.value.length === 0 && !lines.value.some((l) => !l.is_principal),
+  () =>
+    loaded.value &&
+    perfRows.value.length === 0 &&
+    !lines.value.some((l) => !l.is_principal && l.portal?.active),
 )
 const emptyBody = computed(() =>
   adminView
@@ -398,7 +419,8 @@ const emptyBody = computed(() =>
     <p v-if="!ready" class="text-muted text-[15px]">
       Pick an agency to see its reps, its year and its big orders — its book
       as the ERP assigns it. A principal's own account grants and revokes
-      aren't applied here; View as shows their exact screen.
+      aren't applied here, and logged work counts every account; View as
+      shows their exact screen.
     </p>
 
     <AsyncState
@@ -419,7 +441,7 @@ const emptyBody = computed(() =>
           <StatTile label="Revenue YTD" :value="money(totals.revenue_ytd)" :sub="revenueSub" />
           <StatTile
             label="Goal"
-            :value="goal ? `${Math.round(goal.attainmentPct)}%` : dash"
+            :value="goal ? `${wholePct(goal.attainmentPct)}%` : dash"
             :sub="goal ? `of ${money(totals.goal_total)} · ${paceLabel(goal)}` : 'no goals set'"
           />
           <StatTile label="Booked YTD" :value="money(totals.bookings_ytd)" :sub="bookedSub" />
@@ -461,12 +483,17 @@ const emptyBody = computed(() =>
           </AppButton>
         </template>
 
+        <!-- Nothing loaded: say so, loudly. A failed refresh over activity that
+             is on screen: say it quietly, like AsyncState's stale bar — what
+             is shown is older, not wrong. -->
         <div
           v-if="activity.error.value"
-          role="alert"
-          class="text-danger mb-3 flex flex-wrap items-center gap-x-2 text-sm"
+          :role="activityLoaded ? 'status' : 'alert'"
+          class="mb-3 flex flex-wrap items-center gap-x-2 text-sm"
+          :class="activityLoaded ? 'text-muted' : 'text-danger'"
         >
-          <span>Portal activity didn't load — sales figures below are still current.</span>
+          <span v-if="activityLoaded">Couldn't refresh portal activity — showing the last copy.</span>
+          <span v-else>Portal activity didn't load — sales figures below are still current.</span>
           <button
             type="button"
             class="tap-target inline-flex min-w-11 items-center justify-center px-1 font-semibold underline underline-offset-2"
