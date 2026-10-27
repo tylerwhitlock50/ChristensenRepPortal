@@ -1,36 +1,145 @@
 # Source view → Supabase landing table mapping.
 # Columns are pushed positionally-by-name: the SQL Server view's PascalCase
 # column FooBarID lands in snake_case foo_bar_id (see column_map exceptions).
-# Load pattern: COPY into etl_stage.<table>, then DELETE + INSERT…SELECT into
-# erp.<table> in one short transaction (no exclusive lock on the live table).
+# Load pattern: COPY into etl_stage.<table>, then one short swap transaction
+# into erp.<table> (no exclusive lock on the live table). The swap is either
+#   replace (default)  DELETE every live row + INSERT…SELECT every staged row
+#   merge              DELETE only live rows no staged row matches exactly
+#                      (same primary key, same value in every loaded column),
+#                      then INSERT staged rows whose key is no longer live.
+# Merge exists for the hourly tier: replace rewrites ~1.2 GB across the
+# three big facts per run, which eleven times a day would exhaust Micro
+# compute's disk-IO burst budget and slow the app for every rep; merge
+# writes the few thousand rows that changed. ETL_SWAP_MODE=replace forces
+# replace everywhere (escape hatch).
+#
+# What merge changes: loaded_at (a column default, never loaded or
+# compared) becomes "when this row last changed", not "last load", for the
+# merged tables. Readers checked 2026-10-26 — migrations, live pg_views,
+# pg_proc bodies, policies, indexes, triggers, frontend/src and
+# supabase/functions: the only projection of loaded_at is v_ats_list
+# (erp.fact_available_to_sell, which stays on replace, so its loaded_at
+# still means "stock as of"). useIntel.ts, AtsIntel and the MCP ATS tool
+# read it through v_ats_list. v_account_recent_orders expands o.* in a
+# subquery but never projects loaded_at. The freshness stamp reads
+# public.job_runs, which is logged per table whatever the swap mode. If a
+# reader of a merged table's loaded_at is ever added, it must read
+# job_runs instead.
+#
+# exclude_columns: target (snake_case) columns that are never loaded —
+# dropped from the COPY column list and from every row before it leaves
+# this machine. Under merge, a live row still holding a value in an
+# excluded column counts as changed, so the first merge erases it (the
+# same NULL replace would leave). Migration 20261027090000 also nulls
+# these columns and adds CHECK (col IS NULL), so a loader without this
+# list fails that table's load instead of landing the values; the ERP note
+# (docs/erp_changes) asks for the views to stop publishing them.
 
 tables:
   - source_view: bi.vw_DimCustomer
     target_table: erp.dim_customer
+    swap: merge
+    # 285 customers carry a tax ID, some SSN-formatted; nothing in the app
+    # reads it.
+    exclude_columns: [tax_id_number]
   - source_view: bi.vw_DimShipTo
     target_table: erp.dim_ship_to
+    swap: merge
+  # 138 rows; replace costs nothing and keeps loaded_at meaning "last load".
   - source_view: bi.vw_DimSalesRep
     target_table: erp.dim_sales_rep
+    swap: replace
   - source_view: bi.vw_DimPart
     target_table: erp.dim_part
+    swap: merge
   - source_view: bi.vw_FactOrderLine
     target_table: erp.fact_order_line
+    swap: merge
   - source_view: bi.vw_FactInvoiceLine
     target_table: erp.fact_invoice_line
+    swap: merge
   - source_view: bi.vw_FactShipmentLine
     target_table: erp.fact_shipment_line
+    swap: merge
   - source_view: bi.vw_FactInventoryOnHand
     target_table: erp.fact_inventory_on_hand
+    swap: merge
   # ERP contact assignments (migration 032 must be applied before this entry
   # first runs — truncate+COPY fails on a missing table). Merged with
   # rep-entered public.contacts by public.v_account_contacts.
   - source_view: bi.vw_DimCustomerContact
     target_table: erp.dim_customer_contact
+    swap: merge
+    # One salutation held a card-like number; nothing in the app reads it.
+    exclude_columns: [salutation]
   # ATS list (migration 032). Replaces the never-created bi.vw_FactATS /
   # erp.fact_ats pair from 027 — vw_FactAvailableToSell is the certified
-  # ATS model (grain: part+site).
+  # ATS model (grain: part+site). Replace on purpose: ~820 rows, and its
+  # loaded_at is the "stock as of" time v_ats_list shows.
   - source_view: bi.vw_FactAvailableToSell
     target_table: erp.fact_available_to_sell
+    swap: replace
+
+# Refresh tiers. `python push_to_supabase.py --profile <name>` (push.ps1
+# -Profile <name>); no arguments is `full`. Scheduled by
+# schedule/Register-CrmTasks.ps1 — times are America/Denver, server clock:
+#   ats     every 15 min, Mon–Fri 05:00–17:45  (push.ps1 -Profile ats -IfIdle)
+#   hourly  Mon–Fri 06:05–16:05, on the hour+5  (push.ps1 -Profile hourly)
+#   full    daily 04:30 with the AI batch; Mon–Fri 17:00 without it (-SkipAi)
+#
+#   tables             `all`, or a list of target tables (loaded in the
+#                      order of `tables` above, not this list's order)
+#   post_load          run post_load_sql (steps filtered by their
+#                      `profiles:`). A post-load profile must load every
+#                      table in post_load_requires — checked at startup,
+#                      exit 2 otherwise.
+#   http               run post_load_http (the AI batch) after a clean
+#                      post-load; --no-http / ETL_SKIP_POST_LOAD_HTTP=1 off
+#   ledger             the job_runs row for the whole run, or null.
+#                      etl:run means exactly what it always has: every table
+#                      loaded and every required post-load step ran. The
+#                      freshness stamp reads etl:run and etl:run:hourly
+#                      (migration 20261027090100).
+#   lock               core: one full/hourly run at a time (session advisory
+#                      lock 'etl:core-run'). null: none (ats only touches
+#                      its own table, under the per-table lock every run takes).
+#   lock_wait_minutes  how long to retry the core lock (every 15 s) before
+#                      giving up with exit 3 and no ledger row. full waits
+#                      out a slow hourly; hourly skips if a full run is on.
+#   statement_timeout  this run's per-statement cap (else
+#                      ETL_STATEMENT_TIMEOUT, default 15min)
+profiles:
+  full:
+    tables: all
+    post_load: true
+    http: true
+    ledger: etl:run
+    lock: core
+    lock_wait_minutes: 45
+  hourly:
+    # = post_load_requires: everything the rollups, order change capture
+    # and order QC read, and nothing they do not.
+    tables:
+      - erp.dim_customer
+      - erp.dim_part
+      - erp.fact_order_line
+      - erp.fact_invoice_line
+      - erp.fact_shipment_line
+    post_load: true
+    http: false
+    ledger: etl:run:hourly
+    lock: core
+    lock_wait_minutes: 0
+  ats:
+    tables: [erp.fact_available_to_sell]
+    post_load: false
+    http: false
+    ledger: null
+    lock: null
+    lock_wait_minutes: 0
+    # A stock run that cannot finish in a minute gives up rather than
+    # queueing behind itself every 15 minutes.
+    statement_timeout: 60s
 
 # Generated columns in the target (order_date, ship_date, …) are computed by
 # Postgres — the ETL must NOT include them in the column list.
@@ -54,7 +163,9 @@ column_map:
   QtyAvailableMRP: qty_available_mrp
   LinkedInURL: linkedin_url
 
-# The tables post_load_sql reads. Post-load runs on a full run when every
+# The tables post_load_sql reads. Every profile with post_load: true must
+# load all of them (exit 2 at startup otherwise — hourly loads exactly
+# these). Post-load runs on a full or hourly run when every
 # table listed here loaded in THIS run, even if another table failed: one
 # feed nothing downstream reads (contacts, ATS, inventory) must not freeze
 # every rollup, the account signals and the AI batch while the facts keep
@@ -121,6 +232,12 @@ post_load_sql:
   # etl:post_load and the list carries on (push_to_supabase.py
   # post_load_steps) — so a step whose migration is not applied yet, or a
   # bad night for it, never holds back the stamp.
+  # `profiles: [...]` limits a step to those profiles; without it a step
+  # runs in every profile that runs post-load (full and hourly). Hourly
+  # runs the rollups, their statistics, order change capture and order QC:
+  # what a rep sees move within the day. Scoring and recommendations are
+  # full-only — 12/24-month signals do not move hour to hour, and they are
+  # the expensive part.
   #
   # First, always: rebuild the territory rollups (migration 030) so the
   # Overview and the AI brief read tonight's data. This must precede the
@@ -136,9 +253,12 @@ post_load_sql:
   # transaction.
   - sql: "select * from public.analyze_territory_rollups();"
     optional: true
-  - "select public.generate_recommendations() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
-  - "select public.refresh_account_signals() where not exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
-  - "select public.apply_account_scores() where not exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
+  - sql: "select public.generate_recommendations() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
+    profiles: [full]
+  - sql: "select public.refresh_account_signals() where not exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
+    profiles: [full]
+  - sql: "select public.apply_account_scores() where not exists (select 1 from public.app_settings s where s.setting_key = 'feature.recommendations' and s.enabled);"
+    profiles: [full]
   # What changed on the order book tonight — new orders, shipped backorders,
   # slipped promise dates (migration 20261013150003). The function catches
   # its own errors (logged as etl:order_changes); optional here as well, for

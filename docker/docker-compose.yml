@@ -1,5 +1,9 @@
 # Run the ETL push on demand (or from any scheduler that can `docker compose run`):
 #   docker compose -f docker/docker-compose.yml run --rm etl
+# That is the full run. The other refresh tiers (etl/views.yml profiles):
+#   docker compose -f docker/docker-compose.yml run --rm etl python push_to_supabase.py --profile hourly
+#   docker compose -f docker/docker-compose.yml run --rm etl python push_to_supabase.py --profile ats --if-idle
+# PG_CONN must be a session (port 5432), never the 6543 transaction pooler.
 # Deploy pending Supabase migrations first (same image, same .env):
 #   docker compose -f docker/docker-compose.yml run --rm etl python deploy_migrations.py
 services:
