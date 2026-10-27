@@ -30,6 +30,13 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import ViewAsCard from '@/components/admin/ViewAsCard.vue'
 import { ROLES, type Role } from '@/types/domain'
 import { count, daysAgo, humanize } from '@/lib/format'
+import {
+  emailList,
+  NOT_SIGNED_IN_DAYS,
+  notSignedIn,
+  reminderMailto,
+  type NotSignedInMode,
+} from '@/lib/adoption'
 
 const MIN_PASSWORD_LENGTH = 12
 
@@ -44,6 +51,34 @@ const lastLoginByUser = computed(() => {
   }
   return map
 })
+
+/* ---- not signed in yet: the poke ----------------------------------------
+   Active reps who have an account and are not using it, for whoever chases
+   adoption (Jayelynne). Same two reads the page already makes — profiles
+   for who is an active rep, v_rep_activity for their newest sign-in — so it
+   costs nothing extra. The reminder is a mailto: draft the admin sends
+   themselves (lib/adoption.ts: no mailer, and never a password reset fired
+   on someone else's behalf). Admin-only like the rest of this page: anyone
+   chasing reps needs the admin role to see it. */
+const pokeMode = ref<NotSignedInMode>('never')
+const notSignedInRows = computed(() =>
+  notSignedIn(profiles.data.value ?? [], lastLoginByUser.value, pokeMode.value),
+)
+const portalUrl = window.location.origin
+const senderName = computed(() => session.profile?.full_name ?? '')
+const copiedEmails = ref(false)
+
+async function copyEmails() {
+  const text = emailList(notSignedInRows.value)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedEmails.value = true
+    window.setTimeout(() => (copiedEmails.value = false), 2000)
+  } catch {
+    copiedEmails.value = false
+  }
+}
 
 /* ---- grid --------------------------------------------------------------- */
 const search = ref('')
@@ -602,6 +637,91 @@ async function setActive(active: boolean) {
         </ul>
         <p v-if="ignoreError" role="alert" class="text-danger mt-3 text-sm font-medium">
           {{ ignoreError }}
+        </p>
+      </AsyncState>
+    </AppCard>
+
+    <!-- Reps with an account who are not using it — the poke -->
+    <AppCard>
+      <template #header>
+        <div>
+          <h2 class="u-label text-ink">Not signed in yet</h2>
+          <p class="text-muted mt-1 text-[13px]">
+            Active reps who
+            {{ pokeMode === 'never' ? 'have never signed in' : `haven't signed in for ${NOT_SIGNED_IN_DAYS} days or more` }}.
+            Draft a reminder from your own mail client — the portal sends nothing.
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="border-line flex border" role="group" aria-label="Which reps to list">
+            <button
+              type="button"
+              class="tap-target font-label px-3 text-[13px] font-semibold tracking-[0.12em] uppercase"
+              :class="pokeMode === 'never' ? 'bg-ink text-canvas' : 'text-muted'"
+              :aria-pressed="pokeMode === 'never'"
+              @click="pokeMode = 'never'"
+            >
+              Never
+            </button>
+            <button
+              type="button"
+              class="tap-target font-label px-3 text-[13px] font-semibold tracking-[0.12em] uppercase"
+              :class="pokeMode === 'stale' ? 'bg-ink text-canvas' : 'text-muted'"
+              :aria-pressed="pokeMode === 'stale'"
+              @click="pokeMode = 'stale'"
+            >
+              {{ NOT_SIGNED_IN_DAYS }}+ days
+            </button>
+          </div>
+          <AppButton
+            variant="ghost"
+            :disabled="notSignedInRows.length === 0"
+            @click="copyEmails"
+          >
+            {{ copiedEmails ? 'Copied' : 'Copy emails' }}
+          </AppButton>
+        </div>
+      </template>
+
+      <AsyncState
+        :loading="profiles.isPending.value || activity.isPending.value"
+        :error="profiles.error.value ?? activity.error.value"
+        :has-data="profiles.data.value !== undefined && activity.data.value !== undefined"
+        :empty="notSignedInRows.length === 0"
+        empty-title="Everyone's in"
+        :empty-body="
+          pokeMode === 'never'
+            ? 'Every active rep has signed in at least once.'
+            : `Every active rep has signed in within the last ${NOT_SIGNED_IN_DAYS} days.`
+        "
+        @retry="profiles.refetch(); activity.refetch()"
+      >
+        <ul class="divide-line -mx-1 divide-y">
+          <li
+            v-for="rep in notSignedInRows"
+            :key="rep.user_id"
+            class="flex flex-wrap items-center gap-x-4 gap-y-2 px-1 py-3"
+          >
+            <div class="min-w-0 flex-1 basis-56">
+              <p class="text-ink truncate font-semibold">{{ rep.full_name || rep.email || '—' }}</p>
+              <p class="text-muted mt-0.5 truncate text-[13px]">{{ rep.email || 'No email on the profile' }}</p>
+            </div>
+            <p class="text-ink-2 shrink-0 text-[13px]">
+              {{ rep.last_login_at ? `Last signed in ${daysAgo(rep.last_login_at)}` : 'Never signed in' }}
+            </p>
+            <a
+              v-if="rep.email"
+              :href="reminderMailto(rep, senderName, portalUrl)"
+              class="tap-target font-label text-ink border-ink hover:bg-ink hover:text-canvas inline-flex shrink-0 items-center rounded-[2px] border-[1.5px] px-3 text-[13px] font-semibold tracking-[0.12em] uppercase transition-colors"
+            >
+              Draft reminder
+            </a>
+          </li>
+        </ul>
+        <p class="text-muted mt-3 text-[13px]">
+          {{ count(notSignedInRows.length) }} {{ notSignedInRows.length === 1 ? 'rep' : 'reps' }}.
+          The reminder tells them to use "Forgot your password?" on the
+          sign-in page if they need a new one.
         </p>
       </AsyncState>
     </AppCard>

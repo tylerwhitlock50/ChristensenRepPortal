@@ -73,6 +73,8 @@ const erp: [string, readonly unknown[]][] = [
   ['call list ranking (account_signals)', callListKeys.signals()],
   ['activity feed', activityKeys.feed()],
   ['activity feed fallback (orders only)', activityKeys.fallback()],
+  ['open order lines (v_open_order_lines)', qk.intel.openOrders()],
+  ['book shipments, any window', qk.intel.bookShipments('2026-01-01', '2026-10-26')],
 ]
 for (const [label, key] of erp) t(`ERP: ${label}`, isErpQueryKey(key), true)
 

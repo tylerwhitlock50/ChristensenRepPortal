@@ -213,11 +213,21 @@ const goalSub = computed(() => {
           <StatTile label="Goal" :value="goalValue" :sub="goalSub" />
           <!-- Two views of the same open orders: everything still owed, and
                the slice of it that is already late. -->
-          <StatTile
-            label="Open Orders"
-            :value="money(totals.openOrderValue)"
-            sub="All still-owed order value"
-          />
+          <!-- The way into the line list behind the number (Sales Intel ›
+               Open orders), the same tap-the-tile move as In stock's
+               "Out of stock". -->
+          <RouterLink
+            :to="{ name: 'intel-open-orders' }"
+            class="block h-full"
+            title="See every open order line"
+          >
+            <StatTile
+              class="hover:bg-canvas h-full transition-colors"
+              label="Open Orders"
+              :value="money(totals.openOrderValue)"
+              sub="All still-owed order value"
+            />
+          </RouterLink>
           <StatTile
             label="Past promise"
             :value="money(totals.backlogAmount)"

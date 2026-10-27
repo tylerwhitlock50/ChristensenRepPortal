@@ -5,6 +5,7 @@ import { format } from 'date-fns'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
 import { ERP_STALE_TIME } from '@/lib/queryClient'
 import { trackingList } from '@/lib/tracking'
+import { shippedValue } from '@/lib/shippedValue'
 
 /**
  * The Overview's "Recent activity": what happened on the book in the last
@@ -51,7 +52,14 @@ export interface ActivityEvent {
   line_no: number | null
   part_id: string | null
   part_description: string | null
+  /** Bookings for an order event; the older shipped-revenue figure for a
+   *  shipment (kept as is by 20261027090300). */
   amount: number | null
+  /**
+   * Packlist value for a shipment event (20261027090300), null for every
+   * other kind. Optional: absent on a database without the column.
+   */
+  shipped_value?: number | null
   qty: number | null
   line_count: number | null
   tracking_numbers: string | null
@@ -89,6 +97,7 @@ export function mapActivityRow(r: Record<string, unknown>): ActivityEvent | null
     part_id: str(r.part_id),
     part_description: str(r.part_description),
     amount: numOrNull(r.amount),
+    shipped_value: numOrNull(r.shipped_value),
     qty: numOrNull(r.qty),
     line_count: numOrNull(r.line_count),
     tracking_numbers: str(r.tracking_numbers),
@@ -136,6 +145,11 @@ export interface ShippedItem {
   occurred_on: string | null
   tracking: string[]
   ship_via: string | null
+  /**
+   * The shipment's dollars: its packlist value (shipped_value), falling back
+   * to the view's `amount` on a database without that column. Shown as
+   * "Shipped value", never revenue — see lib/shippedValue.ts.
+   */
   amount: number | null
   /** The nightly capture saw a line that had been waiting go out. */
   backorder: boolean
@@ -198,7 +212,7 @@ export function groupActivity(events: readonly ActivityEvent[]): ActivityGroups 
       occurred_on: e.occurred_on,
       tracking: trackingList(e.tracking_numbers),
       ship_via: e.ship_via,
-      amount: e.amount,
+      amount: shippedValue({ shipped_value: e.shipped_value, shipped_revenue: e.amount }),
       backorder: bo.length > 0,
       backorderParts: [...new Set(bo.map(partName))],
     })

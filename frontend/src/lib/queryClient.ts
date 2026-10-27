@@ -54,6 +54,11 @@ export const qk = {
     global: (months: number) => ['intel', 'global', months] as const,
     /** public.account_signals across the book — the nightly behaviour scores. */
     signals: () => ['intel', 'signals'] as const,
+    /** public.v_open_order_lines — every open order line in the book (G03). */
+    openOrders: () => ['intel', 'open-orders'] as const,
+    /** public.report_book_shipments(from, to) — the book's packlist lines (G04). */
+    bookShipments: (from: string, to: string) =>
+      ['intel', 'book-shipments', from, to] as const,
   },
   /** Cached AI Action output (public.ai_briefs). subject '' = territory. */
   aiBrief: (action: string, subject = '') =>
@@ -149,24 +154,31 @@ export const qk = {
 } as const
 
 /* -------------------------------------------------------------------------
- * ERP reads: cached by the nightly load, not by a timer.
+ * ERP reads: cached by the load, not by a timer.
  *
- * Everything the ETL lands changes once a night, so treating it as volatile
- * (a short staleTime, a refetch every time the rep comes back to the app)
- * spent 6-16 requests per return on numbers that could not have moved.
- * Instead:
+ * Everything the ETL lands changes only when a load runs, so treating it as
+ * volatile (a short staleTime, a refetch every time the rep comes back to
+ * the app) spent 6-16 requests per return on numbers that could not have
+ * moved. Loads now come in three tiers (etl/views.yml profiles): stock every
+ * 15 minutes on weekdays, orders/shipments/invoices hourly 6 AM-4 PM on
+ * weekdays, and a full refresh at 4:30 AM and 5 PM. Instead of a timer:
  *
  *   - ERP queries stay fresh for ERP_STALE_TIME and are NOT refetched on
  *     window focus.
  *   - useErpHeartbeat (useDataFreshness.ts) checks v_data_freshness on
- *     focus and every 15 minutes; when the load stamp or a data horizon
- *     moves (freshnessStamp) it invalidates every query isErpQueryKey()
- *     matches. Coming back to the app costs that one tiny request.
+ *     focus and every 5 minutes while the app is visible; when the load
+ *     stamp or a data horizon moves (freshnessStamp) it invalidates every
+ *     query isErpQueryKey() matches. Coming back to the app costs that one
+ *     tiny request.
+ *   - The stock tier has its own, narrower stamp (atsStamp) and its own,
+ *     narrower set of queries (isAtsQueryKey): a 15-minute stock load
+ *     refreshes the in-stock reads and nothing else.
  *   - Their gcTime is 24 hours so the persisted cache (queryPersist.ts) can
  *     hold them that long.
  *
- * Hours, not Infinity: the rows don't change during the day, but WHOSE rows
- * they are can — an admin reassigning an account changes my_customer_keys()
+ * Hours, not Infinity: the rows only change when a load says so (and the
+ * heartbeat hears it), but WHOSE rows they are can change without one — an
+ * admin reassigning an account changes my_customer_keys()
  * with no ETL run to announce it. A few hours bounds how long a reassigned
  * account keeps showing.
  *
@@ -196,6 +208,8 @@ const ERP_INTEL_KEYS = new Set([
   'call-list', //              account_signals top of the ranking (useCallList)
   'territory-recent-events', // v_territory_recent_events: facts + the ETL's order_change_events
   //                            (+ its fallback, v_territory_recent_orders)
+  'open-orders', //            v_open_order_lines (fact_order_line + dim_customer/dim_part)
+  'book-shipments', //         report_book_shipments() (fact_shipment_line + order/invoice lookups)
 ])
 
 /** ['account', <key>, <one of these>, …] */
@@ -222,11 +236,46 @@ export function isErpQueryKey(queryKey: readonly unknown[]): boolean {
   return false
 }
 
+/**
+ * In-stock reads: everything whose answer moves with
+ * erp.fact_available_to_sell, which loads every 15 minutes on weekdays
+ * rather than with the rest of the ERP.
+ *
+ *   ['intel', 'ats']                         v_ats_list (the In stock page)
+ *   ['account', <key>, 'sku-gaps', <limit>]  report_account_sku_gaps() — in stock only
+ *   ['account', <key>, 'reorders', <limit>]  report_reorder_candidates() — in stock only
+ *   ['global-search', 'products', <term>]    the header search's v_ats_list read
+ *
+ * The first three are ERP keys too (so a full or hourly load refreshes them
+ * as well); the header search's key is not, and never persists. An
+ * allow-list for the same reason isErpQueryKey is one.
+ */
+export function isAtsQueryKey(queryKey: readonly unknown[]): boolean {
+  const [root, second, third] = queryKey.map((part) => unref(part))
+  if (root === 'intel') return second === 'ats'
+  if (root === 'account') {
+    return typeof second === 'string' && (third === 'sku-gaps' || third === 'reorders')
+  }
+  if (root === 'global-search') return second === 'products'
+  return false
+}
+
+/**
+ * How long an in-stock read stays fresh without a heartbeat telling it
+ * otherwise: one stock load. ERP_STALE_TIME (hours) on a list that is
+ * reloaded every 15 minutes would let a phone that missed the heartbeat (a
+ * tab woken from sleep before its first check) keep showing a sold-out SKU
+ * as available all morning.
+ */
+export const ATS_STALE_TIME = 15 * 60_000
+
 /** The three columns of public.v_data_freshness that version the ERP cache. */
 export interface FreshnessStampFields {
   data_loaded_at?: string | null
   data_through?: string | null
   orders_through?: string | null
+  /** Not part of freshnessStamp — see atsStamp. */
+  ats_loaded_at?: string | null
 }
 
 /**
@@ -245,6 +294,12 @@ export interface FreshnessStampFields {
  * undefined when there is no row yet (not loaded), so "not loaded" is never
  * mistaken for a stamp. A null column is part of the stamp: a cleared
  * data_loaded_at is a change like any other.
+ *
+ * ats_loaded_at is deliberately NOT in it. The stock table loads every 15
+ * minutes on weekdays (52 times a day); in this stamp, every one of those
+ * would throw away every account page, rollup and SKU history on the phone
+ * for numbers that did not move. Stock has its own stamp (atsStamp) and its
+ * own, narrower invalidation (isAtsQueryKey).
  */
 export function freshnessStamp(
   row: FreshnessStampFields | null | undefined,
@@ -255,6 +310,18 @@ export function freshnessStamp(
     row.data_through ?? null,
     row.orders_through ?? null,
   ])
+}
+
+/**
+ * The version of the in-stock reads: v_data_freshness.ats_loaded_at, the
+ * last time erp.fact_available_to_sell was confirmed against the ERP.
+ * Same contract as freshnessStamp: undefined while there is no row, and a
+ * missing column (a database without 20261027090100, or a copy saved before
+ * it) reads as null, so it compares equal to itself and never flaps.
+ */
+export function atsStamp(row: FreshnessStampFields | null | undefined): string | undefined {
+  if (row === undefined || row === null) return undefined
+  return JSON.stringify(row.ats_loaded_at ?? null)
 }
 
 const ERP_QUERY_DEFAULTS = {

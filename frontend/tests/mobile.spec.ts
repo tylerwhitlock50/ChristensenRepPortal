@@ -63,6 +63,9 @@ test.describe('signed in', () => {
     { path: '/lookup', name: 'lookup' },
     { path: '/intel/sku-sales', name: 'intel-sku-sales' },
     { path: '/intel/backlog', name: 'intel-backlog' },
+    // The two book lists (G03, G04): the widest grids in the app.
+    { path: '/intel/open-orders', name: 'intel-open-orders' },
+    { path: '/intel/shipments', name: 'intel-shipments' },
     { path: '/intel/ats', name: 'intel-ats' },
     { path: '/intel/global', name: 'intel-global' },
   ]

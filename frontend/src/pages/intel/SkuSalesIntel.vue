@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import {
+  hasProductLine,
   pivotSkuYears,
   useSkuSalesByAccount,
   useTerritorySkuSales,
@@ -55,6 +56,10 @@ const totals = computed(() => {
   return { rev, revLY, qty, skus: rows.filter((r) => r.qtyThisYear > 0).length }
 })
 
+/* "Product line" (dim_part.product_code, 20261027090500) beside Family —
+   what Tableau calls Family. Only once the views carry it. */
+const showProductLine = computed(() => hasProductLine(pivoted.value))
+
 const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
   { id: 'part_id', header: 'SKU', accessorKey: 'part_id', meta: { filter: 'text' } },
   { id: 'part_description', header: 'Description', accessorKey: 'part_description' },
@@ -64,6 +69,16 @@ const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
     accessorKey: 'product_family',
     meta: { filter: 'select' },
   },
+  ...(showProductLine.value
+    ? [
+        {
+          id: 'product_code',
+          header: 'Product line',
+          accessorKey: 'product_code',
+          meta: { filter: 'select' },
+        } as ColumnDef<SkuPivotRow, any>,
+      ]
+    : []),
   {
     id: 'chambering',
     header: 'Chambering',
@@ -79,10 +94,11 @@ const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
 
 /** What's on screen is what exports — DataGrid emits its visible rows. */
 const visible = ref<SkuPivotRow[]>([])
-const csvColumns: CsvColumn<SkuPivotRow>[] = [
+const csvColumns = computed<CsvColumn<SkuPivotRow>[]>(() => [
   { key: 'part_id', header: 'SKU' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
+  ...(showProductLine.value ? [{ key: 'product_code', header: 'Product line' }] : []),
   { key: 'chambering', header: 'Chambering' },
   { key: 'upc', header: 'UPC' },
   { key: 'qtyThisYear', header: `Qty ${yearNow} to date` },
@@ -90,11 +106,11 @@ const csvColumns: CsvColumn<SkuPivotRow>[] = [
   { key: 'qtyLastYear', header: `Qty all of ${yearNow - 1}` },
   { key: 'revenueLastYear', header: `Revenue all of ${yearNow - 1}` },
   { key: 'lastInvoiceDate', header: 'Last invoice' },
-]
+])
 function onExport() {
   const prefix =
     mode.value === 'territory' ? 'sku-sales-territory' : `sku-sales-${accountKey.value}`
-  exportCsv(prefix, visible.value, csvColumns)
+  exportCsv(prefix, visible.value, csvColumns.value)
 }
 </script>
 

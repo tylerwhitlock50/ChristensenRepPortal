@@ -2,7 +2,9 @@ import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { isMissingDbObject, supabase } from '@/lib/supabase'
-import { ERP_STALE_TIME } from '@/lib/queryClient' // the nightly-load policy
+// One stock load: every row is "in stock now", and stock reloads every 15
+// minutes (isAtsQueryKey covers this key).
+import { ATS_STALE_TIME } from '@/lib/queryClient'
 
 /**
  * "Bought before and in stock now" — public.report_reorder_candidates,
@@ -105,7 +107,7 @@ export function useReorderCandidates(customerKey: MaybeRefOrGetter<string>, limi
   const query = useQuery({
     queryKey: computed(() => reorderCandidatesKey(key.value, limit)),
     enabled: computed(() => !!key.value),
-    staleTime: ERP_STALE_TIME,
+    staleTime: ATS_STALE_TIME,
     // A missing function will still be missing in a second.
     retry: (failureCount, error) => !isMissingDbObject(error) && failureCount < 1,
     queryFn: async (): Promise<ReorderCandidate[]> => {

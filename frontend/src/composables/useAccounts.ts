@@ -234,6 +234,20 @@ export function useAccountTable(
   })
 }
 
+/**
+ * Every DimCustomerRow field, by name, like every other erp read. Not '*':
+ * that also carries columns the page never uses (tax_id_number, always NULL
+ * since 20261027090000) and any column a future ERP view adds. A field
+ * added to DimCustomerRow goes here too.
+ */
+const ACCOUNT_DETAIL_COLUMNS =
+  'customer_key, customer_id, customer_name, sold_to_city, sold_to_state, ' +
+  'assigned_sales_rep_id, assigned_sales_rep_name, territory, customer_type, ' +
+  'active_flag, account_open_date, last_order_date, yearly_sales_goal, ' +
+  'credit_status, ffl_license_number, ffl_expiration_raw, credit_limit_amount, ' +
+  'ar_terms_rule_id, sold_to_address1, sold_to_address2, sold_to_zip_code, ' +
+  'invoice_email, statement_email'
+
 export function useAccount(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))
   return useQuery({
@@ -242,7 +256,7 @@ export function useAccount(customerKey: MaybeRef<string>) {
     queryFn: async (): Promise<DimCustomerRow | null> => {
       const { data, error } = await erp
         .from('dim_customer')
-        .select('*')
+        .select(ACCOUNT_DETAIL_COLUMNS)
         .eq('customer_key', key.value)
         .maybeSingle()
       if (error) throw error

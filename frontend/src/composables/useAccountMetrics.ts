@@ -123,6 +123,14 @@ export interface AccountShipmentHeaderRow {
   line_count: number
   shipped_qty: number
   shipped_revenue: number
+  /**
+   * Packlist value: shipped qty × unit price net of trade discount, summed
+   * (20261027090300). What the screens show for a shipment's dollars —
+   * shipping runs ahead of invoicing, so it is never revenue. Null on a
+   * database without the column (select('*')); lib/shippedValue.ts falls
+   * back to shipped_revenue then.
+   */
+  shipped_value: number | null
   /** Recency rank within the account, 1 = newest. The paging cursor. */
   rn: number
 }
@@ -176,6 +184,8 @@ export interface AccountShipmentLineRow {
   part_description: string | null
   shipped_qty: number | null
   shipped_revenue: number | null
+  /** The line's packlist value (20261027090300); null before that migration. */
+  shipped_value: number | null
   /** Line-level tracking number (waybill fallback) — migration 032. */
   tracking_number: string | null
 }
@@ -403,6 +413,7 @@ export function useAccountShipmentHeaders(
         line_count: num(r.line_count),
         shipped_qty: num(r.shipped_qty),
         shipped_revenue: num(r.shipped_revenue),
+        shipped_value: numOrNull(r.shipped_value),
         rn: num(r.rn),
       }))
     },
@@ -491,6 +502,7 @@ export function useAccountShipmentLines(
         part_description: (r.part_description as string | null) ?? null,
         shipped_qty: numOrNull(r.shipped_qty),
         shipped_revenue: numOrNull(r.shipped_revenue),
+        shipped_value: numOrNull(r.shipped_value),
         tracking_number: (r.tracking_number as string | null) ?? null,
       }))
     },

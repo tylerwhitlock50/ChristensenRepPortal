@@ -39,7 +39,9 @@ import type {
   ColumnFiltersState,
   Row,
   SortingState,
+  TableOptions,
 } from '@tanstack/vue-table'
+import { gridGlobalFilterOptions } from '@/lib/gridFilter'
 
 /**
  * Per-column filters are OPT-IN via column meta:
@@ -151,6 +153,12 @@ const table = useVueTable<T>({
   },
   getRowId: props.getRowId,
   defaultColumn: { filterFn: columnFilterFn },
+  // Search every column, not just the ones row 0 happens to fill in — see
+  // lib/gridFilter.ts (G08: "creedmoor" found 0 of 9 on In stock).
+  ...(gridGlobalFilterOptions as Pick<
+    TableOptions<T>,
+    'getColumnCanGlobalFilter' | 'globalFilterFn'
+  >),
   state: {
     get sorting() {
       return sorting.value

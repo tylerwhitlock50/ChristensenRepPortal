@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useNow } from '@vueuse/core'
 import type { ColumnDef } from '@tanstack/vue-table'
-import { useAtsList, type AtsRow } from '@/composables/useIntel'
+import {
+  hasProductLine,
+  isGunStockRow,
+  useAtsList,
+  type AtsRow,
+} from '@/composables/useIntel'
+import { useDataFreshness } from '@/composables/useDataFreshness'
 import { isViewMissing, useTerritoryAccounts } from '@/composables/useOverview'
 import { useAccountSkuGaps } from '@/composables/useAccountGaps'
 import { useReorderCandidates } from '@/composables/useReorderCandidates'
@@ -16,14 +23,17 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import ProductLink from '@/components/ui/ProductLink.vue'
 import { exportCsv, type CsvColumn } from '@/lib/csv'
-import { count } from '@/lib/format'
+import { clockStamp, count } from '@/lib/format'
+import { isAtsStale, newestLoadedAt } from '@/lib/stockFreshness'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 
 /**
  * ATS — what the company can actually sell right now, straight from the
  * ERP's certified calculation (erp.fact_available_to_sell, landed from
- * bi.vw_FactAvailableToSell). On hand is the SHIPPING warehouse net of
- * staging; committed = allocated open orders; backlog = all open demand;
+ * bi.vw_FactAvailableToSell, reloaded every 15 minutes on weekdays). On
+ * hand is sellable SHIPPING stock — the rack locations R01–R09 once the ERP
+ * view change of 2026-10-27 lands, SHIPPING net of R10 staging before it;
+ * committed = allocated open orders; backlog = all open demand;
  * ATS is signed, so negatives mean oversold. The upstream model does not
  * (yet) certify inbound supply or a next-available date.
  *
@@ -40,6 +50,10 @@ watch(
   () => route.query.q,
   () => {
     search.value = routeTerm()
+    // A header-search pick names one SKU, which may be a stock or a part
+    // (the header search lists every in-stock part): show it, don't let the
+    // "Guns only" default filter away the very row the rep tapped.
+    if (search.value) gunsOnly.value = false
   },
 )
 const query = useAtsList()
@@ -136,11 +150,26 @@ function whoToCall(row: AtsRow) {
   prospectsOpen.value = true
 }
 
-const rows = computed(() =>
-  gapKeys.value
+/**
+ * "Guns only", default on (G07). A domestic rep sells rifles off this list;
+ * the parts, accessories and barreled actions that share the warehouse
+ * (isGunStockRow: the Global page's gun test, minus FG-BARACT) made it read
+ * as 66 sellable SKUs when the rack held about 20 guns. Unlike "In stock
+ * only" this narrows the tiles too — the question the page answers is "how
+ * many guns can I sell", and a tile counting cleaning kits answers a
+ * different one. Not remembered between visits, like the page's other
+ * toggles: every visit starts on the rep's list — except one that arrives
+ * from the header search (?q=<SKU>), which starts with it off so a part or
+ * stock the rep picked there is not hidden behind an empty grid.
+ */
+const gunsOnly = ref(!routeTerm())
+
+const rows = computed(() => {
+  const scoped = gapKeys.value
     ? allRows.value.filter((r) => gapKeys.value!.has(r.part_key))
-    : allRows.value,
-)
+    : allRows.value
+  return gunsOnly.value ? scoped.filter(isGunStockRow) : scoped
+})
 
 /**
  * Default-on per rep feedback: the list is "what can I sell", and a page of
@@ -152,6 +181,26 @@ const inStockOnly = ref(true)
 const displayRows = computed(() =>
   inStockOnly.value ? rows.value.filter((r) => r.ats_qty > 0) : rows.value,
 )
+
+/* ---- "Stock as of 9:15 AM" ---------------------------------------------
+   Stock loads every 15 minutes on weekdays, so the page says which load it
+   is showing: v_data_freshness.ats_loaded_at (the last time the table was
+   confirmed against the ERP), or, on a database without that column, the
+   rows' own loaded_at. Ember once three loads in a row are missing during
+   loading hours (lib/stockFreshness.ts) — a rep quoting availability off a
+   list that stopped updating at 7 AM should see it before the dealer does.
+------------------------------------------------------------------------- */
+const { atsLoadedAt } = useDataFreshness()
+const now = useNow({ interval: 60_000 })
+const stockAsOf = computed(() => atsLoadedAt.value ?? newestLoadedAt(allRows.value))
+const stockStale = computed(() => isAtsStale(stockAsOf.value, now.value))
+const STALE_HINT =
+  'Stock normally reloads every 15 minutes on weekdays. ' +
+  'This list has not been updated for over 45 minutes.'
+
+/* Product line (dim_part.product_code, 20261027090200) beside Family — the
+   column Tableau calls Family. Hidden until the view carries it. */
+const showProductLine = computed(() => hasProductLine(allRows.value))
 
 /** Feed-not-landed reads differently from a real failure. */
 const feedMissing = computed(() => isViewMissing(query.error.value))
@@ -179,6 +228,16 @@ const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
     accessorKey: 'product_family',
     meta: { filter: 'select' },
   },
+  ...(showProductLine.value
+    ? [
+        {
+          id: 'product_code',
+          header: 'Product line',
+          accessorKey: 'product_code',
+          meta: { filter: 'select' },
+        } as ColumnDef<AtsRow, any>,
+      ]
+    : []),
   {
     id: 'chambering',
     header: 'Chambering',
@@ -206,10 +265,16 @@ function availableText(qty: number): string {
 }
 
 const visible = ref<AtsRow[]>([])
-const csvColumns: CsvColumn<AtsRow>[] = [
+const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
   { key: 'part_id', header: 'SKU' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
+  ...(showProductLine.value
+    ? [
+        { key: 'product_code', header: 'Product line' },
+        { key: 'product_code_description', header: 'Product line description' },
+      ]
+    : []),
   { key: 'chambering', header: 'Chambering' },
   { key: 'barrel_length', header: 'Barrel' },
   { key: 'upc', header: 'UPC' },
@@ -217,7 +282,7 @@ const csvColumns: CsvColumn<AtsRow>[] = [
   { key: 'on_hand_qty', header: 'On hand' },
   { key: 'committed_qty', header: 'Committed' },
   { key: 'backlog_qty', header: 'Backlog' },
-]
+])
 </script>
 
 <template>
@@ -238,12 +303,21 @@ const csvColumns: CsvColumn<AtsRow>[] = [
       :error="query.error.value"
       :has-data="query.data.value !== undefined"
       :updated-at="query.dataUpdatedAt.value"
-      :empty="!query.isPending.value && rows.length === 0"
+      :empty="!query.isPending.value && allRows.length === 0"
       empty-title="No stock data yet"
-      empty-body="The table exists but the nightly ERP load hasn't filled it. Check back after the next load."
+      empty-body="The table exists but the ERP stock load hasn't filled it. Check back after the next load."
       :rows="4"
       @retry="query.refetch()"
     >
+      <p
+        v-if="stockAsOf"
+        class="mb-2 text-xs"
+        :class="stockStale ? 'text-accent font-semibold' : 'text-muted'"
+        :title="stockStale ? STALE_HINT : undefined"
+      >
+        Stock as of {{ clockStamp(stockAsOf, now) }}<template v-if="stockStale">
+          · not updating, check before you promise stock</template>
+      </p>
       <div class="border-line bg-line grid grid-cols-3 gap-px border">
         <StatTile label="Sellable SKUs" :value="count(totals.sellable)" />
         <StatTile label="Units available" :value="count(totals.units)" />
@@ -297,6 +371,19 @@ const csvColumns: CsvColumn<AtsRow>[] = [
               @click="inStockOnly = !inStockOnly"
             >
               In stock only
+            </button>
+            <button
+              type="button"
+              class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
+              :class="
+                gunsOnly
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="gunsOnly"
+              @click="gunsOnly = !gunsOnly"
+            >
+              Guns only
             </button>
             <span v-if="!inStockOnly" class="text-muted text-[13px]">
               showing {{ count(totals.out) }} out-of-stock too
@@ -382,9 +469,17 @@ const csvColumns: CsvColumn<AtsRow>[] = [
                "doesn't exist". -->
           <template #empty>
             <p class="text-muted py-10 text-center text-[15px]">
-              <template v-if="inStockOnly">
+              <template v-if="inStockOnly && gunsOnly">
+                No gun in stock matches. Turn off "In stock only" or "Guns
+                only" to see more.
+              </template>
+              <template v-else-if="inStockOnly">
                 Nothing in stock matches. Turn off "In stock only" to include
                 out-of-stock SKUs.
+              </template>
+              <template v-else-if="gunsOnly">
+                No gun matches. Turn off "Guns only" to include parts and
+                accessories.
               </template>
               <template v-else>Nothing to show.</template>
             </p>

@@ -186,11 +186,15 @@ function shown<T>(rows: T[], group: keyof typeof showAll.value): T[] {
                   </span>
                 </span>
               </span>
-              <span
-                v-if="s.amount != null"
-                class="text-ink shrink-0 text-[15px] font-semibold tabular-nums"
-              >
-                {{ money(s.amount) }}
+              <!-- Packlist value, never revenue: shipping runs ahead of
+                   invoicing (lib/shippedValue.ts). -->
+              <span v-if="s.amount != null" class="shrink-0 text-right">
+                <span class="text-ink block text-[15px] font-semibold tabular-nums">
+                  {{ money(s.amount) }}
+                </span>
+                <span class="font-label text-muted block text-[11px] font-semibold tracking-[0.12em] uppercase">
+                  Shipped value
+                </span>
               </span>
             </RouterLink>
 
