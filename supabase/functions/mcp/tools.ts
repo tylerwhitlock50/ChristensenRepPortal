@@ -21,12 +21,13 @@
   Sizing
   ------
   Ranking, filtering and whole-book totals happen in Postgres (ORDER BY …
-  LIMIT and report_territory_summary() — see 20260817120000); the nightly
-  rollups make that milliseconds. The only reads that still page a relation
-  are the SKU pivots, under a unique ORDER BY and a hard cap. Those report
-  two distinct facts a model should not have to disentangle: `has_more`
-  (more SKUs than `limit` — raise it) and `capped_at` (the source-row
-  ceiling was hit, so even the totals may undercount — narrow the filters).
+  LIMIT and report_territory_summary() — see 20260817120000); the rollups,
+  rebuilt with every full and hourly load, make that milliseconds. The only
+  reads that still page a relation are the SKU pivots, under a unique ORDER
+  BY and a hard cap. Those report two distinct facts a model should not
+  have to disentangle: `has_more` (more SKUs than `limit` — raise it) and
+  `capped_at` (the source-row ceiling was hit, so even the totals may
+  undercount — narrow the filters).
   Every list tool caps `limit` and says so in its description.
 ============================================================================*/
 
@@ -206,34 +207,47 @@ const whoami: ToolDef = {
     'The connected rep, the size of their account book, and how fresh the ' +
     'data is. Call this first in a session: every other tool is scoped to ' +
     'this person automatically, and `data_through` is the newest invoice ' +
-    'date in the warehouse — "this month" means through that date, not today.',
+    'date in the warehouse — "this month" means through that date, not today. ' +
+    '`etl_loaded_at` is the last order/shipment/invoice load (hourly on ' +
+    'weekdays); `ats_loaded_at` the last stock load (every 15 minutes on weekdays).',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   async handler(_args, { db, caller }) {
-    const [all, active, fresh] = await Promise.all([
+    const freshnessRead = (columns: string) =>
+      db.from('v_data_freshness').select(columns).maybeSingle()
+    const [all, active, firstFresh] = await Promise.all([
       db.from('v_account_list').select('customer_key', { count: 'exact', head: true }),
       db
         .from('v_account_list')
         .select('customer_key', { count: 'exact', head: true })
         .eq('active_flag', 'Y')
         .is('deactivated_at', null),
-      db.from('v_data_freshness').select('data_loaded_at, data_through').maybeSingle(),
+      freshnessRead('data_loaded_at, data_through, ats_loaded_at'),
     ])
 
     if (all.error) fail(all.error, 'your account book')
 
+    // ats_loaded_at arrived with 20261027090100; a database without it
+    // still answers with the other two.
+    let fresh: PgResult = firstFresh
+    if (fresh.error && isMissingColumn(fresh.error)) {
+      fresh = await freshnessRead('data_loaded_at, data_through')
+    }
+    const freshRow = (fresh.data ?? null) as Row | null
+
     // Freshness is the one field the instructions tell every session to read
-    // first — if it cannot be read (typically: the nightly ETL is mid-load
-    // and holding locks), say so instead of returning an empty object.
+    // first — if it cannot be read (typically: a load is mid-swap and
+    // holding locks), say so instead of returning an empty object.
     const freshness = fresh.error
       ? {
           unavailable: true,
           note:
-            'Data freshness could not be read — the nightly load may be ' +
-            'running right now. Figures may shift; retry in a few minutes.',
+            'Data freshness could not be read — a load may be running right ' +
+            'now. Figures may shift; retry in a few minutes.',
         }
       : compact({
-          etl_loaded_at: fresh.data?.data_loaded_at ?? null,
-          data_through: fresh.data?.data_through ?? null,
+          etl_loaded_at: freshRow?.data_loaded_at ?? null,
+          data_through: freshRow?.data_through ?? null,
+          ats_loaded_at: freshRow?.ats_loaded_at ?? null,
         })
 
     return {
@@ -594,8 +608,9 @@ function pivotSkuRows(rows: Row[], cappedAt: number | null, sort: string, limit:
 }
 
 /*----------------------------------------------------------------------------
-  Territory. Both tools read the same nightly rollup (030), so they always
-  agree with each other and with the portal's Overview page.
+  Territory. Both tools read the same rollup (030, rebuilt with every full
+  and hourly load), so they always agree with each other and with the
+  portal's Overview page.
 
   Ranking and totals happen IN POSTGRES (view columns + ORDER BY … LIMIT,
   and report_territory_summary() for the aggregates — 20260817120000). The
@@ -929,7 +944,7 @@ export function summariseSalesMonths(rows: Row[], now: Date = new Date()) {
 
   return {
     this_month: money(thisMonth),
-    this_month_note: 'Partial — through the last nightly load (see whoami data_through).',
+    this_month_note: 'Partial — through the newest invoice loaded (see whoami data_through).',
     last_month: money(lastMonth),
     same_month_last_year: money(sameMonthLastYear),
     this_month_vs_last_year_pct:
@@ -1227,6 +1242,9 @@ const listOrders: ToolDef = {
   },
 }
 
+/** Shipment dollars: the packlist value first, the older figure beside it. */
+const SHIPPED_VALUE_COLUMNS = 'shipped_value, shipped_revenue'
+
 const listShipments: ToolDef = {
   name: 'list_shipments',
   title: 'Shipments',
@@ -1234,7 +1252,9 @@ const listShipments: ToolDef = {
     'Shipments (packlists) for one account, newest first, with tracking ' +
     'numbers and delivery dates. FULL history — page older shipments with ' +
     '`offset`. Pass packlist_id for that shipment\'s lines. Answers "did ' +
-    'their order ship" and "where is it".',
+    'their order ship" and "where is it". `shipped_value` is the packlist ' +
+    'value (qty × net price) — NOT revenue: shipping runs ahead of invoicing, ' +
+    'and only invoiced lines count as sales.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1252,32 +1272,43 @@ const listShipments: ToolDef = {
     const offset = clampInt(args.offset, 0, 0, 100_000)
     const packlist = str(args.packlist_id)
 
+    // shipped_value arrived with 20261027090300. Asked for first; a database
+    // without it answers with shipped_revenue alone (the older figure),
+    // rather than failing the tool.
     if (packlist) {
-      const lines = await db
-        .from('v_account_shipment_lines')
-        .select(
-          'packlist_id, line_num, order_id, invoice_id, ship_date, actual_delivery_date, ' +
-            'part_id, part_description, shipped_qty, shipped_revenue',
-        )
-        .eq('customer_key', key)
-        .eq('packlist_id', packlist)
-        .order('line_num')
+      const readLines = (value: string) =>
+        db
+          .from('v_account_shipment_lines')
+          .select(
+            'packlist_id, line_num, order_id, invoice_id, ship_date, actual_delivery_date, ' +
+              `part_id, part_description, shipped_qty, ${value}`,
+          )
+          .eq('customer_key', key)
+          .eq('packlist_id', packlist)
+          .order('line_num')
+      let lines: PgResult = await readLines(SHIPPED_VALUE_COLUMNS)
+      if (lines.error && isMissingColumn(lines.error)) lines = await readLines('shipped_revenue')
       return { packlist_id: packlist, lines: rowsOf(lines, 'the shipment lines').map(compact) }
     }
 
-    const headers = await db
-      .from('v_account_recent_shipment_headers')
-      .select(
-        'packlist_id, ship_date, actual_delivery_date, shipment_state, ' +
-          'shipper_status_desc, tracking_number, ship_via, order_ids, line_count, ' +
-          'shipped_qty, shipped_revenue',
-        { count: 'exact' },
-      )
-      .eq('customer_key', key)
-      // packlist_id as the unique tiebreak so same-day shipments page stably.
-      .order('ship_date', { ascending: false, nullsFirst: false })
-      .order('packlist_id', { ascending: false })
-      .range(offset, offset + limit - 1)
+    const readHeaders = (value: string) =>
+      db
+        .from('v_account_recent_shipment_headers')
+        .select(
+          'packlist_id, ship_date, actual_delivery_date, shipment_state, ' +
+            'shipper_status_desc, tracking_number, ship_via, order_ids, line_count, ' +
+            `shipped_qty, ${value}`,
+          { count: 'exact' },
+        )
+        .eq('customer_key', key)
+        // packlist_id as the unique tiebreak so same-day shipments page stably.
+        .order('ship_date', { ascending: false, nullsFirst: false })
+        .order('packlist_id', { ascending: false })
+        .range(offset, offset + limit - 1)
+    let headers: PgResult = await readHeaders(SHIPPED_VALUE_COLUMNS)
+    if (headers.error && isMissingColumn(headers.error)) {
+      headers = await readHeaders('shipped_revenue')
+    }
 
     const rows = rowsOf(headers, 'the shipment history')
     return {
