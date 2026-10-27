@@ -72,7 +72,9 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
 - `push_to_supabase.py` — the job (pyodbc → psycopg COPY)
 - `push.ps1` — what the scheduled tasks run: profile, log, alert, heartbeat
 - `push-ats.ps1`, `push-hourly.ps1` — one-line wrappers for a hand run
-- `schedule/Register-CrmTasks.ps1` — registers the four `\CRM\` tasks
+- `schedule/Register-CrmTasks.ps1` — registers the four `\CRM\` tasks, and
+  shows, starts, pauses and resumes them (`-Status`, `-Start`, `-Disable`,
+  `-Enable`), so Task Scheduler's UI is never needed
 - `tests/test_push_to_supabase.py` — unit tests (stdlib unittest, no DB):
   `venv\Scripts\python.exe -m unittest discover -s tests -v`
 - `tests/merge_integration.py` — proves the merge SQL against Supabase on
@@ -178,6 +180,18 @@ full tasks catch up a missed start. A missed stock or hourly run is
 superseded by the next one, but a missed full run costs a day of scores,
 signals and briefings.
 
+To see them without opening Task Scheduler, from `etl\` on the server (no
+elevation needed):
+
+```powershell
+.\schedule\Register-CrmTasks.ps1 -Status
+```
+
+One row per task with its state, last run, last result decoded (`0 (ok)`,
+`3 (skipped: another run held the lock)`, `0x41301 (running now)`, …) and
+next run, plus the legacy "Run CRM update" task if the machine has it.
+Every other mode of the script ends with the same table.
+
 The profiles themselves (tables, post-load, ledger, lock, timeout) live in
 `views.yml → profiles`. The loader checks them at startup. A profile that
 runs post-load without loading every table in `post_load_requires` is a
@@ -230,9 +244,10 @@ config error (exit 2) before anything connects.
 
 ### Pausing the stock (ATS) run
 
-- Task Scheduler → `\CRM\` → *ERP push - ATS* → **Disable**, or
-  `Disable-ScheduledTask -TaskPath '\CRM\' -TaskName 'ERP push - ATS'`.
-- Enable it again the same way.
+- From an elevated prompt in `etl\`: `.\schedule\Register-CrmTasks.ps1 -Disable ats`
+  (the keys are `full0430`, `full1700`, `hourly`, `ats`). Or Task Scheduler
+  → `\CRM\` → *ERP push - ATS* → **Disable**.
+- `-Enable ats` turns it back on.
 - The portal's "Stock as of" time just stops moving while it is off. The
   full runs still load the stock table twice a day.
 
@@ -248,7 +263,10 @@ Run from `etl\` on the BI server, as the task account or an admin:
 .\push.ps1 -Tables dim_part,fact_order_line   # legacy subset: no post-load, no ledger row
 ```
 
-Or start a registered task, which uses the same account, logs and alerts:
+Or start a registered task, which uses the same account, logs and alerts,
+from an elevated prompt: `.\schedule\Register-CrmTasks.ps1 -Start full1700`
+(a task that is already running is left alone, like IgnoreNew). The plain
+cmdlet does the same:
 `Start-ScheduledTask -TaskPath '\CRM\' -TaskName 'ERP push - full 1700'`.
 
 `push.ps1` alerts on a failed hand run exactly as on a scheduled one. A
@@ -332,7 +350,10 @@ matched") and the alert posts.
    - then `.\push-ats.ps1`. It should exit 0, and `push-ats.log` should show
      `erp.fact_available_to_sell: … rows`.
 6. **Register the tasks.** From an elevated prompt:
-   - Preview first: `.\schedule\Register-CrmTasks.ps1 -WhatIf`.
+   - Preview first: `.\schedule\Register-CrmTasks.ps1 -WhatIf`. It prints
+     the plan, checks that `.env` has real `PG_CONN` and `MSSQL_CONN`
+     values (not the `.env.example` placeholders, not port 6543) and warns
+     when `ETL_ALERT_WEBHOOK` is unset. Values are never printed.
    - Then: `.\schedule\Register-CrmTasks.ps1 -User 'DOMAIN\svc-crm-etl$'`
      for a gMSA, or `-User DOMAIN\svc-crm-etl` to be prompted for its
      password.
@@ -347,7 +368,8 @@ matched") and the alert posts.
    - Do not run `Register-CrmTasks.ps1` there: it would register the four
      tasks on the PC as well.
    - `-DisableLegacyTask` is for a server that also carries the old task.
-8. **Watch the first day:**
+8. **Watch the first day** (`.\schedule\Register-CrmTasks.ps1 -Status` shows
+   all four at a glance):
    - `push-ats.log` fills every 15 min from 05:00.
    - `push-hourly.log` fills at :05 past each hour from 06:05.
    - `push.log` gets a run at 17:00.
