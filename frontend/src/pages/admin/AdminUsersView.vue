@@ -180,7 +180,11 @@ const cFromRep = ref<UnmappedRep | null>(null)
  */
 const principalHint = computed(() => {
   const rep = cFromRep.value
-  if (!rep || rep.customer_count > 0 || !rep.vendor_id) return null
+  // Active accounts, not all of them: a code that still carries one long-
+  // closed dealer puts nothing in a book either. (All accounts on a database
+  // that predates the active count.)
+  const inBook = rep?.active_customer_count ?? rep?.customer_count ?? 0
+  if (!rep || inBook > 0 || !rep.vendor_id) return null
   if (cRole.value !== 'rep' || cVendorId.value.trim()) return null
   if (cRepKey.value.trim() !== rep.sales_rep_key) return null
   return { vendor: rep.vendor_id, name: humanize(rep.sales_rep_name) || rep.sales_rep_key }
@@ -481,8 +485,8 @@ async function setActive(active: boolean) {
             class="border-l-accent text-ink-2 border-l-[3px] pl-3 text-sm sm:col-span-2"
           >
             <p>
-              {{ principalHint.name }} has no accounts of their own in the ERP, so
-              with only the rep code they will sign in to an empty book. If they
+              {{ principalHint.name }} has no active accounts of their own in the
+              ERP, so with only the rep code they will sign in to an empty book. If they
               run {{ principalHint.vendor }} as its principal, give them the
               agency's book — every account its reps carry, and the Agency tab.
             </p>

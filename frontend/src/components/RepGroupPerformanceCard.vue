@@ -188,7 +188,8 @@ function onExport() {
         @rows-change="visibleRows = $event"
       >
         <template #cell-rep_group_id="{ row }">
-          <!-- Into the group's Agency page: its reps, as its principal sees them. -->
+          <!-- Into the group's Agency page: its reps and its book, as the ERP
+               assigns it (a principal's own overrides aside). -->
           <RouterLink
             v-if="row.rep_group_id !== '(No rep group)'"
             :to="{ name: 'admin-agencies', query: { vendor: row.rep_group_id } }"
@@ -282,9 +283,9 @@ function onExport() {
               <RouterLink
                 v-if="row.rep_group_id !== '(No rep group)'"
                 :to="{ name: 'admin-agencies', query: { vendor: row.rep_group_id } }"
-                class="text-ink block truncate font-semibold underline-offset-2 hover:underline"
+                class="tap-target text-ink flex min-w-0 items-center font-semibold underline decoration-dotted underline-offset-2"
               >
-                {{ row.rep_group_id }}
+                <span class="truncate">{{ row.rep_group_id }}</span>
               </RouterLink>
               <p v-else class="text-ink truncate font-semibold">{{ row.rep_group_id }}</p>
               <p class="text-muted mt-0.5 text-[15px]">{{ whoLabel(row) }}</p>

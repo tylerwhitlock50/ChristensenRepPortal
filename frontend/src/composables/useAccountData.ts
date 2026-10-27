@@ -168,6 +168,10 @@ export function useLogAccountAction() {
         queryKey: qk.account.root(vars.customerKey),
         predicate: (q) => !isErpQueryKey(q.queryKey),
       })
+      // The Agency page's coverage and logged-work counts. Marked stale
+      // only: this runs after nearly every call, and the principal's Overview
+      // card (which keeps agency reads alive) shows none of what moved.
+      void qc.invalidateQueries({ queryKey: qk.agency.root(), refetchType: 'none' })
     },
   })
 }

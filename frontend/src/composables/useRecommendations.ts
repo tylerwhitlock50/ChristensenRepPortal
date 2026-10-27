@@ -141,6 +141,9 @@ function useInvalidateAfterWrite() {
   return (customerKey: string) => {
     void qc.invalidateQueries({ queryKey: qk.me.needsAttention() })
     void qc.invalidateQueries({ queryKey: qk.account.root(customerKey) })
+    // A logged action moves the Agency page's coverage and logged-work
+    // counts (stale only — see useAccountGoals' note).
+    void qc.invalidateQueries({ queryKey: qk.agency.root(), refetchType: 'none' })
   }
 }
 

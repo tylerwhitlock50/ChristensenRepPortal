@@ -361,6 +361,9 @@ function useInvalidateGoals() {
     void qc.invalidateQueries({ queryKey: qk.account.root(customerKey) })
     void qc.invalidateQueries({ queryKey: qk.goals.root() })
     void qc.invalidateQueries({ queryKey: qk.admin.repGoals() })
+    // The Agency page sums goals per rep. Marked stale only: the principal's
+    // Overview card keeps agency reads alive, and nothing it shows moved.
+    void qc.invalidateQueries({ queryKey: qk.agency.root(), refetchType: 'none' })
   }
 }
 

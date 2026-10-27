@@ -1,7 +1,7 @@
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { erp, isMissingDbObject, supabase } from '@/lib/supabase'
 
 /**
  * "Who should I call about this?" — the reverse of the account page's
@@ -24,8 +24,19 @@ import { isMissingDbObject, supabase } from '@/lib/supabase'
 /** v_sku_sales_by_account predates the generated types. */
 const db = supabase as unknown as SupabaseClient
 
-/** Territory-scoped (no account key): every dealer in the caller's book. */
-export const skuProspectsKey = (partKey: string) => ['intel', 'sku-prospects', partKey] as const
+/**
+ * What the list is for. 'call' (the In stock list): dealers worth ringing, so
+ * accounts the rep has stopped working are left off — and counted, so an
+ * empty list can say why. 'buyers' (SKU Sales): everyone in the book who
+ * bought it, the same population as the SKU row it opens from, with the
+ * stopped ones marked rather than dropped.
+ */
+export type ProspectPurpose = 'call' | 'buyers'
+
+/** Territory-scoped (no account key): every dealer in the caller's book. The
+ *  purpose is in the key — the two lists differ for the same part. */
+export const skuProspectsKey = (partKey: string, purpose: ProspectPurpose = 'call') =>
+  ['intel', 'sku-prospects', partKey, purpose] as const
 
 /** The listed dealers; `more` says how many were left off. */
 const MAX_DEALERS = 25
@@ -47,6 +58,9 @@ export interface SkuProspect {
   state: string | null
   /** The account's assigned rep — a principal's book spans several. */
   repName: string | null
+  /** The rep deactivated it (account_deactivations) — only ever listed for
+   *  the 'buyers' purpose. */
+  deactivated: boolean
   /** Most recent calendar year with a purchase, and the units that year. */
   lastYear: number
   unitsLastYear: number
@@ -61,6 +75,9 @@ export interface SkuProspects {
   dealers: SkuProspect[]
   /** Dealers beyond MAX_DEALERS. */
   more: number
+  /** Buyers of this exact part left off because the rep stopped working
+   *  them ('call' only) — so "nobody bought this" is never said of them. */
+  hidden: number
 }
 
 type SaleRow = {
@@ -80,7 +97,7 @@ function realSpec(value: string | null | undefined): string | null {
  * Sales rows → one entry per dealer, most recent buyer first. Returns
  * (qty <= 0) are not purchases. Pure and exported for unit tests.
  */
-type RankedProspect = Omit<SkuProspect, 'customer_name' | 'city' | 'state' | 'repName'>
+export type RankedProspect = Omit<SkuProspect, 'customer_name' | 'city' | 'state' | 'repName' | 'deactivated'>
 
 export function rankProspects(rows: SaleRow[]): RankedProspect[] {
   const byDealer = new Map<string, RankedProspect>()
@@ -136,73 +153,131 @@ async function readSales(filters: Record<string, string>): Promise<SaleRow[]> {
   return out
 }
 
-export function useSkuProspects(part: MaybeRefOrGetter<ProspectPart | null>) {
+/** One v_account_list row, as far as this file reads it. */
+export type ProspectAccount = Record<string, unknown>
+
+/**
+ * Ranked buyers → the dealers to list, joined to their account rows. An
+ * account missing from the list view (not readable as an account), no
+ * longer active in the ERP, or internal (internal_customer_flag 'Y' — the
+ * territory views leave those out, 029) is skipped for every purpose; one
+ * the rep deactivated is skipped and counted for 'call', kept and marked
+ * for 'buyers'. Stops at MAX_DEALERS. Pure and exported for unit tests.
+ */
+export function listProspects(
+  candidates: RankedProspect[],
+  accounts: Map<string, ProspectAccount>,
+  purpose: ProspectPurpose,
+): { dealers: SkuProspect[]; used: number; hidden: number } {
+  const dealers: SkuProspect[] = []
+  let used = 0
+  let hidden = 0
+  for (const d of candidates) {
+    used += 1
+    const a = accounts.get(d.customer_key)
+    if (!a || a.active_flag !== 'Y' || a.internal_customer_flag === 'Y') continue
+    const deactivated = !!a.deactivated_at
+    if (deactivated && purpose === 'call') {
+      hidden += 1
+      continue
+    }
+    dealers.push({
+      ...d,
+      customer_name: (a.customer_name as string | null) ?? null,
+      city: (a.sold_to_city as string | null) ?? null,
+      state: (a.sold_to_state as string | null) ?? null,
+      repName:
+        (a.assigned_sales_rep_name as string | null) ??
+        (a.assigned_sales_rep_id as string | null) ??
+        null,
+      deactivated,
+    })
+    if (dealers.length === MAX_DEALERS) break
+  }
+  return { dealers, used, hidden }
+}
+
+export function useSkuProspects(
+  part: MaybeRefOrGetter<ProspectPart | null>,
+  purposeIn: MaybeRefOrGetter<ProspectPurpose> = 'call',
+) {
   const current = computed(() => toValue(part))
   const partKey = computed(() => current.value?.part_key ?? '')
+  const purpose = computed(() => toValue(purposeIn))
+
+  /** Ranked buyers → listed dealers, reading names for a few extra keys so
+   *  skipping inactive ones still fills the list. */
+  async function list(ranked: RankedProspect[]) {
+    if (ranked.length === 0) return { dealers: [], used: 0, hidden: 0 }
+    const candidates = ranked.slice(0, MAX_DEALERS + 15)
+    const keys = candidates.map((d) => d.customer_key)
+    // v_account_list has the names and deactivations but not the internal
+    // flag; dim_customer has it. Side by side, same keys, same RLS.
+    const [list, flags] = await Promise.all([
+      db
+        .from('v_account_list')
+        .select(
+          'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, active_flag, deactivated_at',
+        )
+        .in('customer_key', keys),
+      erp.from('dim_customer').select('customer_key, internal_customer_flag').in('customer_key', keys),
+    ])
+    if (list.error) throw list.error
+    if (flags.error) throw flags.error
+    const internal = new Map(
+      ((flags.data ?? []) as Record<string, unknown>[]).map((c) => [
+        String(c.customer_key),
+        c.internal_customer_flag,
+      ]),
+    )
+    const accounts = new Map(
+      ((list.data ?? []) as ProspectAccount[]).map((a) => [
+        String(a.customer_key),
+        { ...a, internal_customer_flag: internal.get(String(a.customer_key)) ?? null },
+      ]),
+    )
+    return listProspects(candidates, accounts, purpose.value)
+  }
 
   const query = useQuery({
-    queryKey: computed(() => skuProspectsKey(partKey.value)),
+    queryKey: computed(() => skuProspectsKey(partKey.value, purpose.value)),
     enabled: computed(() => !!partKey.value),
     staleTime: 10 * 60_000,
     retry: (failureCount, error) => !isMissingDbObject(error) && failureCount < 1,
     queryFn: async (): Promise<SkuProspects> => {
       const p = current.value!
-      let match: SkuProspects['match'] = 'exact'
       let ranked = rankProspects(await readSales({ part_key: p.part_key }))
+      let match: SkuProspects['match'] = 'exact'
+      let picked = await list(ranked)
+      // Counted from the exact part only: "nobody bought THIS" is the claim
+      // it protects.
+      const hidden = picked.hidden
 
+      // The fallback is decided AFTER the account filter: an exact buyer
+      // that was skipped must not block "these bought other <family>".
       const family = realSpec(p.product_family)
       const chambering = realSpec(p.chambering)
-      if (ranked.length === 0 && (family || chambering)) {
-        match = 'similar'
-        ranked = rankProspects(
+      if (picked.dealers.length === 0 && (family || chambering)) {
+        const similar = rankProspects(
           await readSales({
             ...(family ? { product_family: family } : {}),
             ...(chambering ? { chambering } : {}),
           }),
         )
+        const similarPicked = await list(similar)
+        if (similarPicked.dealers.length > 0) {
+          match = 'similar'
+          ranked = similar
+          picked = similarPicked
+        }
       }
-      if (ranked.length === 0) return { match: 'none', dealers: [], more: 0 }
-
-      // Names, and the accounts nobody works any more. A few extra keys so
-      // dropping inactive ones still fills the list.
-      const candidates = ranked.slice(0, MAX_DEALERS + 15)
-      const { data, error } = await db
-        .from('v_account_list')
-        .select(
-          'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, active_flag, deactivated_at',
-        )
-        .in(
-          'customer_key',
-          candidates.map((d) => d.customer_key),
-        )
-      if (error) throw error
-      const accounts = new Map(
-        ((data ?? []) as Record<string, unknown>[]).map((a) => [String(a.customer_key), a]),
-      )
-      const dealers: SkuProspect[] = []
-      let used = 0
-      for (const d of candidates) {
-        used += 1
-        const a = accounts.get(d.customer_key)
-        // Not in the list view at all = not readable as an account; skip it.
-        if (!a || a.active_flag !== 'Y' || a.deactivated_at) continue
-        dealers.push({
-          ...d,
-          customer_name: (a.customer_name as string | null) ?? null,
-          city: (a.sold_to_city as string | null) ?? null,
-          state: (a.sold_to_state as string | null) ?? null,
-          repName:
-            (a.assigned_sales_rep_name as string | null) ??
-            (a.assigned_sales_rep_id as string | null) ??
-            null,
-        })
-        if (dealers.length === MAX_DEALERS) break
-      }
+      if (picked.dealers.length === 0) return { match: 'none', dealers: [], more: 0, hidden }
       return {
-        match: dealers.length ? match : 'none',
-        dealers,
+        match,
+        dealers: picked.dealers,
         // Not checked for activity, so "about".
-        more: Math.max(0, ranked.length - used),
+        more: Math.max(0, ranked.length - picked.used),
+        hidden,
       }
     },
   })

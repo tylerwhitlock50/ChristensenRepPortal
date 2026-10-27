@@ -152,6 +152,9 @@ export interface UnmappedRep {
   /** An admin parked this rep in unmapped_rep_ignores (20261026120000). */
   ignored: boolean
   ignore_note: string | null
+  /** Active external accounts on the code — what a book would show
+   *  (20261027120000). Null on a database without that migration. */
+  active_customer_count: number | null
 }
 
 /**
@@ -198,6 +201,8 @@ export function useUnmappedReps() {
       return ((data ?? []) as UnmappedRep[]).map((r) => ({
         ...r,
         customer_count: Number(r.customer_count ?? 0),
+        active_customer_count:
+          r.active_customer_count == null ? null : Number(r.active_customer_count),
       }))
     },
   })

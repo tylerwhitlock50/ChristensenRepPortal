@@ -124,13 +124,17 @@ how to record a hand-applied file with `--baseline-through`).
   implementation of the rules in 010, in a language with no RLS. Nothing in
   `functions/mcp/` may scope by customer; RLS is the only filter.
 - **A principal sees their reps' portal use through one function only.**
-  The Agency page (20261026180000) is otherwise RLS like everything else —
-  a principal's book already is their agency, cut by rep. Logins and other
-  reps' profiles are not rep-readable, so `agency_rep_activity()` is a
-  `security definer` that resolves the agency from the EFFECTIVE user's
-  `rep_group_vendor_id` (view-as aware) and ignores its argument for
-  anyone but an admin. Every other agency read takes a vendor only to
-  narrow. `supabase/tests/20261026_agency_overview.sql` is the proof.
+  The Agency page (20261026180000, fixed by 20261027120000) is otherwise
+  RLS like everything else.
+  A principal's book is their agency PLUS their own rep code's accounts and
+  any explicit grants, so every agency read narrows to the vendor — that
+  filter is load-bearing, never security; it can only narrow. Logins and
+  other reps' profiles are not rep-readable, so `agency_rep_activity()` is
+  a `security definer` that resolves the agency from the EFFECTIVE user's
+  `rep_group_vendor_id` (view-as aware) and ignores its argument for anyone
+  but an admin. Its definer rights are for logins and profiles only: logged
+  actions are counted on the caller's book alone, exactly as the actions
+  policy would. `supabase/tests/20261026_agency_overview.sql` is the proof.
 - **A goal belongs to the account, not to the rep who typed it.**
   `account_goals` is unique on `(customer_key, period_year)`, so a principal
   and their rep report against the same number and the admin rollup never has

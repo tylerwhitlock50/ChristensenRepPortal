@@ -159,6 +159,9 @@ export function useSubmitVisit() {
       void qc.invalidateQueries({ queryKey: qk.account.root(vars.customerKey) })
       // The home list — a linked recommendation just moved to 'acted'.
       void qc.invalidateQueries({ queryKey: qk.me.needsAttention() })
+      // The Agency page's coverage and logged-work counts (stale only — see
+      // useAccountGoals' note).
+      void qc.invalidateQueries({ queryKey: qk.agency.root(), refetchType: 'none' })
     },
   })
 }

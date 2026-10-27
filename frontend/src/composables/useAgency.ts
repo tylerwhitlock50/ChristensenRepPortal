@@ -14,9 +14,10 @@ import { isViewMissing } from '@/composables/useOverview'
  * query takes `vendor`, the agency to NARROW the caller's book to:
  *   - a principal passes their own. Their book is the agency plus their
  *     own rep code's accounts and any explicit grants (my_customer_keys()),
- *     and only the agency belongs on this page. Naming another vendor
- *     returns nothing — RLS already removed every other agency's rows — and
- *     agency_rep_activity() ignores the argument for them entirely;
+ *     and only the agency belongs on this page. A vendor can only narrow:
+ *     naming another one returns just what of it they already hold by
+ *     grant (usually nothing), and agency_rep_activity() ignores the
+ *     argument for them entirely;
  *   - an admin passes the agency they picked.
  *
  * Every measure arrives as a raw sum at (rep, channel) grain; the per-rep,
@@ -33,7 +34,8 @@ const AGENCY_STALE_TIME = 10 * 60_000
 
 const MISSING_MESSAGE =
   'The agency views are not in the database yet. Apply ' +
-  'supabase/migrations/20261026180000_agency_overview.sql, then reload.'
+  'supabase/migrations/20261026180000_agency_overview.sql and ' +
+  '20261027120000_agency_review_fixes.sql, then reload.'
 
 function asDisplayError(error: unknown): unknown {
   if (isViewMissing(error)) {
@@ -80,6 +82,13 @@ export interface AgencyMeasures {
   backlog_amount: number
   goal_total: number
   last_invoice_date: string | null
+  /** Revenue YTD on the goal accounts only — the attainment numerator. */
+  goal_revenue_ytd: number
+  /** What the goal accounts should have in by today, at each account's own
+   *  seasonal pace (v_account_goal_progress's rule). */
+  goal_expected: number
+  /** Active accounts nobody has deactivated — the coverage denominator. */
+  workable_accounts: number
 }
 
 const ZERO: AgencyMeasures = {
@@ -99,6 +108,9 @@ const ZERO: AgencyMeasures = {
   backlog_amount: 0,
   goal_total: 0,
   last_invoice_date: null,
+  goal_revenue_ytd: 0,
+  goal_expected: 0,
+  workable_accounts: 0,
 }
 
 function addInto(target: AgencyMeasures, row: AgencyMeasures) {
@@ -117,6 +129,9 @@ function addInto(target: AgencyMeasures, row: AgencyMeasures) {
   target.open_order_value += row.open_order_value
   target.backlog_amount += row.backlog_amount
   target.goal_total += row.goal_total
+  target.goal_revenue_ytd += row.goal_revenue_ytd
+  target.goal_expected += row.goal_expected
+  target.workable_accounts += row.workable_accounts
   if (
     row.last_invoice_date &&
     (!target.last_invoice_date || row.last_invoice_date > target.last_invoice_date)
@@ -164,6 +179,9 @@ function toRepChannelRow(r: Record<string, unknown>): AgencyRepChannelRow {
     backlog_amount: num(r.backlog_amount),
     goal_total: num(r.goal_total),
     last_invoice_date: text(r.last_invoice_date),
+    goal_revenue_ytd: num(r.goal_revenue_ytd),
+    goal_expected: num(r.goal_expected),
+    workable_accounts: num(r.workable_accounts),
   }
 }
 
@@ -185,7 +203,7 @@ export function useAgencyRepPerformance(
         const rows = await fetchAllRows<Record<string, unknown>>((from, to) => {
           let q = db
             .from('v_agency_rep_performance')
-            .select('*', { count: 'exact' }) // unfiltered for a principal — RLS is the agency
+            .select('*', { count: 'exact' }) // narrowed to the agency below; RLS is the boundary
           if (v.value) q = q.eq('vendor_id', v.value)
           return q
             .order('sales_rep_key', { nullsFirst: true })
@@ -451,9 +469,9 @@ export function buildRepLines(
   )
   for (const a of activity) {
     if (placed.has(a.user_id)) continue
-    // Same code as a placed login (a second account on one rep code): the
-    // line already shows the livelier of the two.
-    if (a.sales_rep_key && lines.has(repId(a.sales_rep_key))) continue
+    // One row per rep code, with or without accounts: a second login on the
+    // code (an old deactivated one, usually) is folded into the livelier.
+    if (a.sales_rep_key && byCode.get(a.sales_rep_key) !== a) continue
     placed.add(a.user_id)
     lines.set(`user:${a.user_id}`, {
       ...ZERO,
@@ -499,6 +517,55 @@ export function rollUpAgencyChannels(
   return [...byChannel.values()].sort(
     (a, b) => b.revenue_ytd - a.revenue_ytd || b.revenue_prior_ytd - a.revenue_prior_ytd,
   )
+}
+
+export interface GoalProgress {
+  /** Revenue on the goal accounts / their goals, percent. */
+  attainmentPct: number
+  /** Where that should be by today at seasonal pace, percent. */
+  expectedPct: number
+  onTrack: boolean
+}
+
+/**
+ * Attainment and pace from the raw sums, on the rules v_my_goal_rollup uses
+ * for the Overview's Goal tile (goal accounts only, seasonal pace). The tile
+ * reads the whole book, closed and internal goal accounts included, so the
+ * two are close rather than identical. Null when no account has a goal.
+ * Pure, unit-tested.
+ */
+export function goalProgress(
+  m: Pick<AgencyMeasures, 'goal_total' | 'goal_revenue_ytd' | 'goal_expected'>,
+): GoalProgress | null {
+  if (m.goal_total <= 0) return null
+  return {
+    attainmentPct: (m.goal_revenue_ytd / m.goal_total) * 100,
+    expectedPct: (m.goal_expected / m.goal_total) * 100,
+    onTrack: m.goal_revenue_ytd >= m.goal_expected,
+  }
+}
+
+/**
+ * What can be said about a line's portal login:
+ *   unknown      activity has not loaded (or failed) — say nothing, never
+ *                "no login"
+ *   none         a rep code with no portal login
+ *   deactivated  the login exists but is switched off
+ *   never        created, never opened
+ *   active       has opened the app (last_login_at)
+ * Pure, unit-tested.
+ */
+export type PortalState = 'unknown' | 'none' | 'deactivated' | 'never' | 'active'
+
+export function portalState(
+  line: Pick<AgencyRepLine, 'portal'>,
+  activityLoaded: boolean,
+): PortalState {
+  if (!activityLoaded) return 'unknown'
+  if (!line.portal) return 'none'
+  if (!line.portal.active) return 'deactivated'
+  if (!line.portal.last_login_at) return 'never'
+  return 'active'
 }
 
 /** Signed in within `days` of `now`. */

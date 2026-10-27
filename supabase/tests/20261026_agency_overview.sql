@@ -1,6 +1,6 @@
 /*============================================================================
   20261026_agency_overview.sql — assertions for
-    20261026180000_agency_overview.sql
+    20261026180000_agency_overview.sql + 20261027120000_agency_review_fixes.sql
       v_agency_rep_performance        the book at (rep, channel) grain
       agency_rep_activity()           who in the agency uses the portal
       report_agency_sales_by_month()  revenue per (month, rep)
@@ -82,7 +82,7 @@ insert into erp.dim_customer (customer_key, customer_id, customer_name,
                               active_flag, internal_customer_flag,
                               customer_reporting_group, yearly_sales_goal)
 values ('AO-A1', 'AO A1', 'Agency A One',    'AO REPA', 'Rep Alpha', 'Y', 'N', 'Dealer',    100000),
-       ('AO-A2', 'AO A2', 'Agency A Two',    'AO REPA', 'Rep Alpha', 'Y', 'N', 'Buy Group', null),
+       ('AO-A2', 'AO A2', 'Agency A Two',    'AO REPA', 'Rep Alpha', 'Y', 'N', 'Buy Group', 0),
        ('AO-A3', 'AO A3', 'Agency A Closed', 'AO REPA', 'Rep Alpha', 'N', 'N', 'Dealer',    null),
        ('AO-B1', 'AO B1', 'Agency B One',    'AO REPB', 'Rep Bravo', 'Y', 'N', 'Dealer',    null),
        ('AO-X1', 'AO X1', 'Other X One',     'AO REPX', 'Rep Xray',  'Y', 'N', 'Dealer',    null);
@@ -101,8 +101,10 @@ values
   ('AO-B1',     0, 20000, 15000, 25000,     0, 18000,    0,    0, '2018-06-01', current_date - 200),
   ('AO-X1', 77777, 70000, 80000, 75000, 70000, 60000,    0,    0, '2019-01-01', current_date - 2);
 
+-- Goals, on v_account_goal_progress's rules: A1 an ERP goal; A2 an ERP goal
+-- of 0, which is no goal; B1 a CRM goal.
 insert into public.account_goals (customer_key, period_year, target_amount, created_by)
-values ('AO-A2', extract(year from current_date)::int, 30000,
+values ('AO-B1', extract(year from current_date)::int, 30000,
         (select id from t_user where label = 'admin'));
 
 insert into erp.agg_customer_month (customer_key, sales_month, revenue, qty, invoice_count)
@@ -113,23 +115,34 @@ values ('AO-A1', date_trunc('month', current_date)::date,                       
        ('AO-A3', date_trunc('month', current_date)::date,                          4444, 9, 1),
        ('AO-X1', date_trunc('month', current_date)::date,                          9999, 9, 1);
 
-insert into erp.fact_order_line (order_id, line_num, customer_key, order_date_key,
+-- As the ERP writes them (vw_FactOrderLine): a cancelled header (X) is never
+-- a backlog line. Part AO-P1 is open on two orders of A1 (AO-O1, and AO-O5
+-- from over a year ago, outside every order window here), so the backlog
+-- grain check fails if the view ever splits by order.
+insert into erp.fact_order_line (order_id, line_num, customer_key, part_key, order_date_key,
                                  bookings, backlog_qty, backlog_amount,
                                  is_backlog_line, order_status)
-values ('AO-O1',   1, 'AO-A1', to_char(current_date - 2,   'YYYYMMDD')::int,   3000, 2, 3000, true,  'R'),
-       ('AO-O1',   2, 'AO-A1', to_char(current_date - 2,   'YYYYMMDD')::int,   2000, 0,    0, false, 'R'),
-       ('AO-O2',   1, 'AO-B1', to_char(current_date - 10,  'YYYYMMDD')::int,   7000, 0,    0, false, null),
-       ('AO-OX',   1, 'AO-A1', to_char(current_date - 1,   'YYYYMMDD')::int, 900000, 9, 9000, true,  'X'),
-       ('AO-OOLD', 1, 'AO-A1', to_char(current_date - 100, 'YYYYMMDD')::int,  50000, 0,    0, false, 'R'),
-       ('AO-O3',   1, 'AO-X1', to_char(current_date - 1,   'YYYYMMDD')::int, 123456, 1,  500, true,  'R'),
-       ('AO-O4',   1, 'AO-A3', to_char(current_date - 1,   'YYYYMMDD')::int,   8888, 0,    0, false, 'R');
+values ('AO-O1',   1, 'AO-A1', 'AO-P1', to_char(current_date - 2,   'YYYYMMDD')::int,   3000, 2, 3000, true,  'R'),
+       ('AO-O1',   2, 'AO-A1', null,    to_char(current_date - 2,   'YYYYMMDD')::int,   2000, 0,    0, false, 'R'),
+       ('AO-O5',   1, 'AO-A1', 'AO-P1', to_char(current_date - 400, 'YYYYMMDD')::int,   2000, 1, 2000, true,  'R'),
+       ('AO-O2',   1, 'AO-B1', null,    to_char(current_date - 10,  'YYYYMMDD')::int,   7000, 0,    0, false, null),
+       ('AO-OX',   1, 'AO-A1', null,    to_char(current_date - 1,   'YYYYMMDD')::int, 900000, 0,    0, false, 'X'),
+       ('AO-OOLD', 1, 'AO-A1', null,    to_char(current_date - 100, 'YYYYMMDD')::int,  50000, 0,    0, false, 'R'),
+       ('AO-O3',   1, 'AO-X1', null,    to_char(current_date - 1,   'YYYYMMDD')::int, 123456, 1,  500, true,  'R'),
+       ('AO-O4',   1, 'AO-A3', null,    to_char(current_date - 1,   'YYYYMMDD')::int,   8888, 0,    0, false, 'R');
 
--- Portal use. Rep A: three app opens in 30 days on two business days, plus
+-- Portal use. Rep A: four app opens in 30 days on three Mountain days, plus
 -- one long ago; a visit and a call. Rep B: never. Rep X: busy, other agency.
+-- Two opens an hour apart on one fixed Mountain date three days back prove
+-- active_days_30d groups by day (counting distinct timestamps would say 4),
+-- at any hour the file runs.
 insert into public.login_events (user_id, logged_at)
 select (select id from t_user where label = 'rep_a'), at
 from (values (now() - interval '1 minute'),
-             (now() - interval '2 minutes'),
+             ((((now() at time zone 'America/Denver')::date - 3) + time '10:00')
+                at time zone 'America/Denver'),
+             ((((now() at time zone 'America/Denver')::date - 3) + time '11:00')
+                at time zone 'America/Denver'),
              (now() - interval '20 days'),
              (now() - interval '60 days')) v(at)
 union all
@@ -182,9 +195,26 @@ select pg_temp.assert(
   (select (sum(accounts), sum(buying_accounts), sum(lapsed_accounts), sum(new_accounts),
            sum(goal_total)::int, sum(accounts_with_goal), sum(contacted_30d))::text
      from public.v_agency_rep_performance where sales_rep_key = 'AO REPA')
-  = '(2,2,0,1,130000,2,1)',
-  'rep A row: 2 accounts buying, A2 new this year, ERP goal on A1 + CRM goal on A2, '
-  'A1 touched in 30 days (A2''s call is 40 days old)');
+  = '(2,2,0,1,100000,1,1)',
+  'rep A row: 2 accounts buying, A2 new this year, one goal (A1''s; A2''s ERP 0 is '
+  'no goal), A1 touched in 30 days (A2''s call is 40 days old)');
+
+select pg_temp.assert(
+  (select (sum(goal_revenue_ytd)::int, round(sum(goal_expected), 2))::text
+     from public.v_agency_rep_performance where sales_rep_key = 'AO REPA')
+  = '(50000,88888.89)',
+  'rep A goal: revenue counted on the goal account only (A1''s $50k, not A2''s $10k), '
+  'pace seasonal — $100k × last year''s 40k/45k share by this date');
+
+select pg_temp.assert(
+  (select (sum(goal_total)::int, sum(goal_revenue_ytd)::int, round(sum(goal_expected), 2))::text
+     from public.v_agency_rep_performance where sales_rep_key = 'AO REPB')
+  = '(30000,0,24000.00)',
+  'rep B goal: a CRM goal, nothing in yet, $30k × last year''s 20k/25k share');
+
+select pg_temp.assert(
+  (select sum(workable_accounts) = sum(accounts) from public.v_agency_rep_performance),
+  'with nothing deactivated, every account is workable');
 
 select pg_temp.assert(
   (select (lapsed_accounts, sales_rep_name, vendor_id)::text
@@ -243,8 +273,9 @@ select pg_temp.assert(
   (select (is_principal, logins_7d, logins_30d, active_days_30d, actions_30d, visits_30d,
            last_action_date = current_date - 3, last_login_at > now() - interval '2 hours')::text
      from public.agency_rep_activity() where full_name = 'Rep A')
-  = '(f,2,3,2,1,1,t,t)',
-  'rep A: 2 opens this week, 3 in 30 days on 2 days, 1 action (a visit) in 30 days');
+  = '(f,3,4,3,1,1,t,t)',
+  'rep A: 3 opens this week, 4 in 30 days on 3 days (two the same day), 1 action '
+  '(a visit) in 30 days');
 
 select pg_temp.assert(
   (select (is_principal, logins_30d, last_login_at is null, actions_30d)::text
@@ -381,8 +412,10 @@ select pg_temp.assert(
   'backlog carries the account''s assigned rep; the principal sees only their agency''s');
 
 select pg_temp.assert(
-  (select backlog_amount from public.v_backlog_by_sku where customer_key = 'AO-A1') = 12000,
-  'backlog grain unchanged by the appended columns (two open lines on A1, one SKU)');
+  (select (backlog_amount, open_line_count, part_key)::text
+     from public.v_backlog_by_sku where customer_key = 'AO-A1') = '(5000,2,AO-P1)',
+  'backlog grain unchanged by the appended columns: one part open on two orders of A1 '
+  'collapses to one (account, part) row');
 
 --------------------------------------------------------------------------
 -- 6. A principal's BOOK is wider than their agency: an explicit grant on
@@ -419,10 +452,120 @@ select pg_temp.assert(
   = array['Gone Princ', 'Principal', 'Rep A', 'Rep B'],
   'activity was agency-only all along — a grant adds no one');
 
+--------------------------------------------------------------------------
+-- 7. From the PR review: what the definer function may count, coverage
+--    over the accounts still worked, the rollup's year, an admin's trimmed
+--    vendor, and the principal hint's active-account count.
+--------------------------------------------------------------------------
+reset role;
+
+-- a. Rep A's work outside the principal's book: AO-A5 is the agency's but
+--    revoked from the principal; AO-H1 is a house account granted to rep A.
+insert into erp.dim_customer (customer_key, customer_id, customer_name,
+                              assigned_sales_rep_id, active_flag, internal_customer_flag)
+values ('AO-A5', 'AO A5', 'Agency A Revoked', 'AO REPA', 'Y', 'N'),
+       ('AO-H1', 'AO H1', 'House One',        null,      'Y', 'N');
+insert into public.account_assignments (customer_key, user_id, access) values
+  ('AO-A5', (select id from t_user where label = 'principal'), 'revoke'),
+  ('AO-H1', (select id from t_user where label = 'rep_a'),     'grant');
+insert into public.actions (customer_key, user_id, action_type, action_date) values
+  ('AO-A5', (select id from t_user where label = 'rep_a'), 'visit', current_date - 1),
+  ('AO-H1', (select id from t_user where label = 'rep_a'), 'visit', current_date),
+  ('AO-H1', (select id from t_user where label = 'rep_a'), 'call',  current_date);
+
+select pg_temp.become('principal');
+select pg_temp.assert(
+  (select (actions_30d, visits_30d, last_action_date = current_date - 3)::text
+     from public.agency_rep_activity() where full_name = 'Rep A') = '(1,1,t)',
+  'principal: rep A''s work on a revoked account and on a house grant is not counted '
+  '— the same three actions the actions policy hides from them');
+select pg_temp.assert(
+  (select count(*) from public.actions
+    where user_id = (select id from t_user where label = 'rep_a')
+      and action_date >= current_date - 30) = 1,
+  'control: the principal''s own RLS read of rep A''s actions agrees');
+
+select pg_temp.become('admin');
+select pg_temp.assert(
+  (select (actions_30d, visits_30d, last_action_date = current_date)::text
+     from public.agency_rep_activity('AO AGENCY') where full_name = 'Rep A') = '(4,3,t)',
+  'admin: every action counts');
+
+-- b. Coverage leaves out accounts a rep stopped working; revenue keeps them.
+reset role;
+insert into public.actions (customer_key, user_id, action_type, action_date)
+values ('AO-A2', (select id from t_user where label = 'rep_a'), 'call', current_date - 5);
+
+select pg_temp.become('principal');
+select pg_temp.assert(
+  (select (sum(contacted_30d), sum(workable_accounts))::text
+     from public.v_agency_rep_performance where sales_rep_key = 'AO REPA') = '(2,2)',
+  'control: A1 and A2 both touched, both worked');
+
+reset role;
+insert into public.account_deactivations (customer_key, reason, deactivated_by)
+values ('AO-A2', 'store_closed', (select id from t_user where label = 'rep_a'));
+
+select pg_temp.become('principal');
+select pg_temp.assert(
+  (select (sum(accounts), sum(workable_accounts), sum(contacted_30d), sum(revenue_ytd)::int)::text
+     from public.v_agency_rep_performance where sales_rep_key = 'AO REPA') = '(2,1,1,60000)',
+  'deactivated A2: out of coverage (1 of 1 worked account touched), still in accounts and revenue');
+
+-- c. "New" is the rollup's year: B1's first invoice was last March, in a
+--    rollup built last December (read before tonight's first rebuild).
+reset role;
+update erp.agg_account_rollup
+   set first_invoice_date = make_date(extract(year from current_date)::int - 1, 3, 1),
+       refreshed_at       = make_date(extract(year from current_date)::int - 1, 12, 31)
+                            + interval '18 hours'
+ where customer_key = 'AO-B1';
+
+select pg_temp.become('principal');
+select pg_temp.assert(
+  (select sum(new_accounts) from public.v_agency_rep_performance where sales_rep_key = 'AO REPB') = 1,
+  'new accounts are counted in the year the rollup''s YTD was built in, not the wall clock''s');
+
+-- d. An admin picks agencies from v_rep_group_performance, which trims; a
+--    vendor padded in the ERP must still find its people.
+reset role;
+insert into t_user (label, id) values ('rep_pad', '33333333-2610-4610-8610-261026102610');
+insert into auth.users (
+  instance_id, id, aud, role, email, encrypted_password,
+  email_confirmed_at, created_at, updated_at,
+  raw_app_meta_data, raw_user_meta_data, is_super_admin
+)
+values ('00000000-0000-0000-0000-000000000000', '33333333-2610-4610-8610-261026102610',
+        'authenticated', 'authenticated', 'rep_pad@agency.test', '',
+        now(), now(), now(), '{}'::jsonb, '{"full_name": "Rep Pad"}'::jsonb, false);
+insert into erp.dim_sales_rep (sales_rep_key, sales_rep_name, vendor_id)
+values ('AO REPP', 'Rep Padded', 'AO PAD ');
+update public.profiles set sales_rep_key = 'AO REPP'
+  where user_id = '33333333-2610-4610-8610-261026102610';
+
+select pg_temp.become('admin');
+select pg_temp.assert(
+  (select array_agg(full_name) from public.agency_rep_activity('AO PAD')) = array['Rep Pad'],
+  'admin: a vendor id padded in the ERP matches the trimmed pick');
+
+-- e. The "Make principal of <vendor>" hint counts what a book would show.
+reset role;
+insert into erp.dim_sales_rep (sales_rep_key, sales_rep_name, vendor_id)
+values ('AO PRIN', 'Pat Owner', 'AO AGENCY');
+insert into erp.dim_customer (customer_key, customer_id, customer_name,
+                              assigned_sales_rep_id, active_flag, internal_customer_flag)
+values ('AO-PC', 'AO PC', 'Long Closed Dealer', 'AO PRIN', 'N', 'N');
+
+select pg_temp.become('admin');
+select pg_temp.assert(
+  (select (customer_count, active_customer_count)::text
+     from public.admin_unmapped_reps() where sales_rep_key = 'AO PRIN') = '(1,0)',
+  'admin_unmapped_reps: one account on the code, none a book would show');
+
 reset role;
 
 --------------------------------------------------------------------------
--- 7. Shape: definer only where it has to be; grants.
+-- 8. Shape: definer only where it has to be; grants.
 --------------------------------------------------------------------------
 select pg_temp.assert(
   (select prosecdef from pg_proc where oid = 'public.agency_rep_activity(text)'::regprocedure)
