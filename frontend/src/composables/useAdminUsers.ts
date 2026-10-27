@@ -153,7 +153,7 @@ export interface UnmappedRep {
   ignored: boolean
   ignore_note: string | null
   /** Active external accounts on the code — what a book would show
-   *  (20261026180000). Null on a database without that migration. */
+   *  (20261027120000). Null on a database without that migration. */
   active_customer_count: number | null
 }
 

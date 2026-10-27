@@ -124,7 +124,8 @@ how to record a hand-applied file with `--baseline-through`).
   implementation of the rules in 010, in a language with no RLS. Nothing in
   `functions/mcp/` may scope by customer; RLS is the only filter.
 - **A principal sees their reps' portal use through one function only.**
-  The Agency page (20261026180000) is otherwise RLS like everything else.
+  The Agency page (20261026180000, fixed by 20261027120000) is otherwise
+  RLS like everything else.
   A principal's book is their agency PLUS their own rep code's accounts and
   any explicit grants, so every agency read narrows to the vendor — that
   filter is load-bearing, never security; it can only narrow. Logins and

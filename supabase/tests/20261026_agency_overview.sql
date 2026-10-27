@@ -1,6 +1,6 @@
 /*============================================================================
   20261026_agency_overview.sql — assertions for
-    20261026180000_agency_overview.sql
+    20261026180000_agency_overview.sql + 20261027120000_agency_review_fixes.sql
       v_agency_rep_performance        the book at (rep, channel) grain
       agency_rep_activity()           who in the agency uses the portal
       report_agency_sales_by_month()  revenue per (month, rep)

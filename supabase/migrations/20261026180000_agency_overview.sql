@@ -4,11 +4,9 @@
 
   Why
   ---
-  A principal's book already holds their agency (003/010: every account
-  whose assigned rep bills through profiles.rep_group_vendor_id, less any
-  revoked from them — plus their own rep code's accounts and any explicit
-  grants), but every screen they could open reads that book as ONE
-  territory. Nothing said
+  A principal's book is already the whole agency (003/010: every account
+  whose assigned rep bills through profiles.rep_group_vendor_id), but every
+  screen they could open reads that book as ONE territory. Nothing said
   which rep an account, an order or a backlog line belongs to, how each rep
   is tracking against goal, or whether the reps are using the portal at all.
   The admin has all of that (Execution, Goals, Reports, Activity); the
@@ -18,18 +16,15 @@
   ----
   1. v_agency_rep_performance   the book at (rep, channel) grain: accounts,
                                 revenue YTD / prior YTD / trailing 12m,
-                                bookings, open orders, past promise, goal
-                                with its seasonal pace, contact coverage.
-                                security_invoker — RLS is the scope, exactly
-                                like the Reports views.
+                                bookings, open orders, past promise, goal,
+                                contact coverage. security_invoker — RLS is
+                                the scope, exactly like the Reports views.
   2. agency_rep_activity()      who in the agency signs in and logs work.
                                 SECURITY DEFINER: login_events and other
                                 reps' profiles are not readable by a rep, and
                                 this is the one place a principal is allowed
                                 to see them — for their own agency's reps and
-                                nobody else. Logged actions are account data,
-                                so those counts stay inside the caller's book
-                                exactly as the actions policy would keep them.
+                                nobody else.
   3. report_agency_sales_by_month()
                                 invoiced revenue per (month, rep) over the
                                 book, for the month-over-month and
@@ -40,10 +35,6 @@
   5. v_backlog_by_sku           gains the account's assigned rep (appended),
                                 so the Backlog intel page can say whose store
                                 is waiting.
-  6. admin_unmapped_reps()      gains active_customer_count (appended): the
-                                Users page offers "Make principal of <vendor>"
-                                when a rep code carries no ACTIVE accounts,
-                                which is what leaves a principal's book empty.
 
   Scope, and the direction it fails
   ---------------------------------
@@ -51,13 +42,11 @@
   my_customer_keys(), so they are the caller's book and nothing else: a
   principal sees their agency, a rep sees their own accounts cut by rep (one
   row, harmless), an empty book sees nothing. view-as follows for free.
-  `p_vendor_id` / `.eq('vendor_id', …)` only NARROW that, and the narrowing
-  is load-bearing: the Agency page always passes one — an admin's pick out
-  of the company, or the principal's own vendor, because a principal's book
-  also holds their own rep code's accounts and any explicit grants, which
-  are not the agency's. A vendor can never widen past the book: a principal
-  naming another agency gets only what of it they already hold by grant
-  (usually nothing).
+  `p_vendor_id` / `.eq('vendor_id', …)` only NARROW that. The Agency page
+  always passes one: an admin's pick out of the company, or the principal's
+  own vendor — a principal's book also holds their own rep code's accounts
+  and any explicit grants, which are not the agency's. A principal passing
+  someone else's vendor gets an empty result: RLS already removed those rows.
 
   2 is the only new disclosure. It resolves the agency from the EFFECTIVE
   user (view-as aware, like every access rule since 20260816140000):
@@ -70,18 +59,11 @@
   or a co-principal of the vendor. Placeholder rep codes never count.
   Email addresses are deliberately not returned.
 
-  Territory definition everywhere: active, external accounts (029/030), so
-  the revenue, bookings and backlog figures reconcile with
-  v_territory_account_yoy. Goal attainment uses v_account_goal_progress's
-  rules — this year's CRM goal, else an ERP goal above zero, revenue counted
-  on those accounts only, seasonal pace — over the same active external
-  accounts. The Overview's Goal tile applies the same rules to the whole
-  book, so it also counts goals on closed or internal accounts and on a
-  principal's own or granted accounts outside the agency: the two are
-  close, not identical.
+  Territory definition everywhere: active, external accounts (029/030),
+  so every figure here reconciles with v_territory_account_yoy and the
+  Overview's tiles.
 
-  Additive only: new objects, one view and one function with appended
-  columns.
+  Additive only: new objects, and one view with appended columns.
 ============================================================================*/
 
 --------------------------------------------------------------------------
@@ -95,15 +77,6 @@
 --    vendor_id is a GROUP BY key on purpose (it is a function of the rep),
 --    so an admin's `.eq('vendor_id', X)` is pushed into the scan instead of
 --    filtering a whole-company aggregate after the fact.
---
---    Goal columns use v_account_goal_progress's rules over these active
---    external accounts: goal_total over goal accounts, goal_revenue_ytd =
---    revenue on those same accounts, goal_expected = what should be in by
---    today at each account's own seasonal pace. (The Overview's tile counts
---    the whole book — closed and internal goal accounts too — so it can
---    differ by those.) Coverage (contacted_30d / workable_accounts) leaves
---    out accounts a rep has deactivated, like every coverage surface (023);
---    revenue keeps them — what shipped is still the agency's year.
 --------------------------------------------------------------------------
 create or replace view public.v_agency_rep_performance
 with (security_invoker = true)
@@ -137,32 +110,9 @@ book as (
         coalesce(a.backlog_amount, 0)::numeric                as backlog_amount,
         a.first_invoice_date,
         a.last_invoice_date,
-        -- v_account_goal_progress's rule: this year's CRM goal, else the
-        -- ERP yearly goal when it is above zero.
-        coalesce(g.target_amount,
-                 case when c.yearly_sales_goal > 0 then c.yearly_sales_goal end)
-                                                              as goal_amount,
-        -- Seasonal pace, as v_account_goal_progress computes it for the
-        -- current year: the share of last year's revenue that was in by
-        -- this date, or the share of the year gone without a last year.
-        case
-            when coalesce(a.revenue_prior_full, 0) > 0 then
-                least(greatest(coalesce(a.revenue_prior_ytd, 0)
-                               / a.revenue_prior_full, 0), 1)
-            else
-                (current_date - date_trunc('year', current_date)::date + 1)::numeric
-                / (make_date(extract(year from current_date)::int, 12, 31)
-                   - date_trunc('year', current_date)::date + 1)
-        end                                                   as expected_frac,
-        -- The year this account's YTD was built in (the brief's rule,
-        -- 20261013160000): a December rollup read in January is last year's.
-        date_trunc('year', coalesce((a.refreshed_at at time zone 'America/Denver')::date,
-                                    current_date))::date      as rollup_year_start,
-        exists (
-            select 1 from public.account_deactivations d
-            where d.customer_key = c.customer_key
-              and d.reactivated_at is null
-        )                                                     as deactivated,
+        -- Same precedence as v_rep_goal_dashboard: this year's CRM goal
+        -- beats the ERP yearly goal on that account; either alone counts.
+        coalesce(g.target_amount, c.yearly_sales_goal)        as goal_amount,
         ct.last_contact_date
     from erp.dim_customer c
     left join erp.dim_sales_rep sr
@@ -188,14 +138,13 @@ select
     count(*) filter (
         where revenue_ytd <= 0 and revenue_prior_ytd > 0
     )::integer                                                 as lapsed_accounts,
-    -- First invoice ever is in the rollup's year.
+    -- First invoice ever is this calendar year.
     count(*) filter (
-        where first_invoice_date >= rollup_year_start
+        where first_invoice_date >= date_trunc('year', current_date)::date
     )::integer                                                 as new_accounts,
     count(*) filter (where goal_amount is not null)::integer   as accounts_with_goal,
-    -- Touched in 30 days, among the accounts still being worked.
     count(*) filter (
-        where not deactivated and last_contact_date >= current_date - 30
+        where last_contact_date >= current_date - 30
     )::integer                                                 as contacted_30d,
     coalesce(sum(revenue_ytd), 0)::numeric                     as revenue_ytd,
     coalesce(sum(revenue_prior_ytd), 0)::numeric               as revenue_prior_ytd,
@@ -206,14 +155,7 @@ select
     coalesce(sum(open_order_value), 0)::numeric                as open_order_value,
     coalesce(sum(backlog_amount), 0)::numeric                  as backlog_amount,
     coalesce(sum(goal_amount), 0)::numeric                     as goal_total,
-    max(last_invoice_date)                                     as last_invoice_date,
-    coalesce(sum(revenue_ytd) filter (where goal_amount is not null), 0)::numeric
-                                                               as goal_revenue_ytd,
-    coalesce(sum(goal_amount * expected_frac)
-               filter (where goal_amount is not null), 0)::numeric
-                                                               as goal_expected,
-    -- The coverage denominator: active accounts nobody has deactivated.
-    count(*) filter (where not deactivated)::integer           as workable_accounts
+    max(last_invoice_date)                                     as last_invoice_date
 from book
 group by sales_rep_key, vendor_id, channel;
 
@@ -221,13 +163,10 @@ comment on view public.v_agency_rep_performance is
   'The caller''s book (security_invoker — RLS is the scope) at (assigned '
   'rep, channel) grain over active external accounts: account counts, '
   'revenue YTD / prior YTD / trailing 12m / prior full year, bookings, open '
-  'and past-promise order value; goal_total, goal_revenue_ytd and '
-  'goal_expected on v_account_goal_progress''s rules (CRM goal, else an ERP '
-  'goal > 0; seasonal pace) over these active external accounts; '
-  'contacted_30d over workable_accounts '
-  '(deactivated accounts left out). Raw sums only; the Agency page rolls rows '
-  'up per rep and per channel. vendor_id is the rep''s agency, the Agency '
-  'page''s narrowing filter. (20261026180000)';
+  'and past-promise order value, goal (CRM over ERP), and accounts touched '
+  'in 30 days. Raw sums only; the Agency page rolls rows up per rep and per '
+  'channel. vendor_id is the rep''s agency, for an admin''s filter. '
+  '(20261026180000)';
 
 revoke all on public.v_agency_rep_performance from anon, public;
 grant select on public.v_agency_rep_performance to authenticated;
@@ -275,17 +214,7 @@ as $$
                      and p.active
                      and p.role = 'rep'
                  )
-               end as vendor_id,
-               public.is_admin() as by_admin
-    ),
-    -- What the caller may read of public.actions under its own policy
-    -- (is_admin() or customer_key in my_customer_keys()). Definer rights are
-    -- for logins and profiles only; a member's work on an account outside
-    -- this book — revoked from the principal, a house grant, another
-    -- agency's — is not the principal's to count. Materialized once; the
-    -- per-member lookups below probe it.
-    book as materialized (
-        select k as customer_key from public.my_customer_keys() k
+               end as vendor_id
     ),
     members as (
         select m.user_id, bool_or(m.is_principal) as is_principal
@@ -297,12 +226,7 @@ as $$
             where s.vendor_id is not null
               and p.role = 'rep'
               and p.rep_group_vendor_id is not null
-              -- An admin's pick comes from v_rep_group_performance, which
-              -- trims; a principal's own match stays raw, like their book.
-              and case when s.by_admin
-                       then btrim(p.rep_group_vendor_id) = s.vendor_id
-                       else p.rep_group_vendor_id = s.vendor_id
-                  end
+              and p.rep_group_vendor_id = s.vendor_id
             union all
             -- Reps whose own code bills through the agency.
             select p.user_id, false
@@ -313,10 +237,7 @@ as $$
               and p.role = 'rep'
               and p.sales_rep_key is not null
               and sr.vendor_id is not null
-              and case when s.by_admin
-                       then btrim(sr.vendor_id) = s.vendor_id
-                       else sr.vendor_id = s.vendor_id
-                  end
+              and sr.vendor_id = s.vendor_id
               and not (p.sales_rep_key = any (public.placeholder_rep_keys()))
         ) m
         group by m.user_id
@@ -340,26 +261,15 @@ as $$
            from public.login_events le
           where le.user_id = p.user_id
             and le.logged_at >= now() - interval '30 days'),
-        -- Per member, through idx_actions_user (user_id, action_date desc):
-        -- bounded range scans and a first row, never the whole company's
-        -- actions. Each keeps only what the caller's book may read.
         (select count(*) from public.actions a
           where a.user_id = p.user_id
-            and a.action_date >= current_date - 30
-            and ((select s.by_admin from scope s)
-                 or a.customer_key in (select b.customer_key from book b))),
+            and a.action_date >= current_date - 30),
         (select count(*) from public.actions a
           where a.user_id = p.user_id
-            and a.action_date >= current_date - 30
             and a.action_type = 'visit'
-            and ((select s.by_admin from scope s)
-                 or a.customer_key in (select b.customer_key from book b))),
-        (select a.action_date from public.actions a
-          where a.user_id = p.user_id
-            and ((select s.by_admin from scope s)
-                 or a.customer_key in (select b.customer_key from book b))
-          order by a.action_date desc
-          limit 1)
+            and a.action_date >= current_date - 30),
+        (select max(a.action_date) from public.actions a
+          where a.user_id = p.user_id)
     from members m
     join public.profiles p on p.user_id = m.user_id
     order by m.is_principal desc, p.full_name, p.user_id;
@@ -372,9 +282,8 @@ comment on function public.agency_rep_activity(text) is
   'ignored for them), or for an admin the vendor passed in (nothing without '
   'one). Members are co-principals of the vendor and reps whose code bills '
   'through it; placeholders never. SECURITY DEFINER because login_events '
-  'and other reps'' profiles are not readable by a rep; logged actions are '
-  'counted only on accounts the caller could read under the actions policy. '
-  'No emails. (20261026180000)';
+  'and other reps'' profiles are not readable by a rep. No emails. '
+  '(20261026180000)';
 
 revoke execute on function public.agency_rep_activity(text) from public, anon;
 grant execute on function public.agency_rep_activity(text) to authenticated;
@@ -566,101 +475,12 @@ comment on view public.v_backlog_by_sku is
 revoke all on public.v_backlog_by_sku from anon, public;
 grant select on public.v_backlog_by_sku to authenticated;
 
---------------------------------------------------------------------------
--- 6. admin_unmapped_reps() gains active_customer_count (appended).
---
---    customer_count counts every dim_customer row on the code, closed and
---    internal accounts included, but a book only ever shows active external
---    ones (029). A principal whose own code still carries one closed dealer
---    signed in to an empty book all the same, and the Users page's
---    "Make principal of <vendor>" hint never offered itself for them.
---    Body restated verbatim from 20261026120000_unmapped_rep_ignores.sql;
---    the return type changes, hence drop + create.
---------------------------------------------------------------------------
-drop function if exists public.admin_unmapped_reps();
-
-create function public.admin_unmapped_reps()
-returns table (
-  sales_rep_key          text,
-  sales_rep_name         text,
-  sales_rep_email        text,
-  vendor_id              text,
-  sales_rep_type         text,
-  customer_count         bigint,
-  is_placeholder         boolean,
-  email_profile_user_id  uuid,
-  email_profile_name     text,
-  ignored                boolean,
-  ignore_note            text,
-  active_customer_count  bigint
-)
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select
-    r.sales_rep_key,
-    r.sales_rep_name,
-    nullif(lower(trim(r.sales_rep_email)), '')                as sales_rep_email,
-    r.vendor_id,
-    r.sales_rep_type,
-    (select count(*)
-       from erp.dim_customer c
-      where c.assigned_sales_rep_id = r.sales_rep_key)         as customer_count,
-    (coalesce(r.is_placeholder_rep, false)
-      or coalesce(r.is_unknown_sales_rep, false)
-      or r.sales_rep_key = any (public.placeholder_rep_keys())) as is_placeholder,
-    p.user_id                                                   as email_profile_user_id,
-    p.full_name                                                 as email_profile_name,
-    (i.sales_rep_key is not null)                               as ignored,
-    i.note                                                      as ignore_note,
-    -- The territory definition (029): what this code alone would put in a
-    -- book.
-    (select count(*)
-       from erp.dim_customer c
-      where c.assigned_sales_rep_id = r.sales_rep_key
-        and c.active_flag = 'Y'
-        and coalesce(c.internal_customer_flag, 'N') <> 'Y')    as active_customer_count
-  from erp.dim_sales_rep r
-  left join lateral (
-    select p.user_id, p.full_name
-      from public.profiles p
-     where nullif(lower(trim(r.sales_rep_email)), '') is not null
-       and lower(p.email) = lower(trim(r.sales_rep_email))
-     order by p.created_at, p.user_id
-     limit 1
-  ) p on true
-  left join public.unmapped_rep_ignores i
-    on i.sales_rep_key = r.sales_rep_key
-  where public.is_real_admin()
-    and not exists (
-      select 1 from public.profiles m
-       where m.sales_rep_key = r.sales_rep_key
-    )
-  order by customer_count desc, r.sales_rep_name, r.sales_rep_key;
-$$;
-
-comment on function public.admin_unmapped_reps() is
-  'ERP reps with no profile carrying their sales_rep_key, with the ERP email '
-  'so an admin can create the account from the row, `ignored` when the '
-  'admin has parked the rep in unmapped_rep_ignores, and '
-  'active_customer_count — the active external accounts the code carries, '
-  'what a book would show (20261026180000). Returns nothing unless the '
-  'credential-holder is an active admin (is_real_admin — view-as does not '
-  'matter here). Security definer because sales_rep_email is column-revoked '
-  'from authenticated (20260901190300).';
-
-revoke execute on function public.admin_unmapped_reps() from public, anon;
-grant  execute on function public.admin_unmapped_reps() to authenticated;
-
 /*----------------------------------------------------------------------------
   Post-migration checklist
   1. Pure reads over objects that already exist — no ETL change, no
      refresh_territory_rollups() change, nothing to backfill, no new table
      (so nothing for the view-as trigger sweep).
-  2. Run supabase/tests/20261026_agency_overview.sql and
-     supabase/tests/20261026_unmapped_rep_ignores.sql against dev.
+  2. Run supabase/tests/20261026_agency_overview.sql against dev.
   3. Regenerate frontend/src/types/database.types.ts. Until then
      useAgency.ts reads these through the untyped-handle + isViewMissing
      convention the other report composables use.

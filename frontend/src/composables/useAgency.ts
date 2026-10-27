@@ -34,7 +34,8 @@ const AGENCY_STALE_TIME = 10 * 60_000
 
 const MISSING_MESSAGE =
   'The agency views are not in the database yet. Apply ' +
-  'supabase/migrations/20261026180000_agency_overview.sql, then reload.'
+  'supabase/migrations/20261026180000_agency_overview.sql and ' +
+  '20261027120000_agency_review_fixes.sql, then reload.'
 
 function asDisplayError(error: unknown): unknown {
   if (isViewMissing(error)) {
