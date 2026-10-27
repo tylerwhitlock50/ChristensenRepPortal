@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, shallowRef } from 'vue'
+import { useNow } from '@vueuse/core'
+import { parseISO } from 'date-fns'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useBookShipments } from '@/composables/useBookLists'
 import BookListCard from '@/components/BookListCard.vue'
@@ -46,7 +48,13 @@ import {
  * (groupPacklists) — no second request. The filters apply to lines first,
  * so a packlist filtered by product line totals only that product line.
  */
-const today = new Date()
+/* The calendar day, not the mount time: a tab left open overnight moves
+   "This year", "Month to date" and the rest (and so the query key) to the
+   new day, and the heartbeat's refetch and Retry then ask for today's
+   shipments. `now` ticks every minute; `day` changes only at midnight, so
+   nothing downstream recomputes in between. */
+const now = useNow({ interval: 60_000 })
+const day = computed(() => isoDate(now.value))
 
 const preset = ref<ShipmentPreset>('ytd')
 const customFrom = ref('')
@@ -55,7 +63,7 @@ const customTo = ref('')
 const range = computed<DateRange>(() =>
   preset.value === 'custom'
     ? { from: customFrom.value, to: customTo.value }
-    : presetRange(preset.value, today),
+    : presetRange(preset.value, parseISO(day.value)),
 )
 const rangeError = computed(() =>
   preset.value === 'custom' ? rangeProblem(customFrom.value, customTo.value) : null,
