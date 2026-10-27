@@ -128,6 +128,20 @@ export const qk = {
     detail: (id: number) => ['orders', 'detail', id] as const,
     queue: () => ['orders', 'queue'] as const,
   },
+  /**
+   * The Agency page (20261026180000). `vendor` is the agency the reads
+   * are narrowed to: a principal's own, or the one an admin picked.
+   * Not ERP-only: the rep rollup joins goals and actions, and activity is
+   * portal logins, so none of these is on the ERP allow-list below.
+   */
+  agency: {
+    root: () => ['agency'] as const,
+    reps: (vendor: string) => ['agency', 'reps', vendor] as const,
+    activity: (vendor: string) => ['agency', 'activity', vendor] as const,
+    months: (vendor: string) => ['agency', 'months', vendor] as const,
+    largeOrders: (vendor: string, days: number) =>
+      ['agency', 'large-orders', vendor, days] as const,
+  },
   admin: {
     execution: () => ['admin', 'execution'] as const,
     goals: () => ['admin', 'goals'] as const,

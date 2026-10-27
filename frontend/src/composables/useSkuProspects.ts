@@ -45,6 +45,8 @@ export interface SkuProspect {
   customer_name: string | null
   city: string | null
   state: string | null
+  /** The account's assigned rep — a principal's book spans several. */
+  repName: string | null
   /** Most recent calendar year with a purchase, and the units that year. */
   lastYear: number
   unitsLastYear: number
@@ -78,8 +80,10 @@ function realSpec(value: string | null | undefined): string | null {
  * Sales rows → one entry per dealer, most recent buyer first. Returns
  * (qty <= 0) are not purchases. Pure and exported for unit tests.
  */
-export function rankProspects(rows: SaleRow[]): Omit<SkuProspect, 'customer_name' | 'city' | 'state'>[] {
-  const byDealer = new Map<string, Omit<SkuProspect, 'customer_name' | 'city' | 'state'>>()
+type RankedProspect = Omit<SkuProspect, 'customer_name' | 'city' | 'state' | 'repName'>
+
+export function rankProspects(rows: SaleRow[]): RankedProspect[] {
+  const byDealer = new Map<string, RankedProspect>()
   for (const r of rows) {
     const qty = Number(r.qty ?? 0)
     if (!(qty > 0)) continue
@@ -164,7 +168,9 @@ export function useSkuProspects(part: MaybeRefOrGetter<ProspectPart | null>) {
       const candidates = ranked.slice(0, MAX_DEALERS + 15)
       const { data, error } = await db
         .from('v_account_list')
-        .select('customer_key, customer_name, sold_to_city, sold_to_state, active_flag, deactivated_at')
+        .select(
+          'customer_key, customer_name, sold_to_city, sold_to_state, assigned_sales_rep_id, assigned_sales_rep_name, active_flag, deactivated_at',
+        )
         .in(
           'customer_key',
           candidates.map((d) => d.customer_key),
@@ -185,6 +191,10 @@ export function useSkuProspects(part: MaybeRefOrGetter<ProspectPart | null>) {
           customer_name: (a.customer_name as string | null) ?? null,
           city: (a.sold_to_city as string | null) ?? null,
           state: (a.sold_to_state as string | null) ?? null,
+          repName:
+            (a.assigned_sales_rep_name as string | null) ??
+            (a.assigned_sales_rep_id as string | null) ??
+            null,
         })
         if (dealers.length === MAX_DEALERS) break
       }

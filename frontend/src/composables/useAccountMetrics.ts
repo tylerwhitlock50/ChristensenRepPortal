@@ -542,7 +542,9 @@ export interface CalendarYearSeries {
  * were done in Postgres. Exported so it can be unit-tested without a DB.
  */
 export function buildCalendarYearSeries(
-  rows: AccountRevenueMonthRow[],
+  // Only the month and the amount are read, so any month series fits — the
+  // Agency page passes its book summed per month.
+  rows: Pick<AccountRevenueMonthRow, 'month' | 'revenue'>[],
   today: Date = new Date(),
 ): CalendarYearSeries {
   const byMonth = new Map<string, number>()

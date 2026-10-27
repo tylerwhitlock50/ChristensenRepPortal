@@ -16,6 +16,8 @@ declare module 'vue-router' {
     /** Reachable without a session. Everything else requires one. */
     public?: boolean
     adminOnly?: boolean
+    /** Rep-group principals only; an admin is sent to /admin/agencies. */
+    principalOnly?: boolean
     /**
      * Route exists only while this app_settings flag is enabled; disabled
      * flags redirect to the Overview. Lets hidden capture features (Today,
@@ -51,6 +53,15 @@ const router = createRouter({
       name: 'overview',
       component: () => import('@/pages/OverviewView.vue'),
       meta: { title: 'Overview' },
+    },
+    {
+      // A principal's agency at a glance: how each rep is tracking, who is
+      // using the portal, the big orders. Admins reach the same page under
+      // /admin/agencies with an agency picker.
+      path: '/agency',
+      name: 'agency',
+      component: () => import('@/pages/AgencyView.vue'),
+      meta: { title: 'Agency', principalOnly: true },
     },
     {
       // The old landing page, kept intact behind the recommendations flag.
@@ -216,6 +227,13 @@ const router = createRouter({
           meta: { title: 'Reports' },
         },
         {
+          // The principal's Agency page, for any agency (?vendor=).
+          path: 'agencies',
+          name: 'admin-agencies',
+          component: () => import('@/pages/AgencyView.vue'),
+          meta: { title: 'Agencies' },
+        },
+        {
           path: 'users',
           name: 'admin-users',
           component: () => import('@/pages/admin/AdminUsersView.vue'),
@@ -340,6 +358,12 @@ router.beforeEach(async (to) => {
 
   if (to.meta.adminOnly && !session.isAdmin) {
     return { name: 'overview' }
+  }
+
+  // An admin has every agency, so their copy of this page lives in the
+  // admin section, where the agency is picked.
+  if (to.meta.principalOnly && !session.isPrincipal) {
+    return session.isAdmin ? { name: 'admin-agencies' } : { name: 'overview' }
   }
 
   // An order_entry user's book is empty by design, so the Overview is a

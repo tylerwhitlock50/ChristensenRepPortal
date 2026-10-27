@@ -15,10 +15,15 @@ import { count, shortDate, telHref } from '@/lib/format'
  *
  * A bottom sheet on a phone (AppModal). Nothing is fetched until it opens.
  */
-const props = defineProps<{
-  open: boolean
-  part: ProspectPart | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    open: boolean
+    part: ProspectPart | null
+    /** The ATS list asks who to call; SKU Sales asks who bought it. */
+    title?: string
+  }>(),
+  { title: 'Who should I call?' },
+)
 
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
@@ -61,12 +66,20 @@ const subtitle = computed(() =>
 function place(d: { city: string | null; state: string | null }) {
   return [d.city, d.state].filter(Boolean).join(', ')
 }
+
+/** Name the rep only when the dealers belong to more than one — a
+ *  principal's agency, an admin — never a rep's own name on every row. */
+const showRep = computed(() => new Set(dealers.value.map((d) => d.repName)).size > 1)
+
+function whereAndWhose(d: { city: string | null; state: string | null; repName: string | null }) {
+  return [place(d), showRep.value ? d.repName : null].filter(Boolean).join(' · ')
+}
 </script>
 
 <template>
   <AppModal
     :open="open"
-    title="Who should I call?"
+    :title="title"
     :subtitle="subtitle"
     @update:open="emit('update:open', $event)"
   >
@@ -103,7 +116,7 @@ function place(d: { city: string | null; state: string | null }) {
               {{ d.customer_name || d.customer_key }}
               <span aria-hidden="true" class="text-muted">→</span>
             </span>
-            <span v-if="place(d)" class="text-muted text-xs">{{ place(d) }}</span>
+            <span v-if="whereAndWhose(d)" class="text-muted text-xs">{{ whereAndWhose(d) }}</span>
           </RouterLink>
           <p class="text-ink-2 text-sm tabular-nums">
             Bought {{ count(d.unitsLastYear) }} in {{ d.lastYear }}

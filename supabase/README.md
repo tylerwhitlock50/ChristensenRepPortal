@@ -123,6 +123,14 @@ how to record a hand-applied file with `--baseline-through`).
   `service_role`, filter by the rep's book in TypeScript — is a second
   implementation of the rules in 010, in a language with no RLS. Nothing in
   `functions/mcp/` may scope by customer; RLS is the only filter.
+- **A principal sees their reps' portal use through one function only.**
+  The Agency page (20261026180000) is otherwise RLS like everything else —
+  a principal's book already is their agency, cut by rep. Logins and other
+  reps' profiles are not rep-readable, so `agency_rep_activity()` is a
+  `security definer` that resolves the agency from the EFFECTIVE user's
+  `rep_group_vendor_id` (view-as aware) and ignores its argument for
+  anyone but an admin. Every other agency read takes a vendor only to
+  narrow. `supabase/tests/20261026_agency_overview.sql` is the proof.
 - **A goal belongs to the account, not to the rep who typed it.**
   `account_goals` is unique on `(customer_key, period_year)`, so a principal
   and their rep report against the same number and the admin rollup never has
