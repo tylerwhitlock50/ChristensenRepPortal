@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
  * Every rep vs their aggregate current-year goal (public.v_rep_goal_dashboard):
- * shipped (invoiced) YTD and sold (orders written) YTD, each against the same
+ * revenue (invoiced) YTD and sold (orders written) YTD, each against the same
  * goal. "Behind pace" is the number a sales manager is scanning for, so a
- * rep whose shipped % trails the elapsed year gets the ember badge —
+ * rep whose revenue % trails the elapsed year gets the ember badge —
  * everything else stays quiet, same posture as the Execution tab.
  */
 import { computed, ref } from 'vue'
@@ -68,12 +68,12 @@ const columns: ColumnDef<RepGoalRow, any>[] = [
     header: 'Accounts',
   },
   { id: 'goal_total', accessorFn: (row) => row.goal_total ?? 0, header: 'Goal' },
-  { id: 'shipped_ytd', accessorFn: (row) => row.shipped_ytd ?? 0, header: 'Shipped YTD' },
+  { id: 'shipped_ytd', accessorFn: (row) => row.shipped_ytd ?? 0, header: 'Revenue YTD' },
   {
     id: 'shipped_pct',
     // No-goal reps sort to the bottom either way instead of masquerading as 0%.
     accessorFn: (row) => row.shipped_pct ?? -1,
-    header: 'Shipped %',
+    header: 'Revenue %',
   },
   { id: 'booked_ytd', accessorFn: (row) => row.booked_ytd ?? 0, header: 'Sold YTD' },
   {
@@ -95,8 +95,8 @@ function onExport() {
     { key: 'goal_total', header: 'Goal' },
     { key: 'crm_goal_total', header: 'Goal (CRM-entered)' },
     { key: 'erp_goal_total', header: 'Goal (ERP fallback)' },
-    { key: 'shipped_ytd', header: 'Shipped YTD' },
-    { key: 'shipped_pct', header: 'Shipped % of Goal' },
+    { key: 'shipped_ytd', header: 'Revenue YTD' },
+    { key: 'shipped_pct', header: 'Revenue % of Goal' },
     { key: 'booked_ytd', header: 'Sold YTD' },
     { key: 'booked_pct', header: 'Sold % of Goal' },
     { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
@@ -113,7 +113,7 @@ function onExport() {
       </p>
       <h1 class="u-display mt-1 text-4xl">Reps vs goal, {{ periodYear }}</h1>
       <p class="text-muted mt-2 text-[15px]">
-        Shipped and sold this year against each rep's aggregate account goal.
+        Invoiced and sold this year against each rep's aggregate account goal.
         {{ Math.round(yearElapsedPct) }}% of the year is gone — that's the pace to beat.
       </p>
     </header>
@@ -121,7 +121,7 @@ function onExport() {
     <div class="bg-line border-line grid grid-cols-3 gap-px border">
       <StatTile label="Company goal" :value="tilesReady ? money(totals.goal) : dash" sub="all reps" />
       <StatTile
-        label="Shipped YTD"
+        label="Revenue YTD"
         :value="tilesReady ? money(totals.shipped) : dash"
         :sub="tilesReady && totals.shippedPct != null ? `${pct(totals.shippedPct)} of goal` : undefined"
       />
@@ -223,7 +223,7 @@ function onExport() {
                   {{ count(row.assigned_accounts) }} accounts
                 </p>
                 <p class="text-muted mt-0.5 text-[13px]">
-                  Shipped {{ money(row.shipped_ytd) }} ({{ pct(row.shipped_pct) }}) ·
+                  Revenue {{ money(row.shipped_ytd) }} ({{ pct(row.shipped_pct) }}) ·
                   Sold {{ money(row.booked_ytd) }} ({{ pct(row.booked_pct) }})
                 </p>
               </div>

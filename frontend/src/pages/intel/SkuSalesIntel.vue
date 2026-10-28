@@ -191,7 +191,7 @@ function onExport() {
       :empty-body="
         mode === 'account'
           ? 'This account has no invoiced lines in the last four years.'
-          : 'Nothing has been invoiced in your territory in the last four years. If that seems wrong, ask your admin to check the nightly load.'
+          : 'Nothing has been invoiced in your territory in the last four years. If that seems wrong, ask your admin to check the data load.'
       "
       :rows="4"
       @retry="active.refetch()"

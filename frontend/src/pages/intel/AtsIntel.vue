@@ -244,6 +244,10 @@ const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
     accessorKey: 'chambering',
     meta: { filter: 'select' },
   },
+  // Reps read UPCs to dealers, and the search box only looks in columns
+  // (TanStack searches column values, not row fields), so a UPC typed there
+  // found nothing while the UPC was CSV-only (G08, G26).
+  { id: 'upc', header: 'UPC', accessorKey: 'upc' },
   // "Available", the word every other screen uses for this number (Before
   // you call, Ready to ship, the header search) — beside "On hand", "In
   // stock" read as a second name for the same thing.
@@ -292,7 +296,7 @@ const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
     <AppCard v-if="feedMissing" title="In stock">
       <p class="text-ink-2 text-[15px] leading-relaxed">
         The in-stock feed hasn't landed yet. Once the ERP-side view
-        (<code>bi.vw_FactAvailableToSell</code>) ships and the nightly load
+        (<code>bi.vw_FactAvailableToSell</code>) ships and the next load
         runs, this page fills in on its own.
       </p>
     </AppCard>
@@ -444,7 +448,7 @@ const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
           :data="displayRows"
           :initial-sorting="[{ id: 'ats_qty', desc: true }]"
           searchable
-          search-placeholder="Filter by SKU, description, chambering…"
+          search-placeholder="Filter by SKU, description, chambering, UPC…"
           v-model:global-filter="search"
           :get-row-id="(r: AtsRow) => r.part_key"
           class="p-3"
@@ -518,7 +522,8 @@ const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
                 <AppBadge v-if="dueKeys.has(row.part_key)" tone="good" class="shrink-0">Due</AppBadge>
               </div>
               <p class="text-muted mt-0.5 text-xs">
-                {{ row.product_family }} · {{ row.chambering }}
+                {{ row.product_family }} · {{ row.chambering }}<template v-if="row.upc">
+                  · UPC {{ row.upc }}</template>
               </p>
               <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
                 {{ availableText(row.ats_qty) }} · {{ count(row.on_hand_qty) }} on hand

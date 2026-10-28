@@ -6,7 +6,8 @@
  *
  * Pinned: who is listed (active reps only — never admins, order entry or
  * deactivated users), the two modes, the reminder draft (the portal link,
- * "Forgot your password?", first names, and never a password), and the
+ * the Tableau article link, "Forgot your password?", first names, and never
+ * a password), and the
  * de-duplicated address list for "Copy emails".
  */
 import {
@@ -17,6 +18,7 @@ import {
   reminderMailto,
   type AdoptionProfile,
 } from '../../src/lib/adoption'
+import { TABLEAU_ARTICLE_SLUG, tableauArticleUrl } from '../../src/lib/helpLinks'
 
 let pass = 0
 let fail = 0
@@ -88,6 +90,17 @@ t('a subject', (params.get('subject') ?? '').length > 0, true)
 t('greets them by first name', body.startsWith('Hi Jim,'), true)
 t('carries the portal link', body.includes('https://portal.example.com'), true)
 t('points at Forgot your password', body.includes('"Forgot your password?"'), true)
+t(
+  'links the Tableau article, on the same portal',
+  body.includes('https://portal.example.com/help?article=portal-vs-tableau-numbers'),
+  true,
+)
+t(
+  'article link: no double slash from a trailing one',
+  tableauArticleUrl('https://portal.example.com/'),
+  'https://portal.example.com/help?article=portal-vs-tableau-numbers',
+)
+t('article link: the slug the database seeds', TABLEAU_ARTICLE_SLUG, 'portal-vs-tableau-numbers')
 t('signed with the admin\'s first name', body.trimEnd().endsWith('Thanks,\nJayelynne'), true)
 t('never a password in it', /password:/i.test(body), false)
 t(

@@ -38,6 +38,7 @@ import {
   reminderMailto,
   type NotSignedInMode,
 } from '@/lib/adoption'
+import { tableauArticleUrl } from '@/lib/helpLinks'
 
 const MIN_PASSWORD_LENGTH = 12
 
@@ -242,6 +243,8 @@ const credentialsMailto = computed(() => {
     `what's moving in your territory, and view the ATS list. It's still a work in progress, ` +
     `so we'd really value your feedback. If something's confusing, missing, or not working ` +
     `right, let me know. Your input will help shape where we take it next.\n\n` +
+    `If you're used to Tableau, this explains why a few numbers are counted ` +
+    `differently:\n${tableauArticleUrl(window.location.origin)}\n\n` +
     `If you have any trouble logging in, just reply to this email and I'll get you sorted out.\n\n` +
     `Thanks,\n${sender}\n`
   return `mailto:${encodeURIComponent(c.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
