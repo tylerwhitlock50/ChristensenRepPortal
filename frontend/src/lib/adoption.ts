@@ -10,6 +10,7 @@
  * before the rep ever sees them). The email points the rep at "Forgot your
  * password?" on the sign-in page instead, which they trigger themselves.
  */
+import { tableauArticleUrl } from './helpLinks'
 
 /** "Not in 14 days" — about two working weeks without opening it. */
 export const NOT_SIGNED_IN_DAYS = 14
@@ -76,8 +77,9 @@ export function firstName(fullName: string | null | undefined, fallback = ''): s
 /**
  * A mailto: reminder for one rep, in the voice of the new-user login email
  * (AdminUsersView: "Draft the email"): first names both ends, the portal
- * link, what they can do there, and how to get a new password themselves.
- * No password is ever in it.
+ * link, what they can do there, the article on why some numbers differ from
+ * Tableau, and how to get a new password themselves. No password is ever in
+ * it.
  */
 export function reminderMailto(
   rep: Pick<NotSignedInRow, 'full_name' | 'email'>,
@@ -93,6 +95,8 @@ export function reminderMailto(
     `you can see what's in stock right now, your accounts' open orders and shipments ` +
     `(with tracking), order history, and how each account is pacing against its goal — ` +
     `on your phone or your laptop.\n\n` +
+    `If you're used to Tableau, this explains why a few numbers are counted ` +
+    `differently:\n${tableauArticleUrl(portalUrl)}\n\n` +
     `If you don't have your password, or it doesn't work, use "Forgot your password?" on ` +
     `the sign-in page and you'll get an email to set a new one.\n\n` +
     `If anything gives you trouble, just reply to this email and I'll get you sorted out.\n\n` +

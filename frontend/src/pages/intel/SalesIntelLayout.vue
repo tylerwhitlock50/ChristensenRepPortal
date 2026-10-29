@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
 import FreshnessStamp from '@/components/FreshnessStamp.vue'
+import { TABLEAU_ARTICLE_SLUG } from '@/lib/helpLinks'
 
 /**
  * The Sales Intel shell — one nav entry fans out into the report tabs, the
@@ -40,7 +41,7 @@ const route = useRoute()
         <RouterLink
           :to="{
             name: 'help',
-            query: { article: 'portal-vs-tableau-numbers', from: route.fullPath },
+            query: { article: TABLEAU_ARTICLE_SLUG, from: route.fullPath },
           }"
           class="text-ink-2 text-xs underline decoration-dotted underline-offset-2"
         >

@@ -88,7 +88,7 @@ watch(sort, (s) => {
 })
 
 /* ---- card / table toggle ------------------------------------------------
-   Rep feedback: the book as a metric table — ships and bookings YTD/prior,
+   Rep feedback: the book as a metric table — revenue and bookings YTD/prior,
    open orders, rep, goal. The table reads public.v_account_table, the whole
    book in one query, so every column sorts over ALL rows. It needs 72rem,
    so it is a wide-screen view: below sm the toggle is hidden and the page
@@ -138,7 +138,7 @@ const tableRows = computed(() => {
   return rows.filter((r) => r.goal_amount != null && r.on_track === false)
 })
 
-/** % of the prior year's same-days ships — the rep's "% of PYTD" column. */
+/** % of the prior year's same-days revenue — the rep's "% of PYTD" column. */
 function pctOfPytd(r: AccountTableRow): number | null {
   if (!r.revenue_prior_ytd) return null
   return (r.revenue_ytd / r.revenue_prior_ytd) * 100
@@ -157,9 +157,11 @@ const tableColumns: ColumnDef<AccountTableRow, any>[] = [
     accessorKey: 'assigned_sales_rep_name',
     meta: { filter: 'select' },
   },
-  { id: 'revenue_ytd', header: 'YTD ships', accessorKey: 'revenue_ytd' },
-  { id: 'revenue_prior_ytd', header: 'PYTD ships', accessorKey: 'revenue_prior_ytd' },
-  { id: 'revenue_prior_full', header: 'PY ships', accessorKey: 'revenue_prior_full' },
+  // Invoiced revenue, never "ships": shipping runs ahead of invoicing, and
+  // shipped value is its own figure (Sales Intel › Shipments). G10.
+  { id: 'revenue_ytd', header: 'YTD revenue', accessorKey: 'revenue_ytd' },
+  { id: 'revenue_prior_ytd', header: 'PYTD revenue', accessorKey: 'revenue_prior_ytd' },
+  { id: 'revenue_prior_full', header: 'PY revenue', accessorKey: 'revenue_prior_full' },
   { id: 'bookings_ytd', header: 'YTD orders', accessorKey: 'bookings_ytd' },
   {
     id: 'bookings_prior_ytd',
@@ -180,9 +182,9 @@ const tableCsvColumns: CsvColumn<AccountTableRow>[] = [
   { key: 'sold_to_city', header: 'City' },
   { key: 'sold_to_state', header: 'State' },
   { key: 'assigned_sales_rep_name', header: 'Rep' },
-  { key: 'revenue_ytd', header: 'YTD ships' },
-  { key: 'revenue_prior_ytd', header: 'PYTD ships' },
-  { key: 'revenue_prior_full', header: 'PY ships' },
+  { key: 'revenue_ytd', header: 'YTD revenue' },
+  { key: 'revenue_prior_ytd', header: 'PYTD revenue' },
+  { key: 'revenue_prior_full', header: 'PY revenue' },
   { key: 'bookings_ytd', header: 'YTD orders' },
   { key: 'bookings_prior_ytd', header: 'PYTD orders' },
   { key: 'open_order_value', header: 'Open order value' },
@@ -554,7 +556,7 @@ function goalAmounts(g: AccountGoalProgress): string {
           <template v-if="goalMode">
             Accounts with a {{ goalYear }} goal that are behind pace.
           </template>
-          <template v-else>Ships are invoiced revenue; orders are bookings.</template>
+          <template v-else>Revenue is invoiced; orders are bookings.</template>
         </p>
         <AppButton
           variant="ghost"
