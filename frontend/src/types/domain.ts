@@ -144,9 +144,11 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   cancelled: 'Cancelled',
 }
 
-/** QC finding kinds — order_qc_results.result (20260817000200_orders.sql). */
+/** QC finding kinds — order_qc_results.result (20260817000200_orders.sql,
+ *  ship_to_mismatch from 20261030120000_order_ship_to_ffl.sql). */
 export const QC_RESULTS = [
   'customer_mismatch',
+  'ship_to_mismatch',
   'price_mismatch',
   'qty_mismatch',
   'missing_in_erp',
@@ -157,6 +159,7 @@ export type QcResult = (typeof QC_RESULTS)[number]
 
 export const QC_RESULT_LABELS: Record<QcResult, string> = {
   customer_mismatch: 'Wrong customer in ERP',
+  ship_to_mismatch: 'Ships to a different address in ERP',
   price_mismatch: 'Price differs',
   qty_mismatch: 'Quantity differs',
   missing_in_erp: 'Missing from ERP order',

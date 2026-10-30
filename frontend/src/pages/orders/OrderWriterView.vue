@@ -19,19 +19,28 @@ import {
   useOrderCustomer,
   useOrderDetail,
   useSaveDraftLines,
+  useShipTos,
   useSubmitOrder,
   useUpdateDraftOrder,
   type DraftLineInput,
 } from '@/composables/useOrders'
 import { orderTotal, priceOrder, type PricingLineInput } from '@/lib/orderPricing'
+import {
+  checkShipToAndFfl,
+  fflPrefill,
+  isActiveShipTo,
+  orderableShipTos,
+  shipToLabel,
+} from '@/lib/orderShipTo'
 import { moneyCents } from '@/lib/format'
 import { newPhotoId } from '@/lib/photos'
 
 /**
  * The order writer. Flow: pick the account → its customer_type resolves the
  * effective price lists (the general list opens preselected; specials are a
- * tap away) → add SKUs from the open list → the promo prorate previews live
- * as quantities change → save draft / submit.
+ * tap away) → pick the ship-to address and confirm the FFL it ships under →
+ * add SKUs from the open list → the promo prorate previews live as
+ * quantities change → save draft / submit.
  *
  * The pricing preview runs through lib/orderPricing.ts on every edit, but
  * nothing here is authoritative: submit_order() re-validates the lines
@@ -75,12 +84,15 @@ const customerKey = ref(routeCustomer)
 const poNumber = ref('')
 const shipDate = ref('')
 const notes = ref('')
+const shipToKey = ref('')
+const fflNumber = ref('')
+const fflExpiresOn = ref('')
 const lines = ref<LocalLine[]>([])
 const dirty = ref(false)
 const formError = ref('')
 const hydrated = ref(!props.id)
 
-watch([customerKey, poNumber, shipDate, notes, lines], () => (dirty.value = true), {
+watch([customerKey, poNumber, shipDate, notes, shipToKey, fflNumber, fflExpiresOn, lines], () => (dirty.value = true), {
   deep: true,
 })
 
@@ -98,6 +110,12 @@ watch(
     poNumber.value = detail.order.po_number ?? ''
     shipDate.value = detail.order.requested_ship_date ?? ''
     notes.value = detail.order.notes ?? ''
+    // A saved draft keeps the FFL the rep confirmed, not a fresh prefill.
+    // (Only when the key changes, or the watcher never fires to consume the skip.)
+    skipFflPrefill = (detail.order.ship_to_key ?? '') !== shipToKey.value
+    shipToKey.value = detail.order.ship_to_key ?? ''
+    fflNumber.value = detail.order.ffl_license_number ?? ''
+    fflExpiresOn.value = detail.order.ffl_expires_on ?? ''
     lines.value = detail.lines.map((l) => ({
       key: String(l.id),
       priceListId: l.price_list_id,
@@ -137,6 +155,10 @@ const customerLoaded = computed(
  */
 watch(customerKey, (next, prev) => {
   if (prev && next !== prev) {
+    // Another account's addresses and licence mean nothing here.
+    shipToKey.value = ''
+    fflNumber.value = ''
+    fflExpiresOn.value = ''
     lines.value = []
     browseListId.value = null
     // Re-arm the ?sku= prefill: it was consumed against the OLD account's
@@ -146,6 +168,38 @@ watch(customerKey, (next, prev) => {
     prefillSku.value = routeSku.value
   }
 })
+
+// ------------------------------------------------------- ship-to and FFL
+const shipTosQuery = useShipTos(customerKey)
+const shipTos = computed(() => orderableShipTos(shipTosQuery.data.value ?? []))
+const shipTo = computed(
+  () => shipTos.value.find((r) => r.ship_to_key === shipToKey.value) ?? null,
+)
+
+/**
+ * Picking an address fills the FFL from the licence on file for it; the rep
+ * confirms or corrects. Hydrating a saved draft must not overwrite what the
+ * rep already confirmed, hence the one-shot skip.
+ */
+let skipFflPrefill = false
+watch(shipToKey, (key) => {
+  if (skipFflPrefill) {
+    skipFflPrefill = false
+    return
+  }
+  const row = shipTos.value.find((r) => r.ship_to_key === key) ?? null
+  const prefill = fflPrefill(row)
+  fflNumber.value = prefill.number
+  fflExpiresOn.value = prefill.expiresOn
+})
+
+const shipToCheck = computed(() =>
+  checkShipToAndFfl({
+    shipTo: shipTo.value,
+    fflNumber: fflNumber.value,
+    fflExpiresOn: fflExpiresOn.value,
+  }),
+)
 
 // ---------------------------------------------------------- effective lists
 const effective = useEffectivePriceLists(
@@ -379,6 +433,9 @@ async function persistDraft(): Promise<number> {
     po_number: poNumber.value.trim() || null,
     requested_ship_date: shipDate.value || null,
     notes: notes.value.trim() || null,
+    ship_to_key: shipToKey.value || null,
+    ffl_license_number: fflNumber.value.trim() || null,
+    ffl_expires_on: fflExpiresOn.value || null,
   }
   let id = orderId.value
   if (id == null) {
@@ -432,7 +489,7 @@ async function onSubmit() {
     formError.value = 'Add at least one line.'
     return
   }
-  formError.value = qtyError()
+  formError.value = shipToCheck.value.errors[0] ?? qtyError()
   if (formError.value) return
   try {
     const id = await persistDraft()
@@ -478,8 +535,84 @@ onBeforeRouteLeave(() => {
       </p>
     </AppCard>
 
-    <!-- 2 · Price list + SKUs -->
-    <AppCard v-if="customerLoaded && customerType" title="2 · Add products">
+    <!-- 2 · Ship-to + FFL -->
+    <AppCard v-if="customerLoaded && customerType" title="2 · Ship to & FFL">
+      <div class="space-y-4">
+        <p v-if="shipTosQuery.isLoading.value" class="text-muted text-[14px]">Loading addresses…</p>
+        <p
+          v-else-if="shipTos.length === 0"
+          role="alert"
+          class="border-line border-l-danger text-ink-2 border border-l-[3px] p-3 text-[14px]"
+        >
+          <strong class="text-ink">This account has no ship-to address in the ERP.</strong>
+          An order can't be submitted until order entry adds one.
+        </p>
+        <fieldset v-else>
+          <legend class="u-label text-ink pb-2">Ship to</legend>
+          <div class="divide-line border-line divide-y border">
+            <label
+              v-for="row in shipTos"
+              :key="row.ship_to_key"
+              class="flex items-start gap-3 px-3 py-2.5"
+              :class="isActiveShipTo(row) ? 'hover:bg-canvas cursor-pointer' : 'opacity-60'"
+            >
+              <input
+                v-model="shipToKey"
+                type="radio"
+                name="ship-to"
+                :value="row.ship_to_key"
+                :disabled="!isActiveShipTo(row)"
+                class="mt-1"
+              />
+              <span class="min-w-0">
+                <span class="text-ink block text-[15px] font-medium">{{ shipToLabel(row) }}</span>
+                <span class="text-muted block text-[13px]">
+                  {{ [row.address1, row.address2, row.zip_code].filter(Boolean).join(', ') }}
+                </span>
+                <span class="text-muted block text-[12px]">
+                  <template v-if="!isActiveShipTo(row)">Inactive in the ERP · </template>
+                  FFL on file: {{ row.ffl_license_number || 'none' }}<template v-if="row.ffl_expiration_raw">
+                    · exp. {{ row.ffl_expiration_raw }}</template>
+                </span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div v-if="shipTo" class="grid gap-3 md:grid-cols-2">
+          <label class="block">
+            <span class="u-label text-ink block pb-2">FFL number</span>
+            <input
+              v-model="fflNumber"
+              class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
+              placeholder="1-23-456-78-9A-12345"
+              autocomplete="off"
+            />
+          </label>
+          <label class="block">
+            <span class="u-label text-ink block pb-2">FFL expires</span>
+            <input
+              v-model="fflExpiresOn"
+              type="date"
+              class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
+            />
+          </label>
+        </div>
+
+        <ul v-if="shipTo && shipToCheck.errors.length" class="text-danger space-y-1 text-[14px]" role="alert">
+          <li v-for="e in shipToCheck.errors" :key="e">{{ e }}</li>
+        </ul>
+        <ul
+          v-if="shipToCheck.warnings.length"
+          class="border-line border-l-accent text-ink-2 space-y-1 border border-l-[3px] p-3 text-[14px]"
+        >
+          <li v-for="w in shipToCheck.warnings" :key="w">{{ w }}</li>
+        </ul>
+      </div>
+    </AppCard>
+
+    <!-- 3 · Price list + SKUs -->
+    <AppCard v-if="customerLoaded && customerType" title="3 · Add products">
       <div class="space-y-4">
         <div
           v-if="!effective.isLoading.value && effectiveLists.length === 0"
@@ -600,8 +733,8 @@ onBeforeRouteLeave(() => {
       </div>
     </AppCard>
 
-    <!-- 3 · Lines -->
-    <AppCard v-if="lines.length > 0" title="3 · Order lines" :hint="`${lines.length} lines`">
+    <!-- 4 · Lines -->
+    <AppCard v-if="lines.length > 0" title="4 · Order lines" :hint="`${lines.length} lines`">
       <div class="space-y-4">
         <div
           v-for="status in promoStatus"
@@ -692,8 +825,8 @@ onBeforeRouteLeave(() => {
       </div>
     </AppCard>
 
-    <!-- 4 · Details + actions -->
-    <AppCard v-if="customerLoaded && customerType" title="4 · Details & submit">
+    <!-- 5 · Details + actions -->
+    <AppCard v-if="customerLoaded && customerType" title="5 · Details & submit">
       <div class="grid gap-3 md:grid-cols-3">
         <label class="block">
           <span class="u-label text-ink block pb-2">Customer PO #</span>

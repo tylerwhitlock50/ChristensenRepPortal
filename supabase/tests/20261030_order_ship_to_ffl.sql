@@ -1,0 +1,217 @@
+/*============================================================================
+  20261030_order_ship_to_ffl.sql — assertions for migration 20261030120000:
+  submit_order() requires an active ship-to on the order's own account and a
+  valid, unexpired FFL; it snapshots both for order entry; run_order_qc()
+  flags an ERP order that ships somewhere else.
+
+  Same harness as 20260817_orders.sql: one transaction, ROLLED BACK,
+  throwaway users and ERP rows, run against dev — never prod.
+
+      psql "$DATABASE_URL" -f supabase/tests/20261030_order_ship_to_ffl.sql
+
+  A clean run prints "ALL SHIP-TO/FFL TESTS PASSED"; any error is a failure.
+============================================================================*/
+
+begin;
+
+\set ON_ERROR_STOP on
+
+create temporary table t_user (label text primary key, id uuid) on commit drop;
+insert into t_user (label, id) values
+  ('rep',   'a1a1a1a1-1111-4111-8111-111111111111'),
+  ('entry', 'b2b2b2b2-2222-4222-8222-222222222222');
+grant select on t_user to authenticated;
+
+insert into auth.users (
+  instance_id, id, aud, role, email, encrypted_password,
+  email_confirmed_at, created_at, updated_at,
+  raw_app_meta_data, raw_user_meta_data, is_super_admin
+)
+select '00000000-0000-0000-0000-000000000000', u.id,
+       'authenticated', 'authenticated', u.label || '@shipto.test', '',
+       now(), now(), now(), '{}'::jsonb, '{}'::jsonb, false
+from t_user u;
+
+update public.profiles set sales_rep_key = 'ST REP'
+  where user_id = (select id from t_user where label = 'rep');
+update public.profiles set role = 'order_entry'
+  where user_id = (select id from t_user where label = 'entry');
+
+insert into erp.dim_customer
+  (customer_key, customer_id, customer_name, assigned_sales_rep_id, customer_type, active_flag)
+values ('ST-CUST', 'ST-CUST', 'Ship-To Dealer', 'ST REP', 'ST-DEALER', 'Y'),
+       ('ST-OTHER', 'ST-OTHER', 'Someone Else', 'ST NOBODY', 'ST-DEALER', 'Y');
+
+insert into erp.dim_ship_to
+  (ship_to_key, customer_id, addr_no, ship_to_id, ship_to_name, address1, city, state, zip_code,
+   active_flag, ffl_license_number, ffl_expiration_raw, address_source, is_unknown_ship_to)
+values
+  ('ST-CUST|1', 'ST-CUST', 1, 'STORE', 'Dealer Store', '1 Main St', 'Boise', 'ID', '83702',
+   'Y', '1-23-456-78-9A-12345', '01/31/2099', 'ShipTo', false),
+  ('ST-CUST|2', 'ST-CUST', 2, 'OLD', 'Old Warehouse', '2 Side St', 'Boise', 'ID', '83702',
+   'N', '1-23-456-78-9A-12345', '01/31/2099', 'ShipTo', false),
+  ('ST-CUST|CUST', 'ST-CUST', null, null, 'Dealer (sold-to)', '1 Main St', 'Boise', 'ID', '83702',
+   'Y', null, null, 'CustomerMaster', false),
+  ('ST-OTHER|1', 'ST-OTHER', 1, 'THEIRS', 'Someone Else', '9 Far Rd', 'Reno', 'NV', '89501',
+   'Y', '9-87-654-32-1B-54321', '01/31/2099', 'ShipTo', false);
+
+insert into erp.dim_part (part_key, part_id, part_description) values ('STPK-1', 'ST-PART-1', 'Rifle');
+
+create temporary table t_ids (label text primary key, id bigint) on commit drop;
+grant select, insert on t_ids to authenticated;
+with ins as (
+  insert into public.price_lists (name, customer_type, is_special, effective_from)
+  values ('ST general', 'ST-DEALER', false, current_date - 30) returning id
+)
+insert into t_ids select 'pl', id from ins;
+insert into public.price_list_items (price_list_id, part_id, unit_price)
+values ((select id from t_ids where label = 'pl'), 'ST-PART-1', 1000.00);
+
+create or replace function pg_temp.become(p_label text) returns void
+language plpgsql as $$
+declare uid uuid;
+begin
+  select id into uid from t_user where label = p_label;
+  perform set_config('request.jwt.claim.sub', uid::text, true);
+  perform set_config('role', 'authenticated', true);
+end $$;
+
+create or replace function pg_temp.assert(p_ok boolean, p_what text) returns void
+language plpgsql as $$
+begin
+  if not coalesce(p_ok, false) then raise exception 'FAILED: %', p_what; end if;
+  raise notice 'ok  %', p_what;
+end $$;
+
+-- Fails, and with the expected message.
+create or replace function pg_temp.assert_fails(p_sql text, p_like text, p_what text) returns void
+language plpgsql as $$
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    if sqlerrm not ilike p_like then
+      raise exception 'FAILED: % — rejected, but with "%"', p_what, sqlerrm;
+    end if;
+    raise notice 'ok  % (rejected: %)', p_what, sqlerrm;
+    return;
+  end;
+  raise exception 'FAILED: % — statement succeeded but should have been rejected', p_what;
+end $$;
+
+-- A draft with one line, as the rep.
+create or replace function pg_temp.draft(p_label text) returns bigint
+language plpgsql as $$
+declare oid bigint;
+begin
+  insert into public.orders (user_id, customer_key)
+  values ((select id from t_user where label = 'rep'), 'ST-CUST') returning id into oid;
+  insert into public.order_lines (order_id, price_list_id, part_id, qty, unit_price, effective_unit_price)
+  values (oid, (select id from t_ids where label = 'pl'), 'ST-PART-1', 1, 1000.00, 1000.00);
+  insert into t_ids values (p_label, oid);
+  return oid;
+end $$;
+
+--------------------------------------------------------------------------
+-- 1. submit_order refuses what it must
+--------------------------------------------------------------------------
+select pg_temp.become('rep');
+select pg_temp.draft('o1');
+
+create or replace function pg_temp.submit(p_label text) returns text
+language sql as $$ select format('select public.submit_order(%s)', (select id from t_ids where label = p_label)) $$;
+create or replace function pg_temp.set(p_label text, p_set text) returns void
+language plpgsql as $$
+begin
+  execute format('update public.orders set %s where id = %s', p_set, (select id from t_ids where label = p_label));
+end $$;
+
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%pick a ship-to%', 'no ship-to');
+
+select pg_temp.set('o1', $$ship_to_key = 'ST-OTHER|1'$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%not one of this account%', 'another account''s ship-to');
+
+select pg_temp.set('o1', $$ship_to_key = 'ST-CUST|CUST'$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%not one of this account%',
+  'the sold-to fallback row is not a ship-to (no SHIPTO_ID)');
+
+select pg_temp.set('o1', $$ship_to_key = 'ST-CUST|404'$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%not one of this account%', 'a ship-to that does not exist');
+
+select pg_temp.set('o1', $$ship_to_key = 'ST-CUST|2'$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%inactive%', 'an inactive ship-to');
+
+select pg_temp.set('o1', $$ship_to_key = 'ST-CUST|1'$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%FFL number is required%', 'no FFL number');
+
+select pg_temp.set('o1', $$ffl_license_number = '1-23-456'$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%FFL number is required%', 'a short FFL number');
+
+select pg_temp.set('o1', $$ffl_license_number = ' 1-23-456-78-9a-12345 '$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%expiration date is required%', 'no FFL expiry');
+
+select pg_temp.set('o1', $$ffl_expires_on = current_date - 1$$);
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%FFL expired%', 'an expired FFL');
+
+--------------------------------------------------------------------------
+-- 2. A complete order submits and carries the snapshot
+--------------------------------------------------------------------------
+select pg_temp.set('o1', $$ffl_expires_on = current_date + 400$$);
+select public.submit_order((select id from t_ids where label = 'o1'));
+
+select pg_temp.assert(
+  (select ship_to_id = 'STORE' and ship_to_addr_no = 1 and ship_to_name = 'Dealer Store'
+          and ship_to_address = '1 Main St, Boise, ID 83702'
+          and ffl_license_number = '1-23-456-78-9A-12345'
+          and ffl_on_file_number = '1-23-456-78-9A-12345' and ffl_on_file_expiration_raw = '01/31/2099'
+     from public.orders where id = (select id from t_ids where label = 'o1')),
+  'submit stamps the ship-to and the FFL on file, normalising the number');
+
+-- Masked EZ Check numbers have 15 characters too and are accepted.
+select pg_temp.draft('o2');
+select pg_temp.set('o2', $$ship_to_key = 'ST-CUST|1', ffl_license_number = '1-XX-XXX-XX-XX-12345',
+                         ffl_expires_on = current_date$$);
+select public.submit_order((select id from t_ids where label = 'o2'));
+select pg_temp.assert(
+  (select status = 'submitted' from public.orders where id = (select id from t_ids where label = 'o2')),
+  'a masked EZ Check number expiring today submits');
+
+-- Order entry, which cannot read erp.dim_ship_to, sees the snapshot.
+select pg_temp.become('entry');
+select pg_temp.assert(
+  (select count(*) from erp.dim_ship_to where customer_id = 'ST-CUST') = 0,
+  'order entry cannot read dim_ship_to');
+select pg_temp.assert(
+  (select ship_to_id from public.orders where id = (select id from t_ids where label = 'o1')) = 'STORE',
+  'order entry reads the ship-to snapshot on the order');
+
+--------------------------------------------------------------------------
+-- 3. QC: the ERP order must ship where the rep chose
+--------------------------------------------------------------------------
+select public.mark_order_entered((select id from t_ids where label = 'o1'), 'ST-ERP-1');
+select public.mark_order_entered((select id from t_ids where label = 'o2'), 'ST-ERP-2');
+reset role;
+insert into erp.fact_order_line
+  (order_id, line_num, customer_key, ship_to_key, part_key, order_qty, unit_price,
+   order_date_key, promise_date_key, desired_ship_date_key)
+values ('ST-ERP-1', 1, 'ST-CUST', 'ST-CUST|1',    'STPK-1', 1, 1000.00, 20261030, 20261115, 20261110),
+       ('ST-ERP-2', 1, 'ST-CUST', 'ST-CUST|CUST', 'STPK-1', 1, 1000.00, 20261030, 20261115, 20261110);
+
+select pg_temp.become('entry');
+select public.run_order_qc();
+
+select pg_temp.assert(
+  (select status from public.orders where id = (select id from t_ids where label = 'o1')) = 'verified',
+  'the ERP order on the chosen ship-to verifies');
+select pg_temp.assert(
+  (select status from public.orders where id = (select id from t_ids where label = 'o2')) = 'discrepancy',
+  'an ERP order on another address is a discrepancy');
+select pg_temp.assert(
+  (select detail like 'ERP order ST-ERP-2 ships to ST-CUST|CUST; the portal order chose ST-CUST|1 (STORE)'
+     from public.order_qc_results
+    where order_id = (select id from t_ids where label = 'o2') and result = 'ship_to_mismatch'),
+  'the finding names both addresses');
+
+reset role;
+do $$ begin raise notice 'ALL SHIP-TO/FFL TESTS PASSED'; end $$;
+rollback;

@@ -18,6 +18,7 @@ import {
 } from '@/composables/useOrders'
 import { useSessionStore } from '@/stores/session'
 import { moneyCents, shortDate } from '@/lib/format'
+import { fflNumbersMatch } from '@/lib/orderShipTo'
 
 /**
  * One order, for all three audiences. Everyone sees the same facts — the
@@ -33,6 +34,23 @@ const session = useSessionStore()
 const detail = useOrderDetail(orderId)
 
 const order = computed(() => detail.data.value?.order ?? null)
+
+/**
+ * What order entry has to do in the ERP before entering it: the order loader
+ * refuses to write an order whose FFL doesn't match the ship-to's licence on
+ * file. Only meaningful once submitted (the snapshot is stamped then).
+ */
+const fflOnFileNote = computed(() => {
+  const o = order.value
+  if (!o || o.status === 'draft' || !o.ffl_license_number) return ''
+  if (!o.ffl_on_file_number) {
+    return `The ERP has no FFL on file for ship-to ${o.ship_to_id ?? ''}: add ${o.ffl_license_number} to it before entering this order.`
+  }
+  if (!fflNumbersMatch(o.ffl_license_number, o.ffl_on_file_number)) {
+    return `The ERP's FFL for ship-to ${o.ship_to_id ?? ''} is ${o.ffl_on_file_number}: update it to ${o.ffl_license_number} before entering this order.`
+  }
+  return ''
+})
 const lines = computed(() => detail.data.value?.lines ?? [])
 const qc = computed(() => detail.data.value?.qc ?? [])
 
@@ -149,6 +167,30 @@ const timeline = computed(() => {
         </div>
         <OrderStatusBadge :status="order.status" />
       </header>
+
+      <!-- Where it ships and under which licence (submit_order snapshots both). -->
+      <div class="border-line bg-surface border px-4 py-3 text-[14px]">
+        <p class="text-ink">
+          <span class="u-label text-muted mr-2">Ship to</span>
+          <template v-if="order.ship_to_id">
+            {{ order.ship_to_id }}<template v-if="order.ship_to_name"> — {{ order.ship_to_name }}</template>
+            <span v-if="order.ship_to_address" class="text-muted"> · {{ order.ship_to_address }}</span>
+          </template>
+          <template v-else-if="order.ship_to_key">{{ order.ship_to_key }}</template>
+          <span v-else class="text-muted">not chosen</span>
+        </p>
+        <p class="text-ink mt-1">
+          <span class="u-label text-muted mr-2">FFL</span>
+          <template v-if="order.ffl_license_number">
+            {{ order.ffl_license_number }}
+            <span v-if="order.ffl_expires_on" class="text-muted">· expires {{ shortDate(order.ffl_expires_on) }}</span>
+          </template>
+          <span v-else class="text-muted">none</span>
+        </p>
+        <p v-if="fflOnFileNote" class="text-ink-2 border-l-accent mt-2 border-l-[3px] pl-2 text-[13px]">
+          {{ fflOnFileNote }}
+        </p>
+      </div>
 
       <p v-if="actionError" role="alert" class="text-danger text-sm font-medium">
         {{ actionError }}

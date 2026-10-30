@@ -6,6 +6,7 @@ import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import type { OrderStatus, QcResult } from '@/types/domain'
+import type { ShipToRow } from '@/lib/orderShipTo'
 
 /**
  * Portal-written orders (public.orders / order_lines / order_qc_results,
@@ -32,6 +33,17 @@ export interface OrderRow {
   po_number: string | null
   requested_ship_date: string | null
   notes: string | null
+  /** The rep's choice (20261030120000): erp.dim_ship_to key + the FFL it ships under. */
+  ship_to_key: string | null
+  ffl_license_number: string | null
+  ffl_expires_on: string | null
+  /** Stamped by submit_order() — what order entry, which cannot read the ERP, works from. */
+  ship_to_id: string | null
+  ship_to_addr_no: number | null
+  ship_to_name: string | null
+  ship_to_address: string | null
+  ffl_on_file_number: string | null
+  ffl_on_file_expiration_raw: string | null
   total_amount: number | null
   submitted_at: string | null
   entered_at: string | null
@@ -173,6 +185,26 @@ export function useOrderCustomer(customerKey: MaybeRef<string>) {
   })
 }
 
+/** The account's ship-to addresses with their FFL on file (erp.dim_ship_to,
+ *  rep-readable for their own book). The writer filters to orderable ones. */
+export function useShipTos(customerKey: MaybeRef<string>) {
+  return useQuery({
+    queryKey: computed(() => ['order-ship-tos', unref(customerKey)] as const),
+    enabled: computed(() => !!unref(customerKey)),
+    queryFn: async (): Promise<ShipToRow[]> => {
+      const { data, error } = await erp
+        .from('dim_ship_to' as never)
+        .select(
+          'ship_to_key, ship_to_id, ship_to_name, address1, address2, city, state, zip_code, ' +
+            'active_flag, ffl_license_number, ffl_expiration_raw, address_source, is_unknown_ship_to',
+        )
+        .eq('customer_id', unref(customerKey))
+      if (error) throw error
+      return (data ?? []) as unknown as ShipToRow[]
+    },
+  })
+}
+
 // ---------------------------------------------------------------- drafts
 
 function invalidateOrders(qc: ReturnType<typeof useQueryClient>) {
@@ -184,6 +216,9 @@ export interface DraftHeaderInput {
   po_number: string | null
   requested_ship_date: string | null
   notes: string | null
+  ship_to_key: string | null
+  ffl_license_number: string | null
+  ffl_expires_on: string | null
 }
 
 export interface DraftLineInput {
