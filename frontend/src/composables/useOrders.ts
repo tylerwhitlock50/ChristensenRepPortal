@@ -6,7 +6,7 @@ import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import type { OrderStatus, QcResult } from '@/types/domain'
-import type { ShipToRow } from '@/lib/orderShipTo'
+import type { FflContext, ShipToRow } from '@/lib/orderShipTo'
 
 /**
  * Portal-written orders (public.orders / order_lines / order_qc_results,
@@ -44,6 +44,8 @@ export interface OrderRow {
   ship_to_address: string | null
   ffl_on_file_number: string | null
   ffl_on_file_expiration_raw: string | null
+  /** Stamped by submit_order() (20261030140000): a line is a firearm. */
+  requires_ffl: boolean | null
   total_amount: number | null
   submitted_at: string | null
   entered_at: string | null
@@ -201,6 +203,23 @@ export function useShipTos(customerKey: MaybeRef<string>) {
         .eq('customer_id', unref(customerKey))
       if (error) throw error
       return (data ?? []) as unknown as ShipToRow[]
+    },
+  })
+}
+
+/** Does this order need an FFL, and which of the account's ship-tos have a
+ *  current licence on file? Same functions as submit_order() (20261030140000). */
+export function useOrderFflContext(customerKey: MaybeRef<string>, partIds: MaybeRef<string[]>) {
+  return useQuery({
+    queryKey: computed(() => ['order-ffl-context', unref(customerKey), unref(partIds)] as const),
+    enabled: computed(() => !!unref(customerKey)),
+    queryFn: async (): Promise<FflContext> => {
+      const { data, error } = await db.rpc('order_ffl_context', {
+        p_customer_key: unref(customerKey),
+        p_part_ids: unref(partIds),
+      })
+      if (error) throw error
+      return data as FflContext
     },
   })
 }

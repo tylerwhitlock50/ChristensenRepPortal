@@ -11,7 +11,6 @@
 import {
   checkShipToAndFfl,
   fflNumbersMatch,
-  fflPrefill,
   normalizeFfl,
   orderableShipTos,
   shipToLabel,
@@ -78,39 +77,43 @@ t('different licence', fflNumbersMatch('1-23-456-78-9B-12345', '1-23-456-78-9A-1
 t('any punctuation separates segments', fflNumbersMatch('#1/23/456/78/9A/12345', '1-23-456-78-9A-12345'), true)
 t('blank never matches', fflNumbersMatch('', '1-23-456-78-9A-12345'), false)
 
-// ---- prefill from the address on file
-t('prefill parses the free-form expiry', fflPrefill(row({}), today), {
-  number: '1-23-456-78-9A-12345',
-  expiresOn: '2027-01-31',
-})
-t('unparseable expiry is left for the rep', fflPrefill(row({ ffl_expiration_raw: 'see file' }), today), {
-  number: '1-23-456-78-9A-12345',
-  expiresOn: '',
-})
-t('no ship-to, nothing to prefill', fflPrefill(null, today), { number: '', expiresOn: '' })
-
 // ---- what blocks submit (mirrors submit_order) and what warns
-const ok = { fflNumber: '1-23-456-78-9A-12345', fflExpiresOn: '2027-01-31', today }
-t('complete order passes', checkShipToAndFfl({ shipTo: row({}), ...ok }), { errors: [], warnings: [] })
-t('no ship-to blocks', checkShipToAndFfl({ shipTo: null, ...ok }).errors, [
-  'Pick the ship-to address for this order.',
-])
-t('inactive ship-to blocks', checkShipToAndFfl({ shipTo: row({ active_flag: 'N' }), ...ok }).errors.length, 1)
-t('short FFL blocks', checkShipToAndFfl({ shipTo: row({}), ...ok, fflNumber: '1-23-456' }).errors.length, 1)
-t('missing expiry blocks', checkShipToAndFfl({ shipTo: row({}), ...ok, fflExpiresOn: '' }).errors, [
-  'Enter the FFL expiration date.',
-])
+const gun = { requiresFfl: true, onFileCurrent: false, fflNumber: '1-23-456-78-9A-12345', fflExpiresOn: '2027-01-31', today }
+const none = { fflNumber: '', fflExpiresOn: '' }
+t('complete entered FFL passes', checkShipToAndFfl({ shipTo: row({}), ...gun }), { errors: [], warnings: [], needsEntry: true })
+t('no ship-to blocks', checkShipToAndFfl({ shipTo: null, ...gun }).errors, ['Pick the ship-to address for this order.'])
+t('inactive ship-to blocks', checkShipToAndFfl({ shipTo: row({ active_flag: 'N' }), ...gun }).errors.length, 1)
 t(
-  'expired yesterday blocks, today is fine',
+  'accessories only: no FFL needed, nothing to enter',
+  checkShipToAndFfl({ shipTo: row({ ffl_license_number: null }), ...gun, requiresFfl: false, ...none }),
+  { errors: [], warnings: [], needsEntry: false },
+)
+t(
+  'firearms with a current licence on file: nothing to enter',
+  checkShipToAndFfl({ shipTo: row({}), ...gun, onFileCurrent: true, ...none }),
+  { errors: [], warnings: [], needsEntry: false },
+)
+t(
+  'firearms, current licence on file, rep gives a renewal: it is validated',
+  checkShipToAndFfl({ shipTo: row({}), ...gun, onFileCurrent: true, fflNumber: '1-23-456' }).errors.length,
+  1,
+)
+t(
+  'firearms, no current licence on file, nothing entered: blocks',
+  checkShipToAndFfl({ shipTo: row({}), ...gun, ...none }).errors,
+  ['Enter the full 15-character FFL number, e.g. 1-23-456-78-9A-12345.', 'Enter the FFL expiration date.'],
+)
+t(
+  'expired yesterday blocks, today is fine (Denver calendar)',
   [
-    checkShipToAndFfl({ shipTo: row({}), ...ok, fflExpiresOn: '2026-10-29' }).errors.length,
-    checkShipToAndFfl({ shipTo: row({}), ...ok, fflExpiresOn: '2026-10-30' }).errors.length,
+    checkShipToAndFfl({ shipTo: row({}), ...gun, fflExpiresOn: '2026-10-29' }).errors.length,
+    checkShipToAndFfl({ shipTo: row({}), ...gun, fflExpiresOn: '2026-10-30' }).errors.length,
   ],
   [1, 0],
 )
-const renewed = checkShipToAndFfl({ shipTo: row({}), ...ok, fflNumber: '1-23-456-78-1C-12345' })
+const renewed = checkShipToAndFfl({ shipTo: row({}), ...gun, fflNumber: '1-23-456-78-1C-12345' })
 t('a different licence warns but does not block', [renewed.errors.length, renewed.warnings.length], [0, 1])
-const noneOnFile = checkShipToAndFfl({ shipTo: row({ ffl_license_number: null }), ...ok })
+const noneOnFile = checkShipToAndFfl({ shipTo: row({ ffl_license_number: null }), ...gun })
 t('no licence on file warns but does not block', [noneOnFile.errors.length, noneOnFile.warnings.length], [0, 1])
 
 console.log(`\n${pass} passed, ${fail} failed`)

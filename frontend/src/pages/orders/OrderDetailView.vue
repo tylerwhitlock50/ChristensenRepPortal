@@ -42,7 +42,7 @@ const order = computed(() => detail.data.value?.order ?? null)
  */
 const fflOnFileNote = computed(() => {
   const o = order.value
-  if (!o || o.status === 'draft' || !o.ffl_license_number) return ''
+  if (!o || o.status === 'draft' || o.requires_ffl === false || !o.ffl_license_number) return ''
   if (!o.ffl_on_file_number) {
     return `The ERP has no FFL on file for ship-to ${o.ship_to_id ?? ''}: add ${o.ffl_license_number} to it before entering this order.`
   }
@@ -185,6 +185,8 @@ const timeline = computed(() => {
             {{ order.ffl_license_number }}
             <span v-if="order.ffl_expires_on" class="text-muted">· expires {{ shortDate(order.ffl_expires_on) }}</span>
           </template>
+          <span v-else-if="order.requires_ffl === false" class="text-muted">not needed (no firearms)</span>
+          <span v-else-if="order.status === 'draft'" class="text-muted">the licence on file, if current</span>
           <span v-else class="text-muted">none</span>
         </p>
         <p v-if="fflOnFileNote" class="text-ink-2 border-l-accent mt-2 border-l-[3px] pl-2 text-[13px]">

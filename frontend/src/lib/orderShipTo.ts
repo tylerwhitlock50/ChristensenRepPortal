@@ -1,27 +1,26 @@
-import { format } from 'date-fns'
-import { parseFflExpiry } from '@/lib/ffl'
+
+/**
+ * Ship-to and FFL rules for the order writer.
+ *
+ * Every portal order names the address it ships to (migration
+ * 20261030120000). An order with a firearm line also ships under an FFL:
+ * the ship-to's licence on file when it is current, otherwise one the rep
+ * enters (20261030140000). submit_order() is the authority; these helpers
+ * mirror it so the rep sees the problem before pressing Submit, plus two
+ * things only a warning can say: an entered licence differs from the one on
+ * file in Visual, or there is none on file. Those don't block submit (a
+ * renewed licence is legitimately new); order entry fixes Visual's ship-to
+ * before the order can be entered, and the order loader refuses to write it
+ * until they match.
+ *
+ * Pure and exported so it can be tested without a DB.
+ */
 
 /** The business calendar: the database's current_date is America/Denver, so
  *  "expired" must mean the same day here wherever the rep's browser is. */
 export function businessDate(d: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(d)
 }
-
-/**
- * Ship-to and FFL rules for the order writer.
- *
- * Every portal order names the address it ships to and the FFL it ships
- * under (migration 20261030120000). submit_order() is the authority — it
- * refuses an order without an active ship-to on the account or without a
- * full, unexpired licence — and these helpers mirror it so the rep sees the
- * problem before pressing Submit, plus two things only a warning can say:
- * the licence differs from the one on file in Visual, or there is none on
- * file. Those don't block submit (a renewed licence is legitimately new);
- * order entry fixes Visual's ship-to before the order can be entered, and
- * the order loader refuses to write it until they match.
- *
- * Pure and exported so it can be tested without a DB.
- */
 
 /** erp.dim_ship_to, the columns the writer reads (bi.vw_DimShipTo). */
 export interface ShipToRow {
@@ -118,23 +117,15 @@ function isMask(token: string): boolean {
   return token.length > 0 && /^X+$/.test(token)
 }
 
-const ymd = (d: Date) => format(d, 'yyyy-MM-dd')
-
 /**
- * What the FFL fields start as when a ship-to is picked: the licence on file
- * for that address, and its expiry when the free-form ERP string parses
- * (parseFflExpiry refuses rather than guesses — then the rep types it).
+ * What the server decided (order_ffl_context RPC, migration 20261030140000):
+ * whether any line is a firearm, and per ship-to whether its licence on file
+ * is complete and current. The same functions back submit_order(), so the
+ * screen never asks for what the server would not, or skips what it would.
  */
-export function fflPrefill(
-  row: ShipToRow | null | undefined,
-  today: Date = new Date(),
-): { number: string; expiresOn: string } {
-  if (!row) return { number: '', expiresOn: '' }
-  const expires = parseFflExpiry(row.ffl_expiration_raw, today)
-  return {
-    number: (row.ffl_license_number ?? '').trim(),
-    expiresOn: expires ? ymd(expires) : '',
-  }
+export interface FflContext {
+  requires_ffl: boolean
+  ship_tos: { ship_to_key: string; ffl_expires_on: string | null; ffl_current: boolean }[]
 }
 
 export interface ShipToFflCheck {
@@ -142,10 +133,23 @@ export interface ShipToFflCheck {
   errors: string[]
   /** Order entry will have to act; the rep should know. */
   warnings: string[]
+  /** The rep must type an FFL (firearms on the order, no current licence on file). */
+  needsEntry: boolean
 }
 
+/**
+ * The rules, mirroring submit_order():
+ *   - a ship-to is always required, and must be active;
+ *   - no firearm line → no FFL at all;
+ *   - firearms + a current licence on file → nothing to enter (the rep MAY
+ *     give a different one, e.g. a renewal, and then it is validated);
+ *   - firearms + no current licence on file → the rep enters a full,
+ *     unexpired FFL.
+ */
 export function checkShipToAndFfl(input: {
   shipTo: ShipToRow | null | undefined
+  requiresFfl: boolean
+  onFileCurrent: boolean
   fflNumber: string
   fflExpiresOn: string
   today?: Date
@@ -161,6 +165,12 @@ export function checkShipToAndFfl(input: {
     errors.push(`Ship-to ${shipTo.ship_to_id} is inactive in the ERP — pick another address.`)
   }
 
+  const entered = input.fflNumber.trim() !== ''
+  const needsEntry = input.requiresFfl && !!shipTo && !input.onFileCurrent
+  if (!input.requiresFfl || !shipTo || (!needsEntry && !entered)) {
+    return { errors, warnings, needsEntry }
+  }
+
   const number = normalizeFfl(input.fflNumber)
   if (number.length !== FFL_LENGTH) {
     errors.push('Enter the full 15-character FFL number, e.g. 1-23-456-78-9A-12345.')
@@ -171,7 +181,7 @@ export function checkShipToAndFfl(input: {
     errors.push(`This FFL expired on ${input.fflExpiresOn} — get the renewed licence first.`)
   }
 
-  if (shipTo && number.length === FFL_LENGTH) {
+  if (number.length === FFL_LENGTH) {
     const onFile = (shipTo.ffl_license_number ?? '').trim()
     if (!onFile) {
       warnings.push(
@@ -183,5 +193,5 @@ export function checkShipToAndFfl(input: {
       )
     }
   }
-  return { errors, warnings }
+  return { errors, warnings, needsEntry }
 }
