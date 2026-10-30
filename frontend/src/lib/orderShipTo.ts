@@ -1,6 +1,12 @@
 import { format } from 'date-fns'
 import { parseFflExpiry } from '@/lib/ffl'
 
+/** The business calendar: the database's current_date is America/Denver, so
+ *  "expired" must mean the same day here wherever the rep's browser is. */
+export function businessDate(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(d)
+}
+
 /**
  * Ship-to and FFL rules for the order writer.
  *
@@ -98,8 +104,10 @@ export function fflNumbersMatch(
 }
 
 function tokens(value: string | null | undefined): string[] {
+  // Any punctuation separates segments, so "1/23/…" and "#1-23-…" compare
+  // the same as submit_order's ffl_normalize() (and the loader's copy).
   return (value ?? '')
-    .replace(/[\s\-_.]+/g, ' ')
+    .replace(/[^0-9A-Za-z]+/g, ' ')
     .trim()
     .toUpperCase()
     .split(' ')
@@ -159,7 +167,7 @@ export function checkShipToAndFfl(input: {
   }
   if (!input.fflExpiresOn) {
     errors.push('Enter the FFL expiration date.')
-  } else if (input.fflExpiresOn < ymd(today)) {
+  } else if (input.fflExpiresOn < businessDate(today)) {
     errors.push(`This FFL expired on ${input.fflExpiresOn} — get the renewed licence first.`)
   }
 

@@ -96,6 +96,41 @@ watch([customerKey, poNumber, shipDate, notes, shipToKey, fflNumber, fflExpiresO
   deep: true,
 })
 
+// ------------------------------------------------------- ship-to and FFL
+const shipTosQuery = useShipTos(customerKey)
+const shipTos = computed(() => orderableShipTos(shipTosQuery.data.value ?? []))
+const shipTo = computed(
+  () => shipTos.value.find((r) => r.ship_to_key === shipToKey.value) ?? null,
+)
+
+/**
+ * Picking an address fills the FFL from the licence on file for it; the rep
+ * confirms or corrects. Hydrating a saved draft must not overwrite what the
+ * rep already confirmed, hence the one-shot skip. This block sits ABOVE the
+ * hydration watcher on purpose: that watcher is immediate and runs during
+ * setup when the draft is already cached, so the flag and this watcher must
+ * exist before it does.
+ */
+let skipFflPrefill = false
+watch(shipToKey, (key) => {
+  if (skipFflPrefill) {
+    skipFflPrefill = false
+    return
+  }
+  const row = shipTos.value.find((r) => r.ship_to_key === key) ?? null
+  const prefill = fflPrefill(row)
+  fflNumber.value = prefill.number
+  fflExpiresOn.value = prefill.expiresOn
+})
+
+const shipToCheck = computed(() =>
+  checkShipToAndFfl({
+    shipTo: shipTo.value,
+    fflNumber: fflNumber.value,
+    fflExpiresOn: fflExpiresOn.value,
+  }),
+)
+
 // ------------------------------------------------- editing an existing draft
 const existing = props.id ? useOrderDetail(Number(props.id)) : null
 watch(
@@ -168,38 +203,6 @@ watch(customerKey, (next, prev) => {
     prefillSku.value = routeSku.value
   }
 })
-
-// ------------------------------------------------------- ship-to and FFL
-const shipTosQuery = useShipTos(customerKey)
-const shipTos = computed(() => orderableShipTos(shipTosQuery.data.value ?? []))
-const shipTo = computed(
-  () => shipTos.value.find((r) => r.ship_to_key === shipToKey.value) ?? null,
-)
-
-/**
- * Picking an address fills the FFL from the licence on file for it; the rep
- * confirms or corrects. Hydrating a saved draft must not overwrite what the
- * rep already confirmed, hence the one-shot skip.
- */
-let skipFflPrefill = false
-watch(shipToKey, (key) => {
-  if (skipFflPrefill) {
-    skipFflPrefill = false
-    return
-  }
-  const row = shipTos.value.find((r) => r.ship_to_key === key) ?? null
-  const prefill = fflPrefill(row)
-  fflNumber.value = prefill.number
-  fflExpiresOn.value = prefill.expiresOn
-})
-
-const shipToCheck = computed(() =>
-  checkShipToAndFfl({
-    shipTo: shipTo.value,
-    fflNumber: fflNumber.value,
-    fflExpiresOn: fflExpiresOn.value,
-  }),
-)
 
 // ---------------------------------------------------------- effective lists
 const effective = useEffectivePriceLists(
@@ -539,6 +542,10 @@ onBeforeRouteLeave(() => {
     <AppCard v-if="customerLoaded && customerType" title="2 · Ship to & FFL">
       <div class="space-y-4">
         <p v-if="shipTosQuery.isLoading.value" class="text-muted text-[14px]">Loading addresses…</p>
+        <p v-else-if="shipTosQuery.isError.value" role="alert" class="text-danger text-[14px]">
+          Couldn't load this account's ship-to addresses.
+          <button type="button" class="underline" @click="shipTosQuery.refetch()">Try again</button>
+        </p>
         <p
           v-else-if="shipTos.length === 0"
           role="alert"

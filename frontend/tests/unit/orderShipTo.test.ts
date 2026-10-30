@@ -75,6 +75,7 @@ t('EZ Check mask matches the real number', fflNumbersMatch('1-XX-XXX-XX-XX-12345
 t('mask does not rescue a different sequence', fflNumbersMatch('1-XX-XXX-XX-XX-99999', '1-23-456-78-9A-12345'), false)
 t('one side without separators', fflNumbersMatch('123456789A12345', '1-23-456-78-9A-12345'), true)
 t('different licence', fflNumbersMatch('1-23-456-78-9B-12345', '1-23-456-78-9A-12345'), false)
+t('any punctuation separates segments', fflNumbersMatch('#1/23/456/78/9A/12345', '1-23-456-78-9A-12345'), true)
 t('blank never matches', fflNumbersMatch('', '1-23-456-78-9A-12345'), false)
 
 // ---- prefill from the address on file
