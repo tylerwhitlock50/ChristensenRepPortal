@@ -114,6 +114,12 @@ const shipTo = computed(
  */
 const linePartIds = computed(() => [...new Set(lines.value.map((l) => l.partId))].sort())
 const fflContext = useOrderFflContext(customerKey, linePartIds)
+/** False until the server has answered for THIS account: "not known yet" is
+ *  never treated as "no FFL needed" (the screen would hide, and Save erase,
+ *  a licence the rep entered). Placeholder data from another account doesn't count. */
+const fflKnown = computed(
+  () => !!fflContext.data.value && !fflContext.isError.value && !fflContext.isPlaceholderData.value,
+)
 const requiresFfl = computed(() => fflContext.data.value?.requires_ffl ?? false)
 const onFile = computed(
   () => fflContext.data.value?.ship_tos.find((s) => s.ship_to_key === shipToKey.value) ?? null,
@@ -459,9 +465,10 @@ async function persistDraft(): Promise<number> {
     notes: notes.value.trim() || null,
     ship_to_key: shipToKey.value || null,
     // Blank = use the licence on file (submit_order decides, and needs none
-    // at all without a firearm line).
-    ffl_license_number: (showFflInputs.value && fflNumber.value.trim()) || null,
-    ffl_expires_on: (showFflInputs.value && fflExpiresOn.value) || null,
+    // at all without a firearm line). Until the server has answered, keep
+    // whatever the rep has: never erase a licence on a guess.
+    ffl_license_number: ((fflKnown.value ? showFflInputs.value : true) && fflNumber.value.trim()) || null,
+    ffl_expires_on: ((fflKnown.value ? showFflInputs.value : true) && fflExpiresOn.value) || null,
   }
   let id = orderId.value
   if (id == null) {
@@ -513,6 +520,12 @@ async function onSubmit() {
   }
   if (lines.value.length === 0) {
     formError.value = 'Add at least one line.'
+    return
+  }
+  if (!fflKnown.value) {
+    formError.value = fflContext.isError.value
+      ? "Couldn't check whether this order needs an FFL — try again before submitting."
+      : 'Still checking whether this order needs an FFL — try again in a moment.'
     return
   }
   formError.value = shipToCheck.value.errors[0] ?? qtyError()

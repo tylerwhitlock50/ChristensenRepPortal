@@ -1,6 +1,6 @@
 /*============================================================================
-  20261030_order_ship_to_ffl.sql — assertions for migrations 20261030120000
-  and 20261030140000: submit_order() requires an active ship-to on the
+  20261030_order_ship_to_ffl.sql — assertions for migrations 20261030120000,
+  20261030140000 and 20261030150000: submit_order() requires an active ship-to on the
   order's own account; an order with a firearm line ships under an FFL —
   the ship-to's licence on file when it is current, else one the rep enters
   (full and unexpired); accessory-only orders need none. Both are snapshot
@@ -269,6 +269,32 @@ select pg_temp.assert(
     where order_id = (select id from t_ids where label = 'o2') and result = 'ship_to_mismatch'),
   'the finding names both addresses');
 
+--------------------------------------------------------------------------
+-- 4. The rules the order loader shares (20261030150000)
+--------------------------------------------------------------------------
 reset role;
+
+-- USER_5 strings: the same list as order_loader tests/test_portal.py
+-- FFL_EXPIRY_VECTORS. Both sides must read them identically.
+select pg_temp.assert(
+  (select count(*) = 0 from (values
+     ('1/31/2027', '2027-01-31'), ('01-31-27', '2027-01-31'), ('1.31.2027', '2027-01-31'),
+     ('2027-01-31', '2027-01-31'), ('01312027', '2027-01-31'), ('Jan 31 2027', '2027-01-31'),
+     ('January 31, 2027', '2027-01-31'), ('Sept. 30, 2027', '2027-09-30'), ('31-Jan-2027', '2027-01-31'),
+     ('31-jan-27', '2027-01-31'), ('Exp 1/31/27', '2027-01-31'), ('EXPIRATION: 1/31/2027', '2027-01-31'),
+     ('Exp Date 1/31/27', '2027-01-31'), ('Valid until 01/31/2027.', '2027-01-31'),
+     ('1/31/2027 renewed', '2027-01-31'), ('13/45/2027', null), ('2/30/2027', null), ('see file', null),
+     ('Junk 31 2027', null), ('12/31/1950', null), ('1/31/2099', null), ('', null)) v(raw, want)
+   where public.parse_ffl_expiry(v.raw)::text is distinct from v.want),
+  'parse_ffl_expiry reads every shared USER_5 string as the loader does');
+
+-- Free-text 'n/a' (any case, stray whitespace) is "no spec", as in isGunRow and the loader.
+insert into erp.dim_part (part_key, part_id, part_description, product_code, product_family, chambering)
+values ('STPK-3', 'ST-PART-3', 'Sling', 'FG-ACC', E' n/a\t', 'N/a');
+select pg_temp.assert(
+  not public.part_requires_ffl('ST-PART-3') and public.part_requires_ffl('ST-PART-1')
+  and not public.part_requires_ffl('ST-PART-2'),
+  'part_requires_ffl: a rifle needs one; accessories marked N/A in any case do not');
+
 do $$ begin raise notice 'ALL SHIP-TO/FFL TESTS PASSED'; end $$;
 rollback;

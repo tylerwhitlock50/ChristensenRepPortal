@@ -1,5 +1,5 @@
 import { computed, unref, type MaybeRef } from 'vue'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
@@ -213,6 +213,9 @@ export function useOrderFflContext(customerKey: MaybeRef<string>, partIds: Maybe
   return useQuery({
     queryKey: computed(() => ['order-ffl-context', unref(customerKey), unref(partIds)] as const),
     enabled: computed(() => !!unref(customerKey)),
+    // A line change re-asks; keep the last answer meanwhile rather than
+    // flickering to "unknown".
+    placeholderData: keepPreviousData,
     queryFn: async (): Promise<FflContext> => {
       const { data, error } = await db.rpc('order_ffl_context', {
         p_customer_key: unref(customerKey),
