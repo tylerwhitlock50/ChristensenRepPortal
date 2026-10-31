@@ -14,10 +14,12 @@
   PURPOSE
   -------
   Current-state Available To Sell (ATS) list for the Inventory semantic model.
-  Headline math matches the canonical Toolbox query
-  domains/sales/ats_finished_goods.sql. ATS is deliberately conservative:
+  Headline math follows the canonical Toolbox query
+  domains/sales/ats_finished_goods.sql except for the sellable-location rule
+  (R01-R09 here per the 2026-10-26 business rule; that query still defaults
+  to excluding R10% only until it is updated). ATS is deliberately conservative:
 
-      AvailableToSellQty = SHIPPING QOH outside R10 staging
+      AvailableToSellQty = SHIPPING QOH in rack locations R01-R09
                          - open Released/Firmed customer-order qty
 
   OPEN DEMAND / DOUBLE-PROMISE RULE
@@ -45,7 +47,12 @@
   - SHIPPING is the governed shippable warehouse for this list. WarehouseID is a
     degenerate constant (ShippableWarehouseID), not a DimWarehouse relationship —
     grain is part × site, same as FactInventoryOnHand.
-  - R10% locations are staging and excluded from sellable QOH; their qty is exposed.
+  - Only rack locations R01-R09 (LOCATION_ID LIKE 'R0[1-9]%') are sellable
+    (business rule, Tyler 2026-10-26; rep-portal request 2026-10-27).
+    R10 (staging), R11 (components), INTERNATIONAL, STAGE* and every other
+    SHIPPING location are reserved; their qty is exposed as ExcludedStagingQty
+    (the name predates the rule) and ExcludedLocationPattern = 'NOT R0[1-9]%'.
+    Column names, order and types are unchanged.
   - Held order headers (STATUS='H') are not included, matching the canonical SQL
     Toolbox ATS definition. Sales FactOrderLine.Backlog* still includes Hold —
     that is sales backlog, not ATS reservation. Revisit held demand only as an
@@ -59,17 +66,28 @@
 CREATE OR ALTER VIEW bi.vw_FactAvailableToSell
 AS
 WITH ShippingOnHand AS (
+    -- Sellable stock = SHIPPING rack locations R01-R09 ONLY (business rule,
+    -- 2026-10-26). Everything else in SHIPPING is reserved and never counts
+    -- toward ATS: R10% (staging), R11% (components), INTERNATIONAL,
+    -- STAGE / STAGE1 / STAGE2 / STAGE3, SHELF PREP, TOP SHELF, ... The test is a
+    -- positive LIKE rather than a list of exclusions, so a location added
+    -- later is reserved until someone decides it is sellable.
+    -- ExcludedStagingQty keeps its name (column-list compatibility) but now
+    -- holds ALL SHIPPING qty outside R01-R09. The two CASEs are exact
+    -- complements (a NULL LOCATION_ID falls to the excluded side), so
+    -- ShippingOnHandBeforeExclusionsQty = ShippingOnHandQty + ExcludedStagingQty
+    -- on every row.
     SELECT
         w.SITE_ID,
         pl.PART_ID,
         SUM(ISNULL(pl.QTY, 0)) AS ShippingOnHandBeforeExclusionsQty,
         SUM(CASE
-                WHEN pl.LOCATION_ID LIKE N'R10%' THEN 0
-                ELSE ISNULL(pl.QTY, 0)
+                WHEN pl.LOCATION_ID LIKE N'R0[1-9]%' THEN ISNULL(pl.QTY, 0)
+                ELSE 0
             END) AS ShippingOnHandQty,
         SUM(CASE
-                WHEN pl.LOCATION_ID LIKE N'R10%' THEN ISNULL(pl.QTY, 0)
-                ELSE 0
+                WHEN pl.LOCATION_ID LIKE N'R0[1-9]%' THEN 0
+                ELSE ISNULL(pl.QTY, 0)
             END) AS ExcludedStagingQty
     FROM dbo.PART_LOCATION AS pl
     INNER JOIN dbo.WAREHOUSE AS w
@@ -80,8 +98,8 @@ WITH ShippingOnHand AS (
         pl.PART_ID
     HAVING SUM(ISNULL(pl.QTY, 0)) <> 0
         OR SUM(CASE
-                   WHEN pl.LOCATION_ID LIKE N'R10%' THEN ISNULL(pl.QTY, 0)
-                   ELSE 0
+                   WHEN pl.LOCATION_ID LIKE N'R0[1-9]%' THEN 0
+                   ELSE ISNULL(pl.QTY, 0)
                END) <> 0
 ),
 DemandSupplyLinkByLine AS (
@@ -201,7 +219,9 @@ SELECT
 
     -- Governed ATS scope (degenerate context; constant across the snapshot)
     CAST(N'SHIPPING' AS nvarchar(15)) AS ShippableWarehouseID,
-    CAST(N'R10%' AS nvarchar(15)) AS ExcludedLocationPattern,
+    -- Describes the rule: every SHIPPING location NOT LIKE 'R0[1-9]%' is
+    -- excluded from sellable stock (its qty is in ExcludedStagingQty).
+    CAST(N'NOT R0[1-9]%' AS nvarchar(15)) AS ExcludedLocationPattern,
 
     -- Physical stock in SHIPPING
     CAST(ISNULL(q.ShippingOnHandBeforeExclusionsQty, 0) AS decimal(38,8))

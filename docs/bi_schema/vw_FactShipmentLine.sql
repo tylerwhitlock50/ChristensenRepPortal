@@ -18,9 +18,17 @@
       NULLABLE (misc / freight / service shipment lines) -> LEFT JOIN -> those
       rows land on the '(Unknown)' part sentinel. This is expected, not a bug.
     - SHIPPER_LINE has NO SITE_ID. Site comes from the SHIPPER header.
-    - Tracking number is the VMSHPENT shipper-line UDF UDF-0000028. Its UDF
-      definition targets TABLE_ID = 'tblShpLineItem', so the value joins on
-      (DOCUMENT_ID, LINE_NO) = (SHIPPER_LINE.PACKLIST_ID, SHIPPER_LINE.LINE_NO).
+    - Tracking number is the VMSHPENT ship-entry UDF UDF-0000028
+      (TABLE_ID = 'tblShpLineItem'). Its DOCUMENT_ID is the packlist, but its
+      LINE_NO is the CUSTOMER ORDER line number (the ship-entry grid is one row
+      per order line), NOT SHIPPER_LINE.LINE_NO. The two differ whenever only
+      some order lines ship (47% of shipper lines). So the value joins on
+      (DOCUMENT_ID, LINE_NO) = (SHIPPER_LINE.PACKLIST_ID,
+      SHIPPER_LINE.CUST_ORDER_LINE_NO). Verified 2026-10-26: 392,942 of 395,186
+      UDF rows match that key vs 206,706 on the shipper line number; on rows
+      where the numbers differ, 201,925 match the order line vs 15,689 the
+      shipper line. The earlier shipper-line join populated 191,525 lines and
+      put another line's tracking on 75; this key populates 368,281.
       Blank and placeholder '0' values are exposed as NULL. This is distinct
       from the packlist-header SHIPPER.WAYBILL_NUMBER.
     - Transacting rep = SHIPPER.SALESREP_ID (snapshotted at SHIP time). This is
@@ -33,6 +41,14 @@
       freight/service lines with no TRANSACTION_ID (~2.6%). This is actual cost
       flow, NOT standard cost (DimPart carries the static standard). ~97% of
       lines link; GrossMarginAmount = ShippedRevenue - COGSAmount at this grain.
+    - ShippedRevenue is the line extension USER_SHIPPED_QTY x UNIT_PRICE x
+      (1 - TRADE_DISC_PERCENT/100), rounded to cents — NOT the stored
+      SHIPPER_LINE.RECEIVABLE_AMOUNT. Verified 2026-10-12 against VECA
+      RECEIVABLE_LINE by (invoice, packlist, packlist line): the extension
+      misses the billed amount on 17 of 494,007 billed lines, while
+      RECEIVABLE_AMOUNT misses on 14,852 (a stale whole-unit quantity x price;
+      net -$12M/yr in 2021-2022, last seen May 2026). The stored value is kept
+      as StoredReceivableAmount for audit only; validation D5 tracks drift.
 
   Dimension keys (all coalesced to a sentinel so rows never silently drop):
     CustomerKey  -> DimCustomer  (order header CUSTOMER_ID)
@@ -101,7 +117,7 @@ SELECT
     -- Measures (additive at this packlist-line grain unless noted)
     sl.SHIPPED_QTY                        AS ShippedQty,           -- stocking UM
     sl.USER_SHIPPED_QTY                   AS ShippedQtySellingUM,  -- selling UM
-    sl.RECEIVABLE_AMOUNT                  AS ShippedRevenue,       -- net shipped revenue booked to AR — the SHIPPED headline measure
+    amt.ExtendedAmount                    AS ShippedRevenue,       -- qty x price net of trade discount — the SHIPPED headline measure
     sl.ACT_FREIGHT                        AS ActualFreight,
     sl.SHIPPING_WEIGHT                    AS ShippingWeight,
     -- COGS: ACTUAL cost at ship time from the linked inventory movement
@@ -121,7 +137,7 @@ SELECT
     -- pure revenue; for a margin %, aggregate ShippedRevenue and COGSAmount
     -- separately and divide.
     CASE WHEN itx.TRANSACTION_ID IS NULL THEN NULL
-         ELSE sl.RECEIVABLE_AMOUNT
+         ELSE amt.ExtendedAmount
             - (CASE WHEN itx.TYPE = 'O' THEN 1 ELSE -1 END)
             * ( COALESCE(itx.ACT_MATERIAL_COST,0) + COALESCE(itx.ACT_LABOR_COST,0)
               + COALESCE(itx.ACT_BURDEN_COST,0)   + COALESCE(itx.ACT_SERVICE_COST,0) )
@@ -134,8 +150,18 @@ SELECT
     itx.TRANSACTION_ID                    AS InventoryTransID,     -- degenerate: link to the costing movement
     sl.UNIT_PRICE                         AS UnitPrice,            -- NON-additive (rate)
     sl.TRADE_DISC_PERCENT                 AS TradeDiscountPct,     -- NON-additive (rate)
-    sl.COMMISSION_PCT                     AS CommissionPct         -- NON-additive (rate)
+    sl.COMMISSION_PCT                     AS CommissionPct,        -- NON-additive (rate)
+    -- Appended to preserve existing column ordinals. Audit only: Visual's
+    -- stored amount, unreliable on ~3% of lines (see header). Never sum it.
+    sl.RECEIVABLE_AMOUNT                  AS StoredReceivableAmount
 FROM dbo.SHIPPER_LINE AS sl
+-- Line extension, defined once for ShippedRevenue and GrossMarginAmount.
+-- Same type as RECEIVABLE_AMOUNT so the published column type is unchanged.
+CROSS APPLY (
+    SELECT CAST(ROUND(sl.USER_SHIPPED_QTY * sl.UNIT_PRICE
+                      * (1 - COALESCE(sl.TRADE_DISC_PERCENT, 0) / 100.0), 2)
+                AS decimal(23,8)) AS ExtendedAmount
+) AS amt
 INNER JOIN dbo.SHIPPER AS hdr
     ON hdr.PACKLIST_ID = sl.PACKLIST_ID
 INNER JOIN dbo.CUSTOMER_ORDER AS ord
@@ -143,14 +169,15 @@ INNER JOIN dbo.CUSTOMER_ORDER AS ord
 LEFT JOIN dbo.CUST_ORDER_LINE AS oln
     ON oln.CUST_ORDER_ID = sl.CUST_ORDER_ID
    AND oln.LINE_NO       = sl.CUST_ORDER_LINE_NO
--- VMSHPENT UDF-0000028 is defined on tblShpLineItem, so both the packlist and
--- shipper-line number are required. Current source data is unique at this key;
--- validation check B2a guards that assumption so this join cannot fan out.
+-- VMSHPENT UDF-0000028 is keyed by packlist + ORDER line number (see header),
+-- not the shipper line number. The UDF is unique at this key (validation B2a)
+-- and (PACKLIST_ID, CUST_ORDER_LINE_NO) is unique on SHIPPER_LINE, so this join
+-- cannot fan out. Lines with no order line (misc) get no tracking number.
 LEFT JOIN dbo.USER_DEF_FIELDS AS trk
     ON trk.PROGRAM_ID  = N'VMSHPENT'
    AND trk.ID          = N'UDF-0000028'
    AND trk.DOCUMENT_ID = sl.PACKLIST_ID
-   AND trk.LINE_NO     = sl.LINE_NO
+   AND trk.LINE_NO     = sl.CUST_ORDER_LINE_NO
 LEFT JOIN dbo.SALES_REP AS rep
     ON rep.ID = hdr.SALESREP_ID
 -- Existence probe for the effective ship-to (packlist override, else order),

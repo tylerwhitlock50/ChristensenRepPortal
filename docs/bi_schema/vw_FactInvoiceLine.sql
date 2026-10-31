@@ -5,6 +5,8 @@
            LEFT JOIN VECA.dbo.CUST_ORDER_LINE    (oln — PART_ID + SITE_ID)
            LEFT JOIN VECA.dbo.CUSTOMER_ORDER     (ord — ship-to resolution)
            LEFT JOIN VECA.dbo.SALES_REP          (rep — key existence check)
+           LEFT JOIN VECA.dbo.RECEIVABLE[_LINE]  (signed TDJ memo amount)
+           LEFT JOIN VFIN.dbo.LEDGER_ACCOUNT    (entity/account class)
   Grain  : ONE ROW PER AR INVOICE LINE = (INVOICE_ENTITY_ID, INVOICE_ID, LINE_NO).
            The revenue / billing fact, sourced from VFIN AR (authoritative for
            tax, credit memos, payment status, GL posting). Separate fact from
@@ -41,18 +43,19 @@
   double-counts. If AR/aging/payment analysis is needed, build a separate
   header-grain FactInvoice — do NOT smear header totals across lines here.
 
-  MEMOS (verified against live data — do NOT assume the textbook convention):
-  INVOICE_TYPE has only two values here, 'INVOICE' and 'MEMO'; the doc-class
-  field DOCUMENT_TYPE_ID mirrors them as 'AR' / 'ARM'. In THIS install memos are
-  NOT stored as negative credit memos — memo headers are never negative (~$26M
-  positive across 9,327 memos), most memo lines are positive, and some memos
-  carry offsetting +/- lines that net to zero. So a report CANNOT net memos by
-  summing a negative AMOUNT. ~78% of memo lines are order/shipper-linked; the
-  rest are purely financial. Whether ARM memos belong in certified sales Revenue
-  is a FINANCE decision — the base Revenue measure exposes them via IsMemo /
-  DocumentTypeID / InvoiceType so reports include or exclude them explicitly.
-  Revenue = invoice line AMOUNT; this is the single certified revenue grain
-  (Bookings lives on FactOrderLine, ShippedRevenue on FactShipmentLine).
+  MEMO SIGN CONTRACT (2026-09-10): VFIN MEMO/ARM AMOUNT uses the opposite
+  polarity to signed billing revenue. Positive stored amounts are credits;
+  negative stored amounts are debit/offset lines. Verified against VFIN REV
+  distributions (CREDIT_AMOUNT - DEBIT_AMOUNT), including ARM02853.
+  For matching TDJ VECA memo lines, pass signed RECEIVABLE_LINE.AMOUNT through.
+  Match customer, site, and account as well as invoice/line: ordinary invoice
+  tax lines can reuse the line number of a DIFFERENT VFIN adjustment.
+  Otherwise negate VFIN MEMO/ARM AMOUNT once; ordinary invoices pass through.
+  Do not use ABS or quantity/price to infer direction. RawVfinAmount and
+  RevenueSignBasis preserve the audit trail. This is billing, not GL actuals:
+  void/reversal distributions may net to zero while the original line remains.
+  Retain non-revenue accounts; IsRevenueAccount uses the entity's ledger class
+  (not a 4xxx/6xxx prefix). Sales measures filter this flag and exclude VOID.
 
   NO STATUS FILTER. InvoiceStatus / PostedFlag exposed as columns.
 ============================================================================*/
@@ -122,14 +125,53 @@ SELECT
     -- Measures (additive at this invoice-line grain unless noted).
     -- Header totals are intentionally absent — see header comment.
     rl.QTY                                AS InvoiceQty,
-    rl.AMOUNT                             AS Revenue,              -- net AR line revenue — the REVENUE headline measure (see memo note in header)
+    CASE WHEN rh.INVOICE_TYPE = 'MEMO' AND rh.DOCUMENT_TYPE_ID = 'ARM'
+         THEN CASE WHEN vrl.INVOICE_ID IS NOT NULL THEN vrl.AMOUNT
+                   ELSE -rl.AMOUNT END
+         ELSE rl.AMOUNT END               AS Revenue,
     rl.COMMISSION_AMOUNT                  AS CommissionAmount,
     rl.UNIT_PRICE                         AS UnitPrice,            -- NON-additive (rate)
-    rl.COMMISSION_PCT                     AS CommissionPct         -- NON-additive (rate)
+    rl.COMMISSION_PCT                     AS CommissionPct,        -- NON-additive (rate)
+    -- Append audit/scope fields to preserve existing column ordinals.
+    rl.AMOUNT                             AS RawVfinAmount,
+    CASE WHEN rh.INVOICE_TYPE = 'MEMO' AND rh.DOCUMENT_TYPE_ID = 'ARM'
+         THEN CASE WHEN vrl.INVOICE_ID IS NOT NULL THEN N'VECA signed memo'
+                   ELSE N'VFIN memo polarity' END
+         ELSE N'VFIN invoice amount' END   AS RevenueSignBasis,
+    gla.AccountClass                     AS RevenueAccountClass,
+    CAST(CASE WHEN gla.AccountClass = 'REV' THEN 1
+              WHEN gla.AccountClass IS NOT NULL THEN 0
+              ELSE NULL END AS bit)      AS IsRevenueAccount
 FROM VFIN.dbo.RECEIVABLES_RECEIVABLE_LINE AS rl
 INNER JOIN VFIN.dbo.RECEIVABLES_RECEIVABLE AS rh
     ON rh.ENTITY_ID  = rl.INVOICE_ENTITY_ID
    AND rh.INVOICE_ID = rl.INVOICE_ID
+-- VECA's invoice key is global, but only TDJ is the verified entity/site
+-- mapping. Never reuse its amounts for another VFIN entity with the same ID.
+LEFT JOIN dbo.RECEIVABLE AS vr
+    ON rh.ENTITY_ID = N'TDJ'
+   AND vr.SITE_ID = N'TDJ'
+   AND vr.INVOICE_ID = rl.INVOICE_ID
+   AND vr.CUSTOMER_ID = rh.CUSTOMER_ID
+   AND vr.TYPE = 'M'
+   AND rh.INVOICE_TYPE = 'MEMO'
+   AND rh.DOCUMENT_TYPE_ID = 'ARM'
+LEFT JOIN dbo.RECEIVABLE_LINE AS vrl
+    ON vrl.INVOICE_ID = vr.INVOICE_ID
+   AND vrl.LINE_NO = rl.LINE_NO
+   AND vrl.GL_ACCOUNT_ID = rl.ACCOUNT_ID
+-- VFIN has surrogate PKs; collapse to the business key to prevent fan-out.
+-- Conflicting classes are unknown, never arbitrarily classified as revenue.
+LEFT JOIN (
+    SELECT ENTITY_ID, ACCOUNT_ID,
+           CASE WHEN COUNT(*) = COUNT(NULLIF(ACCOUNT_CLASS, N''))
+                     AND MIN(ACCOUNT_CLASS) = MAX(ACCOUNT_CLASS)
+                THEN MIN(ACCOUNT_CLASS) END AS AccountClass
+    FROM VFIN.dbo.LEDGER_ACCOUNT
+    GROUP BY ENTITY_ID, ACCOUNT_ID
+) AS gla
+    ON gla.ENTITY_ID = rl.INVOICE_ENTITY_ID
+   AND gla.ACCOUNT_ID = rl.ACCOUNT_ID
 LEFT JOIN dbo.CUST_ORDER_LINE AS oln
     ON oln.CUST_ORDER_ID = rl.CUST_ORDER_ID
    AND oln.LINE_NO       = rl.CUST_ORDER_LINE_NO

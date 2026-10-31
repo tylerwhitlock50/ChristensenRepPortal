@@ -31,8 +31,10 @@ export class PromptError extends Error {}
 
 const HOUSE_RULES = `
 How to answer:
-- Invoiced revenue is "sales". Open order value is booked but not shipped;
-  backlog is the unshipped part. Never mix them up.
+- Invoiced revenue is "sales": invoice lines excluding credit memos (credits
+  and returns are not subtracted), so it can run above finance's net sales.
+  Open order value is everything booked and still owed; a territory
+  backlog_amount is only the part past its promise date. Never mix them up.
 - Round money ($48,000, not $47,983.42). Give dates ("no order since July 2")
   rather than counts of days.
 - Observations and topics worth raising, never instructions: "their Mesa

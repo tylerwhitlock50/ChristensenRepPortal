@@ -18,6 +18,12 @@
              EVERY role table as a date table, not just the primary.
            - Built with a stacked-CTE tally (no recursion / MAXRECURSION),
              so it is safe inside a view definition.
+           - Weekday logic is @@DATEFIRST-independent (2026-10-31): a view
+             inherits the caller's SET DATEFIRST, so DATEPART(WEEKDAY) could
+             mark Fri/Sat or Sun/Mon as the weekend for a non-US session.
+             DayOfWeekNumber keeps the US numbering (Sunday = 1 .. Saturday = 7)
+             and IsWeekend = Saturday/Sunday, both derived from DATEDIFF against
+             1900-01-01 (a Monday). Values are unchanged under DATEFIRST 7.
 ============================================================================*/
 CREATE OR ALTER VIEW bi.vw_DimDate
 AS
@@ -57,10 +63,16 @@ SELECT
     LEFT(DATENAME(MONTH, [Date]), 3) + ' ' + CAST(YEAR([Date]) AS varchar(4)) AS MonthYear,
     DAY([Date])                                             AS DayOfMonth,
     DATEPART(DAYOFYEAR, [Date])                             AS DayOfYear,
-    DATEPART(WEEKDAY, [Date])                               AS DayOfWeekNumber,
+    -- Sunday = 1 .. Saturday = 7 regardless of @@DATEFIRST (1900-01-01 = Monday).
+    ((DATEDIFF(DAY, '19000101', [Date]) + 1) % 7) + 1      AS DayOfWeekNumber,
     DATENAME(WEEKDAY, [Date])                               AS DayName,
     DATEPART(ISO_WEEK, [Date])                              AS ISOWeek,
-    CAST(CASE WHEN DATEPART(WEEKDAY, [Date]) IN (1, 7) THEN 1 ELSE 0 END AS bit) AS IsWeekend,
+    -- Monday week start. 1900-01-01 was a Monday, so this is DATEFIRST-independent
+    -- and matches the planning-bucket anchor in vw_FactPlanningBucket_Build.
+    DATEADD(DAY, -(DATEDIFF(DAY, '19000101', [Date]) % 7), [Date]) AS WeekStartDate,
+    CAST(CONVERT(char(8), DATEADD(DAY, -(DATEDIFF(DAY, '19000101', [Date]) % 7), [Date]), 112) AS int) AS WeekStartDateKey,
+    -- Saturday (offset 5) / Sunday (offset 6) from Monday 1900-01-01.
+    CAST(CASE WHEN DATEDIFF(DAY, '19000101', [Date]) % 7 IN (5, 6) THEN 1 ELSE 0 END AS bit) AS IsWeekend,
     CAST(0 AS bit)                                          AS IsUnknownDate
 FROM cal
 
@@ -83,6 +95,8 @@ SELECT
     NULL             AS DayOfWeekNumber,
     'Unknown'        AS DayName,
     NULL             AS ISOWeek,
+    NULL             AS WeekStartDate,
+    19000101         AS WeekStartDateKey,
     CAST(0 AS bit)   AS IsWeekend,
     CAST(1 AS bit)   AS IsUnknownDate;
 GO

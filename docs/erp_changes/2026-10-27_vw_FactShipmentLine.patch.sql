@@ -12,6 +12,10 @@
 
   The output column list (names, order, types) stays EXACTLY the same:
   TrackingNumber is still nvarchar(254), still column 13.
+
+  STATUS: done in the 2026-10-26 redeploy (see 2026-10-27_bi_view_changes.md
+  item 2). docs/bi_schema was re-synced from power-bi-model 1a9e94e on
+  2026-10-31, so the FIND blocks below no longer occur in our copy.
 ============================================================================*/
 
 

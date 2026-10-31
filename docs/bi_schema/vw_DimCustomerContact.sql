@@ -26,6 +26,10 @@
            - Data minimization: expose business contact and communication fields,
              but deliberately exclude WEB_USER_ID / WEB_PASSWORD, birth date,
              gender, marital status, and ungoverned USER_1..USER_10 fields.
+           - SALUTATION is deliberately excluded too (2026-10-31): it is
+             free text and at least one record held a payment-card-like number.
+             It is published as a typed NULL (nvarchar(60)) so the column list
+             (Salutation, position 12) does not change. Honorific is unaffected.
            - No '(Unknown)' sentinel: this leaf does not key any fact, and both
              customer and contact parents are protected by source foreign keys.
 ============================================================================*/
@@ -49,7 +53,10 @@ SELECT
     c.MIDDLE_NAME                         AS MiddleName,
     c.MIDDLE_INITIAL                      AS MiddleInitial,
     c.POSITION                            AS Position,
-    c.SALUTATION                          AS Salutation,
+    -- Deliberately NULL (2026-10-31): free-text field that held personal data
+    -- on at least one record; not published to BI. Kept as a typed NULL so
+    -- the column list does not change. Honorific is unaffected.
+    CAST(NULL AS nvarchar(60))            AS Salutation,
     c.HONORIFIC                           AS Honorific,
 
     -- Communication

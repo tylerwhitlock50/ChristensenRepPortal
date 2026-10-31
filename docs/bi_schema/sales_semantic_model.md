@@ -132,8 +132,9 @@ transacting rep on an order (that's `DimSalesRep`).
 
 - **Identity/geography:** `CustomerID`, `CustomerName`, `SoldToCity/State/ZipCode/Country`, `BillTo*`
 - **Region/classification:** `SalesRegion` (driven by the customer's **own state** — account HQ, not ship-to), `Territory`, `MarketID`, `CustomerGroupID`, raw `CarmsCustomerGroup` / `CarmsCustomerSubGroup` / `CarmsCustomerName`, governed `CustomerReportingGroup` / `CustomerReportingSubGroup` / `CustomerReportingName`, `CustomerType`, `PriceGroup`, `Priority`, `SICCode`, `IndustryCode`, `InternalCustomerFlag`
-- **Terms/tax/status:** `DiscountCode`, `CurrencyID`, `DefaultSalesTaxGroupID`, `TaxExemptFlag`, `ActiveFlag`, `AccountOpenDate`, `LastOrderDate`
-- **Goal:** `YearlySalesGoal` (numeric) / `YearlySalesGoalRaw` (text)
+- **Terms/tax/status:** `DiscountCode`, `CurrencyID`, `DefaultSalesTaxGroupID`, `TaxExemptFlag`, `TaxIDNumber`, `IsTaxIDRedacted`, `ActiveFlag`, `AccountOpenDate`, `LastOrderDate`
+- **Tax ID is never published (tightened 2026-10-31):** `TaxIDNumber` is always NULL (typed `nvarchar(25)`, same column position). The earlier pattern redaction (`'(Redacted)'` for a leading `###-##-####`) let other SSN-style values through, and a bare 9-digit SSN cannot be told from an unformatted EIN. `IsTaxIDRedacted = 1` now means the *source* value holds an SSN-style token anywhere in the string — filter it to find customer records to clean up in Visual. A report that genuinely needs a tax ID must use a separately granted, restricted object.
+- **Goal:** `YearlySalesGoal` (numeric) / `YearlySalesGoalRaw` (text). The numeric value strips `$` and `,` (so `$250,000` parses) and is NULL for anything that is not a plain decimal number; it can never error the view.
 - **Credit/AR (from VFIN):** `CreditStatus`, `CreditLimitAmount`, `ARTermsRuleID`, `ARPaymentMethodID`, `FinanceChargePct`, `ReceivablesAccountID`, `BillToParentFlag`, email/statement delivery config
 - **Compliance:** `FFLLicenseNumber`, `FFLExpirationRaw` (customer-master default; the authoritative FFL is on `DimShipTo`)
 
@@ -170,12 +171,12 @@ row key. Query it directly for CRM/master-data use or relate it
 single-direction filtering from customer to contacts. It has no fact
 relationship.
 
-- **Identity/role:** `ContactID`, `ContactNumber`, `FirstName`, `LastName`, `ContactName`, `MiddleName`, `Position`, `Salutation`, `Honorific`, `PrimaryContactFlag`
+- **Identity/role:** `ContactID`, `ContactNumber`, `FirstName`, `LastName`, `ContactName`, `MiddleName`, `Position`, `Salutation` (always NULL since 2026-10-31 — free text that held a card-like number; kept only so the column list is stable), `Honorific`, `PrimaryContactFlag`
 - **Communication:** `Phone`, `PhoneExtension`, `Mobile`, `Fax`, `Email`, `PreferredContactMethodCode`
 - **Consent/status:** `DoNotCallPhoneFlag`, `DoNotCallMobileFlag`, `DoNotEmailFlag`, `ContactActiveFlag`
 - **Address/profile:** `Address1-3`, `City`, `State`, `ZipCode`, `Country`, `LinkedInURL`, `TwitterURL`, `FacebookURL`
 - `PrimaryContactFlag` is optional; do not assume every customer has one. Filter active/consent flags explicitly—the view keeps all rows.
-- Web credentials, birth date, gender, marital status, and ungoverned contact UDFs are intentionally excluded.
+- Web credentials, birth date, gender, marital status, ungoverned contact UDFs, and the `SALUTATION` text are intentionally excluded.
 
 ### `bi.vw_DimShipTo` — ship-to destinations (`ShipToKey`). Sentinel `'(Unknown)'`.
 Ship-to is 1:many off a customer, so it is its own dimension. **`ShipToKey` =
@@ -241,14 +242,28 @@ flags `'WEB'`/`'HOUSE'` placeholder codes.
 - **Keys:** `CustomerKey`, `ShipToKey`, `SalesRepKey`, `PartKey`, `SiteKey`; dates `ShipDateKey`, `InvoicedDateKey`, `ActualDeliveryDateKey`, `PromiseDateKey`
 - **Degenerate / tags:** `PacklistID`, `LineNum`, `OrderID`, `OrderLineNo`, `ShipperStatus`/`ShipperStatusDesc`, `ShipmentState` (Shipped/In Review), `InvoiceID`, `TrackingNumber`, `WaybillNumber`, `BillOfLadingID`, `ShipVia`, `RMAID`, `NoInvoiceFlag`, `InventoryTransID`
 - **Measures:**
-  - *Additive:* `ShippedQty` (stock UM), `ShippedQtySellingUM`, **`ShippedRevenue`** (net shipped revenue booked to AR), `COGSAmount` (actual cost at ship time), `GrossMarginAmount` (= ShippedRevenue − COGS), `COGSMaterial`/`COGSLabor`/`COGSBurden`/`COGSService`, `ActualFreight`, `ShippingWeight`
+  - *Additive:* `ShippedQty` (stock UM), `ShippedQtySellingUM`, **`ShippedRevenue`** (selling qty × unit price net of trade discount), `COGSAmount` (actual cost at ship time), `GrossMarginAmount` (= ShippedRevenue − COGS), `COGSMaterial`/`COGSLabor`/`COGSBurden`/`COGSService`, `ActualFreight`, `ShippingWeight`
   - *Non-additive:* `UnitPrice`, `TradeDiscountPct`, `CommissionPct`
 - Use `ShipDateKey` for "what shipped when." `ShippedRevenue` is the per-line
   shipped revenue — timely, before the AR invoice posts.
+- **`ShippedRevenue` is computed, not Visual's stored amount** (changed
+  2026-10-12). `SHIPPER_LINE.RECEIVABLE_AMOUNT` carries a stale quantity on
+  ~3% of lines (worst in 2021–2022, about −$12M/yr; last seen May 2026), while
+  qty × price ties to the billed packlist line on all but 17 of ~494K lines.
+  The stored value remains as `StoredReceivableAmount` for audit only; never
+  sum it. Validation `D5` tracks both.
+- **Tying shipped to invoiced:** packlist-linked invoice lines (including
+  return credit memos, which reuse the packlist's invoice ID) tie to
+  `ShippedRevenue` per invoice. Certified `Revenue` legitimately differs by
+  memos with no packlist (credits/allowances), manual invoices, freight lines,
+  and shipped-not-yet-invoiced timing.
 - **Tracking is line-level:** `TrackingNumber` comes from Visual ship-entry UDF
-  `UDF-0000028` (`VMSHPENT`, `tblShpLineItem`) on the exact
-  `(PacklistID, LineNum)` key. Blank and placeholder `'0'` values are returned
-  as NULL. `WaybillNumber` remains the separate packlist-header value from
+  `UDF-0000028` (`VMSHPENT`, `tblShpLineItem`), keyed by
+  `(PacklistID, OrderLineNo)`. The UDF stores the **customer-order line
+  number**, not the packlist line number `LineNum`, because the ship-entry grid
+  is one row per order line. The two differ on about half of all packlist lines.
+  Lines with no order line get no tracking number. Blank and placeholder `'0'`
+  values are returned as NULL. `WaybillNumber` remains the separate packlist-header value from
   `SHIPPER.WAYBILL_NUMBER`; do not substitute one for the other.
 - **COGS is actual cost**, pulled from `INVENTORY_TRANS` via the shipment's
   inventory movement (not standard cost — `DimPart` holds the static standard).
@@ -263,20 +278,39 @@ Sourced from **VFIN AR** (authoritative for tax, memos, payment status, GL).
 - **Keys:** `CustomerKey`, `ShipToKey`, `SalesRepKey`, `PartKey`, `SiteKey`; dates `InvoiceDateKey`, `LastPaidDateKey`
 - **Degenerate / tags:** `InvoiceID`, `InvoiceLineNo`, `InvoiceStatus`/`InvoiceStatusDesc`, `InvoiceType`/`InvoiceTypeDesc`, `DocumentTypeID` (`AR`/`ARM`), `IsMemo`, `InvoiceState` (Open/Closed/Void), `PostedFlag`, `FreightLineFlag`, `OrderID`, `OrderLineNo`, `PacklistID`, `RevenueAccountID`, `BillToCustomerID`
 - **Measures:**
-  - *Additive:* **`Revenue`** (net AR line revenue — the certified revenue number), `InvoiceQty`, `CommissionAmount`
+  - *Additive:* **`Revenue`** (signed billing amount; apply the sales scope below), `InvoiceQty`, `CommissionAmount`, `RawVfinAmount` (audit only)
+  - *Memo caveat:* on memo lines `InvoiceQty` and `CommissionAmount` are still the **raw VFIN stored values** — they are not sign-corrected like `Revenue`, and their polarity has not been verified (check R7 in `99_validation/invoice_revenue_sign_checks.sql` decides it). Filter `IsMemo = 0` when summing units or commission.
   - *Non-additive:* `UnitPrice`, `CommissionPct`
 - **Header totals are deliberately absent** (`TOTAL_AMOUNT`, tax, paid…): they are
   invoice-header grain and would double-count on a line. For AR aging/payment a
   separate header-grain fact is needed (not yet built).
-- **Memos (verified live — do NOT assume the textbook convention):** memos are
-  `InvoiceType='MEMO'` / `DocumentTypeID='ARM'`, flagged by `IsMemo`. In this
-  install they are **not** negative credit memos — headers are never negative
-  (~$26M positive), most memo lines are positive, and some memos carry
-  offsetting ± lines that net to $0. **You cannot net memos by sign.** ~78% of
-  memo lines are order/shipper-linked; the rest are purely financial. Whether
-  ARM memos count as sales `Revenue` is a **finance decision** — filter on
-  `IsMemo`/`DocumentTypeID` to include or exclude them explicitly. The base
-  `Revenue` measure includes them (gross) until finance rules otherwise.
+- **Memos (corrected 2026-09-10):** `Revenue` already has billing polarity.
+  Matching TDJ VECA memo lines pass through signed `RECEIVABLE_LINE.AMOUNT`;
+  other VFIN `MEMO`/`ARM` lines negate the stored VFIN amount once. Negative
+  raw VFIN offsets become positive; no `ABS()` or quantity-based sign rule.
+  `RawVfinAmount` and `RevenueSignBasis` expose the source and conversion.
+  Ordinary invoices retain VFIN amounts: invoice/line numbers alone do not
+  establish equivalent VECA lines (tax and expense adjustments can collide).
+- **Sales scope:** retain every billing line for audit, but filter
+  `IsRevenueAccount = 1` and `InvoiceStatus <> 'VOID'` for sales revenue.
+  `RevenueAccountClass` comes from the entity-scoped VFIN ledger; unknown or
+  conflicting classes produce NULL `IsRevenueAccount` and require review.
+  Expense-account credits belong in billing drill-down, not sales revenue.
+  Use `IsMemo` to identify memos; never subtract memo `Revenue` again.
+  Billing amounts are not GL actuals; posting/reversal timing can differ.
+  See `docs/fixes/invoice_revenue_sign.md` and the regression checks.
+
+```dax
+Revenue :=
+CALCULATE (
+    SUM ( FactInvoiceLine[Revenue] ),
+    KEEPFILTERS ( FactInvoiceLine[IsRevenueAccount] = TRUE () ),
+    KEEPFILTERS ( FactInvoiceLine[InvoiceStatus] <> "VOID" )
+)
+```
+
+This is the recommended downstream measure; no deployed Power BI model file
+is maintained in this repository. Refresh the schema and data after deployment.
 - **`(Unknown)`-part tail:** ~15% of invoice lines ($15M) have no part
   (freight, finance charges, memos, non-stock — no VECA order-line link) and
   land on `PartKey='(Unknown)'`. For product-family revenue, prefer
@@ -295,7 +329,7 @@ These are exposed raw **and** decoded; filter on whichever you prefer.
 | `FactOrderLine.LineStatus` | `A`/`C` | Active / Closed |
 | `FactShipmentLine.ShipperStatus` | `A`/`S`/`1`/`2`/`3` | Approved / Shipped / Review 1 / Review 2 / Review 3 |
 | `FactInvoiceLine.InvoiceStatus` | `OPEN`/`CLOSED`/`VOID` | (decoded to Open/Closed/Void) |
-| `FactInvoiceLine.InvoiceType` | `INVOICE`/`MEMO` | Invoice / AR Memo (`DocumentTypeID` = `AR`/`ARM`). Memos are NOT stored negative here — see §5 memo note; don't net by sign |
+| `FactInvoiceLine.InvoiceType` | `INVOICE`/`MEMO` | Invoice / AR Memo (`DocumentTypeID` = `AR`/`ARM`). Revenue is already signed; use IsMemo to identify memos, never flip Revenue again |
 
 Rollup tags for convenience: `OrderState` (Open/Held/Closed/Canceled),
 `ShipmentState` (Shipped/In Review), `InvoiceState` (Open/Closed/Void).
@@ -429,11 +463,10 @@ customer-contact lookup for CRM/master-data use. This is the right source for
 sales reporting, commercial dashboards, contact lookup, and most "how much did
 we sell / ship / bill, to whom, of what" questions.
 
-**Does NOT cover (use the SQL Toolbox / raw schema):** production & work-order
-execution, MRP / planning / net requirements, BOM explosion & routings, inventory
-on-hand / serial-trace, purchasing & AP, GL / financial statements, and other
-deep-operational domains. Those have their own curated queries and are not
-modeled as this star.
+**Does NOT cover in this sales star:** production/work-order execution, MRP and
+planning, BOM/routing analysis, inventory, purchasing/AP, or GL statements. Use
+the corresponding certified `bi` semantic guide and views where one exists;
+use raw SQL Toolbox sources only for domains that remain uncertified.
 
 **Guidance for an AI choosing a path:** if the question is answerable from the
 columns in this document, prefer these views — the grain, keys, and additivity
@@ -441,12 +474,14 @@ are guaranteed, so the SQL is simple and safe. Only drop to the raw Visual schem
 (or the toolbox's canonical queries) when the question needs an entity this model
 doesn't expose.
 
-## 10. Current pricing extension (written; pending deployment)
+## 10. Current pricing extension (SQL views deployed; Power BI certification pending)
 
 The pricing extension is additive to the certified three-transaction-fact model.
-It is written in `20_facts/` but remains pending deployment and Power BI size /
-refresh certification. The full rollout and customer-master remediation plan is
-in `docs/pricing_model_change_map.md`.
+Both SQL views are deployed in the live `bi` schema. Adding them to the
+certified Power BI Sales model, including relationship setup and size / refresh
+certification, remains pending. Their source DDL lives in `20_facts/`. The full
+rollout and customer-master remediation plan is in
+`docs/pricing_model_change_map.md`.
 
 ### `bi.vw_FactPublishedPriceList`
 
@@ -491,3 +526,55 @@ customer/part/site context; do not sum any unit-price field.
 `PriceGroup`, `CarmsCustomerGroup`, and `CarmsCustomerSubGroup`. `DimPart`
 already supplies the `Z_PRODUCT_DETAIL` attributes, so neither set is duplicated
 on the pricing facts.
+
+## Backlog snapshots (persisted metrics)
+
+Two persisted snapshot facts sit beside the transaction facts. Both are loaded
+by `bi.usp_LoadSalesBacklogMetrics` at the start of either repository-managed
+nightly entry point: the SQL Agent job or
+`Invoke-IntegratedOperationsRefresh.ps1`. Run daily after the ERP/MRP batch and
+before the business day starts, every capture is stamped as the **prior day's**
+end-of-day backlog position. Both derive from `bi.vw_FactOrderLine
+WHERE IsBacklogLine = 1` (the governed backlog rule) and are kept forever.
+
+### `bi.vw_FactBacklogDaily`
+
+One row per snapshot date — the daily backlog KPI series.
+
+- **Totals:** `TotalBacklogAmount`, `TotalBacklogQty`, `OpenLineCount`,
+  `OpenOrderCount`, `DistinctCustomerCount`, `DistinctPartCount`.
+- **Past-due split:** `PastDueAmount`/`PastDueQty`/`PastDueLineCount`
+  (promise date before the snapshot date).
+- **Aging buckets ($ and line counts), vs promise date:** `Current*`,
+  `PastDue1to30*`, `PastDue31to60*`, `PastDue61to90*`, `PastDue90Plus*`,
+  `NoPromiseDate*` (lines whose promise date is the 19000101 sentinel — they
+  never pollute past-due aging). The six buckets sum to the totals.
+- **Product-family slices** (LIKE patterns on the line `ProductCode`):
+  `Ridgeline*` (`%RIDGELINE%` or `%RL%`), `MPR*` (`%MPR%`, catches
+  MPR-STEEL/PRO/RIMFIRE), `Evoke*` (`%EVOKE%`) — line counts and dollars.
+- `OldestPromiseDateKey` — oldest real promise date still open (lookup value,
+  not a relationship key).
+
+ASP is deliberately not stored: compute
+`DIVIDE(SUM(TotalBacklogAmount), SUM(TotalBacklogQty))` so it stays a weighted
+rate over any date range. Relate `SnapshotDateKey` to a role-played
+`Snapshot Date` table.
+
+### `bi.vw_FactBacklogMonthEnd`
+
+One row per snapshot date × sales order line — the month-end backorder detail
+archive. The 1st-of-month run stamps `SnapshotDateKey` with the **last day of
+the prior month**, so rows land in the fiscal period they describe
+(`CapturedAt` records the actual capture moment on the morning of the 1st).
+
+Full line detail: `CustomerKey`/`ShipToKey`/`SalesRepKey`/`PartKey`/`SiteKey`
+(relate to the conformed dims), role-played `SnapshotDateKey`/`OrderDateKey`/
+`DesiredShipDateKey`/`PromiseDateKey`, degenerate `OrderID`/`LineNum`/
+`CustomerPONumber`/`ProductCode`/statuses, measures `OrderQty`/
+`TotalShippedQtyToDate`/`BacklogQty`/`BacklogAmount` (plus non-additive
+`UnitPrice`), and aging (`IsPastDue`, `DaysPastPromise` — NULL when the line
+has no promise date).
+
+Neither snapshot fact ever relates to another fact. Regression checks live in
+`99_validation/sales_backlog_metrics_checks.sql` (grain, EOM stamping, bucket
+tie-outs, month-end-vs-daily tie-out, missed-run gap detection).

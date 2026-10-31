@@ -263,10 +263,16 @@ const whoami: ToolDef = {
       },
       data_freshness: freshness,
       today: new Date().toISOString().slice(0, 10),
+      // Static text: the role here is the token owner's. An admin with a live
+      // "view as rep" session in the portal is scoped by RLS to that rep's
+      // book (effective_user_id(), 20260816140000), and this note says so.
       access_note:
         caller.role === 'admin'
-          ? 'Admin: every account in the ERP is visible.'
-          : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
+          ? 'Admin: every account in the ERP is visible — unless you have a live ' +
+            '"view as rep" session in the portal, in which case every tool sees ' +
+            'that rep\'s book instead.'
+          : 'Rep: accounts assigned to you in the ERP (your agency\'s whole book ' +
+            'if you are its principal), plus any explicit grants.',
     }
   },
 }
@@ -354,8 +360,9 @@ const getAccount: ToolDef = {
     'Everything on one account in a single call: identity, YTD vs prior-YTD ' +
     'vs trailing-12-month revenue, open orders and backlog, this year\'s ' +
     'goal and pace, the engagement score with its reasons, and any open ' +
-    'recommendations. "Revenue" is invoiced (shipped) dollars; open order ' +
-    'value is booked but not yet shipped. The goal\'s `goal_source` says ' +
+    'recommendations. "Revenue" is invoiced (shipped) dollars, credit memos ' +
+    'excluded (credits and returns are not subtracted); open order value is ' +
+    'everything booked and not yet shipped. The goal\'s `goal_source` says ' +
     'where the target comes from: "crm" = entered in the portal (overrides), ' +
     '"erp" = the ERP customer master\'s yearly sales goal (the default).',
   inputSchema: {
@@ -465,7 +472,9 @@ const getAccountSkuSales: ToolDef = {
   description:
     'What one account buys, by SKU, pivoted across the current and three ' +
     'prior calendar years. Use it to spot dropped SKUs (revenue last year, ' +
-    'none this year) and product-mix shifts. Invoiced revenue and units.',
+    'none this year) and product-mix shifts. Invoiced revenue and units, ' +
+    'credit memos excluded. Invoice lines with no part (freight, tax, finance ' +
+    'charges, manual lines) roll up under part_id "(Unknown)" — not a product.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -636,7 +645,10 @@ const TERRITORY_SORTS = [
   'revenue_trailing_12m',
   'yoy_change_amount',
   'yoy_change_pct',
+  // Everything still owed on open orders.
   'open_order_value',
+  // NOT total backlog: the part of open_order_value past its promise date
+  // (erp.agg_account_rollup, 20260901190100).
   'backlog_amount',
   // desc = newest accounts first (the "who is new" question); accounts that
   // have never invoiced sort last in either direction (nulls last).
@@ -679,8 +691,10 @@ const getTerritorySummary: ToolDef = {
   name: 'get_territory_summary',
   title: 'Territory summary',
   description:
-    'One-call health check on the whole book: total YTD vs prior-YTD revenue, ' +
-    'trailing 12 months, open order value and backlog, goal attainment, plus ' +
+    'One-call health check on the whole book: total YTD vs prior-YTD invoiced ' +
+    'revenue (credit memos excluded, not subtracted), trailing 12 months, open ' +
+    'order value (everything still owed) and `backlog_amount` (only the part ' +
+    'of it past its promise date), goal attainment, plus ' +
     'the biggest growers, decliners and gone-quiet accounts. Start here for ' +
     '"how am I doing" questions, then drill in with get_account. Covers ' +
     'active external accounts only — the same definition the portal uses.',
@@ -761,8 +775,11 @@ const getTerritorySummary: ToolDef = {
         accounts: rowsOf(quiet, 'the gone-quiet accounts').map(territoryRow),
       },
       note:
-        'Revenue is invoiced (shipped) dollars. Open order value and backlog are ' +
-        'booked but not yet shipped, so they are NOT included in revenue.',
+        'Revenue is invoiced (shipped) dollars, credit memos excluded (not ' +
+        'subtracted). open_order_value is everything booked and still owed; ' +
+        'backlog_amount is only the part of it past its promise date (late), ' +
+        'and backlog_qty is the units behind open_order_value, not behind ' +
+        'backlog_amount. None of them is revenue.',
     }
   },
 }
@@ -772,7 +789,8 @@ const listTerritoryAccounts: ToolDef = {
   title: 'Rank accounts',
   description:
     'The book as a ranked list — top accounts by YTD revenue, worst YoY ' +
-    'decliners, biggest backlog, and so on. Answers "which accounts should I ' +
+    'decliners, most open order value, most late (past-promise) value, and ' +
+    'so on. Answers "which accounts should I ' +
     'call this week" better than search_accounts, which sorts by name. ' +
     'sort "first_invoice_date" desc answers "which accounts are NEW" — ' +
     'first_invoice_date is the account\'s first invoice ever, absent = ' +
@@ -784,7 +802,10 @@ const listTerritoryAccounts: ToolDef = {
         type: 'string',
         enum: TERRITORY_SORTS,
         default: 'revenue_ytd',
-        description: 'Sort key. Pair with direction "asc" to get the bottom of the list.',
+        description:
+          'Sort key. Pair with direction "asc" to get the bottom of the list. ' +
+          '"open_order_value" is everything still owed; "backlog_amount" is only ' +
+          'the part of it past its promise date, not total backlog.',
       },
       direction: { type: 'string', enum: ['desc', 'asc'], default: 'desc' },
       state: { type: 'string', description: 'Restrict to one state, e.g. "TN".' },
@@ -838,7 +859,9 @@ const getSkuSales: ToolDef = {
   description:
     'SKU sales across the whole book, pivoted by calendar year (current plus ' +
     'three prior). Answers "what sells in my territory" and "which products ' +
-    'are we losing". Invoiced revenue and units; active external accounts only.',
+    'are we losing". Invoiced revenue and units, credit memos excluded; active ' +
+    'external accounts only. Invoice lines with no part (freight, tax, finance ' +
+    'charges, manual lines) roll up under part_id "(Unknown)" — not a product.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -962,7 +985,8 @@ const getSalesSummary: ToolDef = {
   name: 'get_sales_summary',
   title: 'Sales by month',
   description:
-    'Invoiced revenue by calendar month — THE tool for "what are my sales ' +
+    'Invoiced revenue (credit memos excluded, not subtracted) by calendar ' +
+    'month — THE tool for "what are my sales ' +
     'this month", "last month vs the month before", "this quarter", and ' +
     '"how am I trending". Whole book by default; pass customer_key for one ' +
     'account. The newest month is partial up to `data_through` (whoami). ' +
@@ -983,7 +1007,9 @@ const getSalesSummary: ToolDef = {
         description:
           'How many months of the `months` series to return, newest month ' +
           'included. `summary` (this month, QTD, YTD and their prior-year ' +
-          'figures) is complete whatever this is.',
+          'figures) is complete whatever this is. The monthly rollup starts ' +
+          'in January three calendar years back (37 to 48 months, depending ' +
+          'on the month), so months older than that are not returned at all.',
       },
     },
     additionalProperties: false,
@@ -1023,10 +1049,14 @@ const getSalesSummary: ToolDef = {
         }),
       ),
       note:
-        'Revenue is invoiced (shipped) dollars per calendar month. Months ' +
-        'with no invoices are simply absent from the series. YTD/QTD ' +
-        'comparisons are month-aligned, not day-aligned — for day-aligned ' +
-        'prior-YTD use get_territory_summary or get_account.',
+        'Revenue is invoiced (shipped) dollars per calendar month, credit ' +
+        'memos excluded (not subtracted). Months with no invoices are simply ' +
+        'absent from the series; so is any month before January three years ' +
+        'back, which the rollup does not hold — that is missing data, not ' +
+        'zero. YTD/QTD comparisons are month-aligned, not day-aligned, and ' +
+        'this_month_vs_last_year_pct sets the partial current month against ' +
+        'the whole of that month last year — for day-aligned prior-YTD use ' +
+        'get_territory_summary or get_account.',
     }
   },
 }
@@ -1038,7 +1068,9 @@ const listBacklog: ToolDef = {
     'Open order lines still owed to customers, rolled up to account × SKU, ' +
     'with the earliest promise date and the estimated production date ' +
     '(earliest desired ship date). Omit customer_key for the whole territory. ' +
-    'Backlog is booked-but-unshipped, so it is not revenue yet.',
+    'Backlog is booked-but-unshipped, so it is not revenue yet. This ' +
+    '`backlog_amount` is the FULL open amount; get_territory_summary\'s ' +
+    '`backlog_amount` is only the part past its promise date.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1117,6 +1149,9 @@ const listBacklog: ToolDef = {
   },
 }
 
+// The description's pending-redeploy clause holds until bi.vw_FactAvailableToSell
+// is redeployed from power-bi-model 1a9e94e (erp.fact_available_to_sell.
+// excluded_location_pattern then reads 'NOT R0[1-9]%'). Drop it after that.
 const checkAvailability: ToolDef = {
   name: 'check_availability',
   title: 'Check stock (ATS)',
@@ -1124,7 +1159,13 @@ const checkAvailability: ToolDef = {
     'Company-wide available-to-sell by SKU: on hand, committed to open ' +
     'orders, total open demand, and the certified ATS figure. Negative ATS ' +
     'means oversold. This is inventory, not the customer\'s backlog — use ' +
-    'list_backlog for what a specific account is owed.',
+    'list_backlog for what a specific account is owed. `on_hand_qty` is the ' +
+    'SHIPPING-warehouse stock the BI view counts as sellable. The business ' +
+    'rule is rack locations R01–R09 only; that rule is in the BI view\'s ' +
+    'source but pending redeploy, and until it is live the feed counts every ' +
+    'SHIPPING location except R10 staging (so R11 components, INTERNATIONAL ' +
+    'and STAGE stock can be included and on hand / ATS can overstate what is ' +
+    'sellable).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1242,7 +1283,12 @@ const listOrders: ToolDef = {
   },
 }
 
-/** Shipment dollars: the packlist value first, the older figure beside it. */
+/**
+ * Shipment dollars: shipped_value (the portal's packlist value,
+ * 20261027090300) and shipped_revenue (bi.vw_FactShipmentLine's
+ * ShippedRevenue — since the 2026-10-26 restatement the same qty × net price
+ * extension, rounded per line). Neither is revenue, whatever the name says.
+ */
 const SHIPPED_VALUE_COLUMNS = 'shipped_value, shipped_revenue'
 
 const listShipments: ToolDef = {
@@ -1254,7 +1300,9 @@ const listShipments: ToolDef = {
     '`offset`. Pass packlist_id for that shipment\'s lines. Answers "did ' +
     'their order ship" and "where is it". `shipped_value` is the packlist ' +
     'value (qty × net price) — NOT revenue: shipping runs ahead of invoicing, ' +
-    'and only invoiced lines count as sales.',
+    'and only invoiced lines count as sales. `shipped_revenue`, despite its ' +
+    'name, is the BI view\'s copy of the same packlist extension (rounded per ' +
+    'line) and is NOT revenue either; quote shipped_value.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1416,8 +1464,8 @@ const getAccountRevenueTrend: ToolDef = {
         }),
       ),
       note:
-        'Invoiced (shipped) dollars, memos excluded. A month absent from the ' +
-        'list had zero invoices.',
+        'Invoiced (shipped) dollars, credit memos excluded (not subtracted). ' +
+        'A month absent from the list had zero invoices.',
     }
   },
 }
@@ -1426,7 +1474,8 @@ const getAccountSkuGaps: ToolDef = {
   name: 'get_account_sku_gaps',
   title: 'Selling opportunities',
   description:
-    'SKUs in stock TODAY that this account does not buy, ranked by how many ' +
+    'SKUs in stock TODAY (stock as check_availability defines it) that this ' +
+    'account does not buy, ranked by how many ' +
     'dealers company-wide do — the "everyone else stocks this and we can ' +
     'ship it now" pitch list. `bought_before` true with an old date is the ' +
     '"they used to carry this" conversation. Units and dealer counts only; ' +
@@ -2011,7 +2060,9 @@ const getGlobalProductSales: ToolDef = {
     'How a SKU sells COMPANY-WIDE, in units — the benchmark for "is my ' +
     'territory under-indexed on this product". Units, invoice counts and ' +
     'account counts only: company-level revenue and per-account detail are ' +
-    'deliberately not available to anyone through this endpoint.',
+    'deliberately not available to anyone through this endpoint. Invoice ' +
+    'lines with no part (freight, tax, finance charges) count under part_id ' +
+    '"(Unknown)" — not a product.',
   inputSchema: {
     type: 'object',
     properties: {

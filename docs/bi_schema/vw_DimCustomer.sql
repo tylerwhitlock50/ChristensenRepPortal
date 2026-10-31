@@ -22,6 +22,20 @@
              account"), DIFFERENT from the transacting rep on an order.
            - Keep ALL customers including inactive — NEVER WHERE ACTIVE_FLAG.
            - FFL: USER_4 = license, USER_5 = expiration (free-form string).
+           - TAX ID PII GUARD (tightened 2026-10-31): TAX_ID_NUMBER is free
+             text that holds personal identifiers (SSN-style numbers) on some
+             records, and a pattern test cannot tell a bare 9-digit SSN from
+             an unformatted EIN. So TaxIDNumber is ALWAYS published as a typed
+             NULL (nvarchar(25), same name/position/type as before) — no tax ID
+             leaves this view for BI use. A report that genuinely needs a tax
+             ID must read it from a separately granted, restricted object.
+             IsTaxIDRedacted is kept (the rep-portal ETL loads it) as the
+             source-cleanup signal: 1 = the raw TAX_ID_NUMBER contains an
+             SSN-grouped token (###-##-####; dash, space, dot or doubled
+             separators; anywhere in the string, not glued to more digits).
+             Fix those customer records in Visual. Same rule as
+             bi.vw_DimVendor; validation A8 / A8b guard it.
+           - DELIBERATELY EXCLUDED (published as typed NULL): TAX_ID_NUMBER.
 
            CROSS-DB CREDIT / AR ENRICHMENT (VFIN, same instance):
            - Credit, finance-charge, AR-account, and invoice/statement-delivery
@@ -134,7 +148,11 @@ SELECT
     c.CURRENCY_ID                         AS CurrencyID,
     c.DEF_SLS_TAX_GRP_ID                  AS DefaultSalesTaxGroupID,
     c.TAX_EXEMPT                          AS TaxExemptFlag,
-    c.TAX_ID_NUMBER                       AS TaxIDNumber,
+    -- Deliberately NULL (2026-10-31): free-text field that holds personal
+    -- identifiers on some records; not published to BI. Kept as a typed NULL
+    -- so the column list (name, position 43, nvarchar(25)) does not change.
+    -- IsTaxIDRedacted (last column) flags SSN-style source values to clean up.
+    CAST(NULL AS nvarchar(25))            AS TaxIDNumber,
     c.FINANCE_CHARGE                      AS FinanceChargeFlag,
     c.DUNNING_LETTERS                     AS DunningLettersFlag,
     c.ACTIVE_FLAG                         AS ActiveFlag,
@@ -144,14 +162,23 @@ SELECT
     -- goal. Free-form nvarchar; keep the raw value AND a defensively-parsed
     -- numeric (NULL on non-numeric entries, never errors the view) so the goal
     -- is usable in measures (goal vs. actual) without losing the original text.
-    -- CASE/ISNUMERIC used instead of TRY_CONVERT: this instance's compatibility
-    -- level does not recognize TRY_CONVERT, which caused 'decimal' parse errors.
+    -- TRY_CONVERT is not usable: this instance's compatibility level does not
+    -- recognize it (it caused 'decimal' parse errors). ISNUMERIC is not a safe
+    -- guard either: it accepts '$250,000', '1,000', '1e5', '.', '-' and '+',
+    -- all of which make CAST fail and break the WHOLE view. So the guard is
+    -- explicit (goal_parse below): '$' and ',' are stripped, then the value
+    -- must be digits with at most one '.', an optional leading '-', at least
+    -- one digit, and at most 16 characters (decimal(18,2) holds 16 integer
+    -- digits). Anything else is NULL; YearlySalesGoalRaw keeps the text.
     c.USER_3                              AS YearlySalesGoalRaw,
     CASE
-        WHEN c.USER_3 IS NOT NULL
-         AND LTRIM(RTRIM(c.USER_3)) <> ''
-         AND ISNUMERIC(c.USER_3) = 1
-        THEN CAST(c.USER_3 AS decimal(18, 2))
+        WHEN goal_parse.GoalText IS NOT NULL
+         AND LEN(goal_parse.GoalText) BETWEEN 1 AND 16
+         AND goal_parse.GoalText LIKE N'%[0-9]%'
+         AND goal_parse.GoalText COLLATE Latin1_General_BIN2 NOT LIKE N'%[^0-9.-]%'
+         AND goal_parse.GoalText NOT LIKE N'%.%.%'
+         AND goal_parse.GoalText NOT LIKE N'_%-%'
+        THEN CAST(goal_parse.GoalText AS decimal(18, 2))
         ELSE NULL
     END                                   AS YearlySalesGoal,
     -- Credit / AR (VFIN, single-entity 1:1)
@@ -172,7 +199,11 @@ SELECT
     rce.STATEMENT_EMAIL                   AS StatementEmail,
     -- FFL compliance (customer-master default; ship-to value is authoritative)
     c.USER_4                              AS FFLLicenseNumber,
-    c.USER_5                              AS FFLExpirationRaw
+    c.USER_5                              AS FFLExpirationRaw,
+    -- Appended to preserve existing column ordinals. TaxIDNumber is always
+    -- NULL; 1 = the source TAX_ID_NUMBER holds an SSN-style value. Fix the
+    -- customer record in Visual.
+    CAST(tax_id.IsSSNFormat AS bit)       AS IsTaxIDRedacted
 FROM dbo.CUSTOMER AS c
 LEFT JOIN dbo.SALES_REP AS sr
     ON sr.ID = c.SALESREP_ID
@@ -182,6 +213,35 @@ LEFT JOIN VFIN.dbo.RECEIVABLES_CUSTOMER_ENTITY AS rce
     ON rce.CUSTOMER_ID = c.ID
 LEFT JOIN dbo.CUSTOMER_CARMS AS cc
     ON cc.ID = c.ID
+CROSS APPLY (
+    -- SSN-style test for the IsTaxIDRedacted cleanup flag (TaxIDNumber itself
+    -- is always NULL). Spaces, dots and en dashes are read as dashes and
+    -- doubled separators are collapsed, so '### ## ####', '###.##.####' and
+    -- '###-##--####' all match. The value is wrapped in '|' so the 3-2-4 token
+    -- can sit ANYWHERE in the string ('SSN 123-45-6789', 'xx/123-45-6789')
+    -- but never inside a longer digit run: a fifth trailing digit
+    -- (state IDs such as ###-##-#####-#) or a leading fourth digit does not
+    -- match. EIN format (##-#######) never matches. Bare 9-digit values are
+    -- not flagged (indistinguishable from an unformatted EIN) — they are still
+    -- withheld because TaxIDNumber is NULL for every row.
+    -- The doubled dash is REPLICATE(N'-', 2) rather than a literal so tools that
+    -- strip '--' comments naively (sql-toolbox run_query) don't cut the line.
+    SELECT CASE
+        WHEN tax.TaxIDNormalized LIKE N'%[^0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9][^0-9]%'
+            THEN 1 ELSE 0
+    END AS IsSSNFormat
+    FROM (SELECT N'|' + REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                     LTRIM(RTRIM(COALESCE(c.TAX_ID_NUMBER, N''))),
+                     N' ', N'-'), N'.', N'-'), NCHAR(8211), N'-'),
+                     REPLICATE(N'-', 2), N'-'), REPLICATE(N'-', 2), N'-') + N'|'
+                 AS TaxIDNormalized) AS tax
+) AS tax_id
+CROSS APPLY (
+    -- Yearly-goal text with currency symbol and thousands separators removed;
+    -- NULL when blank. YearlySalesGoal validates it before the CAST.
+    SELECT NULLIF(LTRIM(RTRIM(REPLACE(REPLACE(c.USER_3, N'$', N''), N',', N''))), N'')
+               AS GoalText
+) AS goal_parse
 CROSS APPLY (
     -- Normalize once so every classification comparison is trim/case safe.
     SELECT

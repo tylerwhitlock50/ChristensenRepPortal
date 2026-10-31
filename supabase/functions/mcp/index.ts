@@ -50,8 +50,12 @@ const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 const INSTRUCTIONS = `
 Sales data for a Christensen Arms rep territory, read-only.
 
-Scope is automatic: every tool returns only the accounts assigned to the
-connected rep. There is no way to widen it and no need to filter for it.
+Scope is automatic: every account tool returns only the connected rep's
+book — accounts assigned to them in the ERP (their agency's whole book if
+they are its principal), plus explicit grants. There is no way to widen it
+and no need to filter for it. Stock (\`check_availability\`) and the
+company-wide product figures (\`get_global_product_sales\`, the dealer counts
+in \`get_account_sku_gaps\`) are not book-scoped: units and counts only.
 
 Start with \`whoami\` — it reports \`data_through\`, the newest invoice date in
 the warehouse, and when the data was last loaded. Orders, shipments and
@@ -62,8 +66,16 @@ shipping by days.
 
 Money words that are NOT interchangeable:
   • revenue / invoiced — shipped and billed. This is what "sales" means here.
+    Every revenue figure sums invoice lines EXCEPT credit memos: credits and
+    returns are left out, not subtracted, and lines are not limited to
+    revenue GL accounts or to non-void invoices. So it is gross of credits
+    and can differ from (usually exceed) finance or Power BI net sales — say
+    so when someone compares the two.
   • bookings / order value — placed, not yet shipped.
   • backlog — the unshipped remainder of open orders. Money owed, not earned.
+    \`list_backlog\` and \`open_order_value\` are that full amount. In
+    \`get_territory_summary\` and \`list_territory_accounts\`, \`backlog_amount\`
+    is only the part already past its promise date (late).
   • shipped value — what a packlist shipped, at net price. Not revenue until
     it is invoiced.
 

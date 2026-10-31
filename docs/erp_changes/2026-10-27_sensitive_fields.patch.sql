@@ -13,6 +13,12 @@
   Types are the live view column types, read from sys.columns on 2026-10-26
   (they equal the source columns CUSTOMER.TAX_ID_NUMBER nvarchar(25) and
   CONTACT.SALUTATION nvarchar(60)).
+
+  STATUS 2026-10-31: applied in the Power BI project's SOURCE
+  (power-bi-model 1a9e94e), not yet redeployed to VECA. docs/bi_schema
+  was re-synced from that commit, so the FIND blocks below no longer occur
+  in our copies. Kept for the record; see the status note in
+  2026-10-27_bi_view_changes.md.
 ============================================================================*/
 
 

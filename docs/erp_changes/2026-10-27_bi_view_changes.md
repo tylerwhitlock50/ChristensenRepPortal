@@ -4,6 +4,32 @@
 **From:** Tyler, prepared with the Rep Portal build
 **Status:** requested only. Nothing has been changed on SQL Server; the portal team does not edit these views.
 
+> **Status update, 2026-10-31: items 1 and 3 are in the Power BI project's source, not yet
+> deployed.** power-bi-model commit `1a9e94e` makes both changes as requested. Its README lists
+> the views as "pending redeploy", so the live views still behave as described below until
+> the owner deploys and runs V1-a, V3 and the column-list fingerprint.
+>
+> - **Item 1:** `vw_FactAvailableToSell` uses `LIKE N'R0[1-9]%'` and publishes
+>   `ExcludedLocationPattern = 'NOT R0[1-9]%'`. The header comment and the inventory
+>   semantic-model note now state the R01–R09 rule. Per that view's header, the SQL Toolbox
+>   query `domains/sales/ats_finished_goods.sql` still defaults to `R10%` only.
+> - **Item 3:** `vw_DimCustomer.TaxIDNumber` is `CAST(NULL AS nvarchar(25))` and
+>   `vw_DimCustomerContact.Salutation` is `CAST(NULL AS nvarchar(60))`. Both are named in the
+>   views' "deliberately excluded" header notes.
+>   - The same commit also makes `bi.vw_DimVendor.TaxIDNumber` NULL (the "related" question
+>     at the end of item 3).
+>   - `IsTaxIDRedacted` now flags an SSN-style token anywhere in the source value, so more
+>     customers may show 1.
+>   - `YearlySalesGoal` now strips `$` and `,` before parsing.
+> - **Column lists are unchanged** (names, order, types), so the portal needs no migration
+>   for any of this.
+> - **Item 2's two follow-ups** were done in the earlier commit `b5bb587`: validation B2a
+>   now checks the (packlist, order line) key, and the semantic-model line says
+>   `(PacklistID, OrderLineNo)`.
+> - **The portal's copies in `docs/bi_schema/` were re-synced from `1a9e94e`** on
+>   2026-10-31. They now show the patched source, which is ahead of what is deployed, so the
+>   FIND blocks in the patch files no longer occur in them. The history below is unchanged.
+
 The Rep Portal loads ten of your `bi.vw_*` views into its own database. This note asks for
 two small fixes now, confirms a third that your 2026-10-26 redeploy already made, sets one
 standing rule, and parks two additions for later. None of the fixes changes a view's output

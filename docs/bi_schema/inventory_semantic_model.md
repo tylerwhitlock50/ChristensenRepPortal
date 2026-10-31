@@ -1,8 +1,8 @@
 # Inventory Semantic Model — Query Guide for AI Agents
 
 The **certified inventory semantic model**: current-state inventory snapshots in the
-`bi` schema. It reuses the conformed `DimPart`, `DimSite`, and `DimDate` from the
-sales/purchasing models and adds `DimWarehouse`. The golden rules are identical
+`bi` schema. It reuses conformed `bi.vw_DimPart`, `bi.vw_DimSite`, and
+`bi.vw_DimDate` and adds `bi.vw_DimWarehouse`. The golden rules are identical
 to the sales guide (`docs/sales_semantic_model.md` §1) — read that first.
 
 **What this model is for:** inventory *position, valuation, and available to
@@ -11,10 +11,12 @@ remains after existing customer promises (turns, days-of-supply, E&O /
 dead-stock, ABC, ATS, by warehouse/location). It is the governed home for the
 volatile quantity balances that are deliberately kept OFF `DimPart`.
 
-**What it is NOT:** a history. All three facts are **current-state snapshots (as-of the
-last Power BI refresh)**. For inventory *over time* (turns trend, as-of
-reconstruction, movement analysis) a movement fact over `INVENTORY_TRANS` (16.2M
-rows) is needed — deferred by design. Ask before assuming historical inventory.
+**What it is NOT:** a reconstruction of an earlier balance. All three facts are
+**current-state snapshots (as of the last Power BI refresh)**. For inventory
+over time, use `bi.vw_FactInventoryPositionSnapshot` for the nightly TDJ
+position and `bi.vw_FactInventoryMovement` for native transactions. The
+snapshot history begins when collection began and retains 24 months; it cannot
+reconstruct dates that were never captured.
 
 ---
 
@@ -22,9 +24,9 @@ rows) is needed — deferred by design. Ask before assuming historical inventory
 
 | Fact | Grain (one row per…) | Use it for |
 |------|----------------------|-----------|
-| `bi.vw_FactInventoryOnHand` | part × site (21,051) | **The authoritative number.** On-hand qty + valuation that ties to GL. |
-| `bi.vw_FactInventoryLocation` | part × warehouse × location (327,217) | Bin-level detail — stock by warehouse/location + hold status. |
-| `bi.vw_FactAvailableToSell` | part × site with SHIPPING stock or open demand | **The governed sell list.** SHIPPING QOH outside R10 staging minus open Released/Firmed SO demand. |
+| `bi.vw_FactInventoryOnHand` | part × site | **The authoritative number.** On-hand qty + valuation that ties to GL. |
+| `bi.vw_FactInventoryLocation` | part × warehouse × location | Bin-level detail — stock by warehouse/location + hold status. |
+| `bi.vw_FactAvailableToSell` | part × site with SHIPPING stock or open demand | **The governed sell list.** SHIPPING QOH in rack locations R01–R09 minus open Released/Firmed SO demand. |
 
 **Which to use:**
 - Valuation / GL tie-out → **`FactInventoryOnHand`** (`QTY_ON_HAND` is the
@@ -46,16 +48,26 @@ the degenerate constant `ShippableWarehouseID = 'SHIPPING'`).
 ### Available to sell rule
 
 `FactAvailableToSell` is a current-state operational snapshot. Headline math
-matches Toolbox `domains/sales/ats_finished_goods.sql`; the fact population is
-only part×sites with SHIPPING stock or open demand (not every A/O part-site).
+follows Toolbox `domains/sales/ats_finished_goods.sql` except for the
+sellable-location rule below (that query still defaults to excluding `R10%`
+only); the fact population is only part×sites with SHIPPING stock or open
+demand (not every A/O part-site).
 
 ```text
 AvailableToSellQty = ShippingOnHandQty - OpenOrderQty
 ```
 
-- `ShippingOnHandQty` is `PART_LOCATION.QTY` in warehouse `SHIPPING`, excluding
-  locations matching `R10%`. `ShippingOnHandBeforeExclusionsQty` and
-  `ExcludedStagingQty` make that exclusion auditable.
+- `ShippingOnHandQty` is `PART_LOCATION.QTY` in warehouse `SHIPPING` **rack
+  locations R01–R09 only** (`LOCATION_ID LIKE 'R0[1-9]%'`; business rule
+  2026-10-26, rep-portal request 2026-10-27). Everything else in SHIPPING is
+  reserved — R10 (staging), R11 (components), INTERNATIONAL, STAGE*, SHELF
+  PREP, TOP SHELF, … — and a new location is reserved until someone decides it
+  is sellable. `ExcludedStagingQty` (the name predates the rule) holds **all**
+  SHIPPING qty outside R01–R09, and `ExcludedLocationPattern = 'NOT R0[1-9]%'`.
+  `ShippingOnHandBeforeExclusionsQty = ShippingOnHandQty + ExcludedStagingQty`
+  on every row (check ID5). The column list did not change. Expect far fewer
+  in-stock SKUs than under the old R10-only rule (live sizing 2026-10-26: 66 →
+  23 SKUs, 273 → 100 units); that drop is the intended business rule.
 - `OpenOrderQty` includes positive remaining qty on active lines whose order is
   Released or Firmed. It includes credit-restricted customers; those promises
   do not disappear from inventory exposure. The approved/restricted split is
@@ -78,8 +90,9 @@ AvailableToSellQty = ShippingOnHandQty - OpenOrderQty
 ---
 
 ## 2. `DimWarehouse` — one row per warehouse (`WarehouseKey`). Sentinel `'(Unknown)'`.
-13 warehouses within the single site. `WarehouseName`, `Description`, `SiteID`,
-`RegionID`, address, and consignment attributes (`ConsignedType`,
+Business warehouses within the single operating site, plus the sentinel row.
+`WarehouseName`, `Description`, `SiteID`, `RegionID`, address, and
+consignment attributes (`ConsignedType`,
 `ConsignCustomerID`/`ConsignVendorID`). Its own dimension, distinct from
 `DimSite`. Related only to `FactInventoryLocation` — not to ATS (ATS is
 part×site grain with a degenerate `ShippableWarehouseID`).
@@ -169,7 +182,9 @@ ORDER BY f.AvailableToSellQty DESC, p.PartID;
 ---
 
 ## 6. Gotchas / install-specific
-- **Snapshots, not history** — current-state only; no time dimension on the balance.
+- **Current facts are not history** — use the operational-history position and
+  movement views for prior dates; never attach a historical date to current
+  on-hand and treat it as an as-of balance.
 - **Authoritative vs bin drift** — `FactInventoryOnHand` (part-site) ties to GL; `FactInventoryLocation` (bins) can differ ~0.1%.
 - **Standard-cost valuation** — must be reconciled to the GL inventory account; switch to actual weighted-average if it doesn't tie.
 - **Only ~3,320 parts hold stock** (of 21K) — most part-site rows are zero on-hand; filter `OnHandQty <> 0` for "what we actually stock."
