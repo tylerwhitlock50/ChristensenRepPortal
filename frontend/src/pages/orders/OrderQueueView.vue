@@ -152,6 +152,8 @@ async function recheck(order: OrderRow) {
             <p class="text-muted text-[13px]">
               #{{ order.id }}
               <template v-if="order.po_number"> · PO {{ order.po_number }}</template>
+              <template v-if="order.ship_to_id"> · ship to {{ order.ship_to_id }}</template>
+              <template v-if="order.ffl_license_number"> · FFL {{ order.ffl_license_number }}</template>
               <template v-if="order.erp_order_number">
                 · ERP {{ order.erp_order_number }}</template
               >

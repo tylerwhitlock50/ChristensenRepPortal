@@ -1,11 +1,12 @@
 import { computed, unref, type MaybeRef } from 'vue'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { erp, supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import type { OrderStatus, QcResult } from '@/types/domain'
+import type { FflContext, ShipToRow } from '@/lib/orderShipTo'
 
 /**
  * Portal-written orders (public.orders / order_lines / order_qc_results,
@@ -32,6 +33,19 @@ export interface OrderRow {
   po_number: string | null
   requested_ship_date: string | null
   notes: string | null
+  /** The rep's choice (20261030120000): erp.dim_ship_to key + the FFL it ships under. */
+  ship_to_key: string | null
+  ffl_license_number: string | null
+  ffl_expires_on: string | null
+  /** Stamped by submit_order() — what order entry, which cannot read the ERP, works from. */
+  ship_to_id: string | null
+  ship_to_addr_no: number | null
+  ship_to_name: string | null
+  ship_to_address: string | null
+  ffl_on_file_number: string | null
+  ffl_on_file_expiration_raw: string | null
+  /** Stamped by submit_order() (20261030140000): a line is a firearm. */
+  requires_ffl: boolean | null
   total_amount: number | null
   submitted_at: string | null
   entered_at: string | null
@@ -173,6 +187,46 @@ export function useOrderCustomer(customerKey: MaybeRef<string>) {
   })
 }
 
+/** The account's ship-to addresses with their FFL on file (erp.dim_ship_to,
+ *  rep-readable for their own book). The writer filters to orderable ones. */
+export function useShipTos(customerKey: MaybeRef<string>) {
+  return useQuery({
+    queryKey: computed(() => ['order-ship-tos', unref(customerKey)] as const),
+    enabled: computed(() => !!unref(customerKey)),
+    queryFn: async (): Promise<ShipToRow[]> => {
+      const { data, error } = await erp
+        .from('dim_ship_to' as never)
+        .select(
+          'ship_to_key, ship_to_id, ship_to_name, address1, address2, city, state, zip_code, ' +
+            'active_flag, ffl_license_number, ffl_expiration_raw, address_source, is_unknown_ship_to',
+        )
+        .eq('customer_id', unref(customerKey))
+      if (error) throw error
+      return (data ?? []) as unknown as ShipToRow[]
+    },
+  })
+}
+
+/** Does this order need an FFL, and which of the account's ship-tos have a
+ *  current licence on file? Same functions as submit_order() (20261030140000). */
+export function useOrderFflContext(customerKey: MaybeRef<string>, partIds: MaybeRef<string[]>) {
+  return useQuery({
+    queryKey: computed(() => ['order-ffl-context', unref(customerKey), unref(partIds)] as const),
+    enabled: computed(() => !!unref(customerKey)),
+    // A line change re-asks; keep the last answer meanwhile rather than
+    // flickering to "unknown".
+    placeholderData: keepPreviousData,
+    queryFn: async (): Promise<FflContext> => {
+      const { data, error } = await db.rpc('order_ffl_context', {
+        p_customer_key: unref(customerKey),
+        p_part_ids: unref(partIds),
+      })
+      if (error) throw error
+      return data as FflContext
+    },
+  })
+}
+
 // ---------------------------------------------------------------- drafts
 
 function invalidateOrders(qc: ReturnType<typeof useQueryClient>) {
@@ -184,6 +238,9 @@ export interface DraftHeaderInput {
   po_number: string | null
   requested_ship_date: string | null
   notes: string | null
+  ship_to_key: string | null
+  ffl_license_number: string | null
+  ffl_expires_on: string | null
 }
 
 export interface DraftLineInput {

@@ -71,6 +71,13 @@ insert into erp.dim_part (part_key, part_id, part_description)
 values ('OWPK-1', 'OW-PART-1', 'General part'),
        ('OWPK-2', 'OW-PART-2', 'Promo part');
 
+-- Since 20261030120000 every order names a ship-to and its FFL.
+insert into erp.dim_ship_to
+  (ship_to_key, customer_id, addr_no, ship_to_id, ship_to_name, city, state, zip_code,
+   active_flag, ffl_license_number, ffl_expiration_raw, address_source, is_unknown_ship_to)
+values ('OW-CUST-A|1', 'OW-CUST-A', 1, 'MAIN', 'Rep A Dealer', 'Boise', 'ID', '83702',
+        'Y', '1-23-456-78-9A-12345', '01/31/2099', 'ShipTo', false);
+
 -- One general list and one buy-10-get-2 special, both live today.
 create temporary table t_pl (label text primary key, id bigint) on commit drop;
 grant select on t_pl to authenticated;
@@ -131,8 +138,9 @@ end $$;
 select pg_temp.become('rep_a');
 
 with ins as (
-  insert into public.orders (user_id, customer_key)
-  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  insert into public.orders (user_id, customer_key, ship_to_key, ffl_license_number, ffl_expires_on)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A',
+          'OW-CUST-A|1', '1-23-456-78-9A-12345', date '2099-01-31')
   returning id
 )
 insert into t_order select 'o1', id from ins;
@@ -270,8 +278,9 @@ select pg_temp.assert(
 -- A second order cannot reuse the same ERP number.
 select pg_temp.become('rep_a');
 with ins as (
-  insert into public.orders (user_id, customer_key)
-  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  insert into public.orders (user_id, customer_key, ship_to_key, ffl_license_number, ffl_expires_on)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A',
+          'OW-CUST-A|1', '1-23-456-78-9A-12345', date '2099-01-31')
   returning id
 )
 insert into t_order select 'o2', id from ins;
@@ -296,11 +305,11 @@ select public.mark_order_entered((select id from t_order where label='o2'), 'OW-
 reset role;
 
 insert into erp.fact_order_line
-  (order_id, line_num, customer_key, part_key, order_qty, unit_price,
+  (order_id, line_num, customer_key, ship_to_key, part_key, order_qty, unit_price,
    trade_discount_pct, order_date_key, promise_date_key, desired_ship_date_key)
 values
-  ('OW-ERP-1', 1, 'OW-CUST-A', 'OWPK-1',  2, 100.00, null,    20260817, 20260901, 20260825),
-  ('OW-ERP-1', 2, 'OW-CUST-A', 'OWPK-2', 18,  50.00, 11.1111, 20260817, 20260901, 20260825);
+  ('OW-ERP-1', 1, 'OW-CUST-A', 'OW-CUST-A|1', 'OWPK-1',  2, 100.00, null,    20260817, 20260901, 20260825),
+  ('OW-ERP-1', 2, 'OW-CUST-A', 'OW-CUST-A|1', 'OWPK-2', 18,  50.00, 11.1111, 20260817, 20260901, 20260825);
 
 select pg_temp.become('rep_b');
 select pg_temp.assert_fails(
@@ -400,8 +409,9 @@ select pg_temp.assert_fails(
 
 -- A fresh draft cancels fine.
 with ins as (
-  insert into public.orders (user_id, customer_key)
-  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  insert into public.orders (user_id, customer_key, ship_to_key, ffl_license_number, ffl_expires_on)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A',
+          'OW-CUST-A|1', '1-23-456-78-9A-12345', date '2099-01-31')
   returning id
 )
 insert into t_order select 'o3', id from ins;
@@ -417,8 +427,9 @@ select pg_temp.assert(
 --------------------------------------------------------------------------
 -- While active: o4 gets submitted (recall/cancel target), o5 stays a draft.
 with ins as (
-  insert into public.orders (user_id, customer_key)
-  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  insert into public.orders (user_id, customer_key, ship_to_key, ffl_license_number, ffl_expires_on)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A',
+          'OW-CUST-A|1', '1-23-456-78-9A-12345', date '2099-01-31')
   returning id
 )
 insert into t_order select 'o4', id from ins;
@@ -429,8 +440,9 @@ values ((select id from t_order where label = 'o4'),
 select public.submit_order((select id from t_order where label = 'o4'));
 
 with ins as (
-  insert into public.orders (user_id, customer_key)
-  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A')
+  insert into public.orders (user_id, customer_key, ship_to_key, ffl_license_number, ffl_expires_on)
+  values ((select id from t_user where label = 'rep_a'), 'OW-CUST-A',
+          'OW-CUST-A|1', '1-23-456-78-9A-12345', date '2099-01-31')
   returning id
 )
 insert into t_order select 'o5', id from ins;

@@ -18,20 +18,30 @@ import {
   useDeleteDraftOrder,
   useOrderCustomer,
   useOrderDetail,
+  useOrderFflContext,
   useSaveDraftLines,
+  useShipTos,
   useSubmitOrder,
   useUpdateDraftOrder,
   type DraftLineInput,
 } from '@/composables/useOrders'
 import { orderTotal, priceOrder, type PricingLineInput } from '@/lib/orderPricing'
+import {
+  checkShipToAndFfl,
+  isActiveShipTo,
+  orderableShipTos,
+  shipToLabel,
+} from '@/lib/orderShipTo'
 import { moneyCents } from '@/lib/format'
 import { newPhotoId } from '@/lib/photos'
 
 /**
  * The order writer. Flow: pick the account → its customer_type resolves the
  * effective price lists (the general list opens preselected; specials are a
- * tap away) → add SKUs from the open list → the promo prorate previews live
- * as quantities change → save draft / submit.
+ * tap away) → pick the ship-to address (and, for firearms with no current
+ * licence on file there, the FFL it ships under) →
+ * add SKUs from the open list → the promo prorate previews live as
+ * quantities change → save draft / submit.
  *
  * The pricing preview runs through lib/orderPricing.ts on every edit, but
  * nothing here is authoritative: submit_order() re-validates the lines
@@ -75,14 +85,77 @@ const customerKey = ref(routeCustomer)
 const poNumber = ref('')
 const shipDate = ref('')
 const notes = ref('')
+const shipToKey = ref('')
+const fflNumber = ref('')
+const fflExpiresOn = ref('')
+/** The rep chose to give a licence other than the current one on file. */
+const useDifferentFfl = ref(false)
 const lines = ref<LocalLine[]>([])
 const dirty = ref(false)
 const formError = ref('')
 const hydrated = ref(!props.id)
 
-watch([customerKey, poNumber, shipDate, notes, lines], () => (dirty.value = true), {
+watch([customerKey, poNumber, shipDate, notes, shipToKey, fflNumber, fflExpiresOn, useDifferentFfl, lines], () => (dirty.value = true), {
   deep: true,
 })
+
+// ------------------------------------------------------- ship-to and FFL
+const shipTosQuery = useShipTos(customerKey)
+const shipTos = computed(() => orderableShipTos(shipTosQuery.data.value ?? []))
+const shipTo = computed(
+  () => shipTos.value.find((r) => r.ship_to_key === shipToKey.value) ?? null,
+)
+
+/**
+ * The FFL is asked for only when the server says so: a line is a firearm
+ * and the chosen ship-to has no current licence on file (order_ffl_context,
+ * the same functions submit_order() uses). Sorted, de-duplicated part IDs
+ * keep the query key stable while quantities change.
+ */
+const linePartIds = computed(() => [...new Set(lines.value.map((l) => l.partId))].sort())
+const fflContext = useOrderFflContext(customerKey, linePartIds)
+/** False until the server has answered for THIS account: "not known yet" is
+ *  never treated as "no FFL needed" (the screen would hide, and Save erase,
+ *  a licence the rep entered). Placeholder data from another account doesn't count. */
+const fflKnown = computed(
+  () => !!fflContext.data.value && !fflContext.isError.value && !fflContext.isPlaceholderData.value,
+)
+const requiresFfl = computed(() => fflContext.data.value?.requires_ffl ?? false)
+const onFile = computed(
+  () => fflContext.data.value?.ship_tos.find((s) => s.ship_to_key === shipToKey.value) ?? null,
+)
+const onFileCurrent = computed(() => onFile.value?.ffl_current ?? false)
+const showFflInputs = computed(
+  () => requiresFfl.value && !!shipTo.value && (!onFileCurrent.value || useDifferentFfl.value),
+)
+
+/**
+ * A new address starts clean: another address's licence means nothing here.
+ * Hydrating a saved draft must not wipe the licence the rep entered, hence
+ * the one-shot skip. This block sits ABOVE the hydration watcher on purpose:
+ * that watcher is immediate and runs during setup when the draft is already
+ * cached, so the flag and this watcher must exist before it does.
+ */
+let skipFflReset = false
+watch(shipToKey, () => {
+  if (skipFflReset) {
+    skipFflReset = false
+    return
+  }
+  fflNumber.value = ''
+  fflExpiresOn.value = ''
+  useDifferentFfl.value = false
+})
+
+const shipToCheck = computed(() =>
+  checkShipToAndFfl({
+    shipTo: shipTo.value,
+    requiresFfl: requiresFfl.value,
+    onFileCurrent: onFileCurrent.value,
+    fflNumber: showFflInputs.value ? fflNumber.value : '',
+    fflExpiresOn: showFflInputs.value ? fflExpiresOn.value : '',
+  }),
+)
 
 // ------------------------------------------------- editing an existing draft
 const existing = props.id ? useOrderDetail(Number(props.id)) : null
@@ -98,6 +171,13 @@ watch(
     poNumber.value = detail.order.po_number ?? ''
     shipDate.value = detail.order.requested_ship_date ?? ''
     notes.value = detail.order.notes ?? ''
+    // A saved draft keeps the FFL the rep entered.
+    // (Only when the key changes, or the watcher never fires to consume the skip.)
+    skipFflReset = (detail.order.ship_to_key ?? '') !== shipToKey.value
+    shipToKey.value = detail.order.ship_to_key ?? ''
+    fflNumber.value = detail.order.ffl_license_number ?? ''
+    fflExpiresOn.value = detail.order.ffl_expires_on ?? ''
+    useDifferentFfl.value = !!detail.order.ffl_license_number
     lines.value = detail.lines.map((l) => ({
       key: String(l.id),
       priceListId: l.price_list_id,
@@ -137,6 +217,10 @@ const customerLoaded = computed(
  */
 watch(customerKey, (next, prev) => {
   if (prev && next !== prev) {
+    // Another account's addresses and licence mean nothing here.
+    shipToKey.value = ''
+    fflNumber.value = ''
+    fflExpiresOn.value = ''
     lines.value = []
     browseListId.value = null
     // Re-arm the ?sku= prefill: it was consumed against the OLD account's
@@ -379,6 +463,12 @@ async function persistDraft(): Promise<number> {
     po_number: poNumber.value.trim() || null,
     requested_ship_date: shipDate.value || null,
     notes: notes.value.trim() || null,
+    ship_to_key: shipToKey.value || null,
+    // Blank = use the licence on file (submit_order decides, and needs none
+    // at all without a firearm line). Until the server has answered, keep
+    // whatever the rep has: never erase a licence on a guess.
+    ffl_license_number: ((fflKnown.value ? showFflInputs.value : true) && fflNumber.value.trim()) || null,
+    ffl_expires_on: ((fflKnown.value ? showFflInputs.value : true) && fflExpiresOn.value) || null,
   }
   let id = orderId.value
   if (id == null) {
@@ -432,7 +522,13 @@ async function onSubmit() {
     formError.value = 'Add at least one line.'
     return
   }
-  formError.value = qtyError()
+  if (!fflKnown.value) {
+    formError.value = fflContext.isError.value
+      ? "Couldn't check whether this order needs an FFL — try again before submitting."
+      : 'Still checking whether this order needs an FFL — try again in a moment.'
+    return
+  }
+  formError.value = shipToCheck.value.errors[0] ?? qtyError()
   if (formError.value) return
   try {
     const id = await persistDraft()
@@ -478,8 +574,127 @@ onBeforeRouteLeave(() => {
       </p>
     </AppCard>
 
-    <!-- 2 · Price list + SKUs -->
-    <AppCard v-if="customerLoaded && customerType" title="2 · Add products">
+    <!-- 2 · Ship-to + FFL -->
+    <AppCard v-if="customerLoaded && customerType" title="2 · Ship to">
+      <div class="space-y-4">
+        <p v-if="shipTosQuery.isLoading.value" class="text-muted text-[14px]">Loading addresses…</p>
+        <p v-else-if="shipTosQuery.isError.value" role="alert" class="text-danger text-[14px]">
+          Couldn't load this account's ship-to addresses.
+          <button type="button" class="underline" @click="shipTosQuery.refetch()">Try again</button>
+        </p>
+        <p
+          v-else-if="shipTos.length === 0"
+          role="alert"
+          class="border-line border-l-danger text-ink-2 border border-l-[3px] p-3 text-[14px]"
+        >
+          <strong class="text-ink">This account has no ship-to address in the ERP.</strong>
+          An order can't be submitted until order entry adds one.
+        </p>
+        <fieldset v-else>
+          <legend class="u-label text-ink pb-2">Ship to</legend>
+          <div class="divide-line border-line divide-y border">
+            <label
+              v-for="row in shipTos"
+              :key="row.ship_to_key"
+              class="flex items-start gap-3 px-3 py-2.5"
+              :class="isActiveShipTo(row) ? 'hover:bg-canvas cursor-pointer' : 'opacity-60'"
+            >
+              <input
+                v-model="shipToKey"
+                type="radio"
+                name="ship-to"
+                :value="row.ship_to_key"
+                :disabled="!isActiveShipTo(row)"
+                class="mt-1"
+              />
+              <span class="min-w-0">
+                <span class="text-ink block text-[15px] font-medium">{{ shipToLabel(row) }}</span>
+                <span class="text-muted block text-[13px]">
+                  {{ [row.address1, row.address2, row.zip_code].filter(Boolean).join(', ') }}
+                </span>
+                <span class="text-muted block text-[12px]">
+                  <template v-if="!isActiveShipTo(row)">Inactive in the ERP · </template>
+                  FFL on file: {{ row.ffl_license_number || 'none' }}<template v-if="row.ffl_expiration_raw">
+                    · exp. {{ row.ffl_expiration_raw }}</template>
+                </span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- FFL: only for firearms, and only typed when no current licence is on file. -->
+        <template v-if="shipTo && lines.length > 0">
+          <p v-if="fflContext.isError.value" role="alert" class="text-danger text-[14px]">
+            Couldn't check whether this order needs an FFL.
+            <button type="button" class="underline" @click="fflContext.refetch()">Try again</button>
+          </p>
+          <p v-else-if="fflContext.isLoading.value" class="text-muted text-[14px]">Checking FFL…</p>
+          <p v-else-if="!requiresFfl" class="text-muted text-[14px]">
+            No firearms on this order, so no FFL is needed.
+          </p>
+          <div v-else-if="onFileCurrent && !useDifferentFfl" class="text-ink-2 text-[14px]">
+            Ships under the FFL on file for {{ shipTo.ship_to_id }}:
+            <strong class="text-ink">{{ shipTo.ffl_license_number }}</strong>,
+            expires {{ onFile?.ffl_expires_on }}. Nothing to enter.
+            <button type="button" class="text-muted ml-1 underline" @click="useDifferentFfl = true">
+              Use a different FFL
+            </button>
+          </div>
+          <template v-else>
+            <p class="text-ink-2 text-[14px]">
+              <template v-if="onFileCurrent">Giving a different FFL than the one on file.</template>
+              <template v-else-if="shipTo.ffl_license_number">
+                This order has firearms and the FFL on file for {{ shipTo.ship_to_id }} is expired or
+                unreadable — enter the current licence.
+              </template>
+              <template v-else>
+                This order has firearms and {{ shipTo.ship_to_id }} has no FFL on file — enter the licence.
+              </template>
+              <button
+                v-if="onFileCurrent"
+                type="button"
+                class="text-muted ml-1 underline"
+                @click="useDifferentFfl = false; fflNumber = ''; fflExpiresOn = ''"
+              >
+                Use the one on file
+              </button>
+            </p>
+            <div class="grid gap-3 md:grid-cols-2">
+              <label class="block">
+                <span class="u-label text-ink block pb-2">FFL number</span>
+                <input
+                  v-model="fflNumber"
+                  class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
+                  placeholder="1-23-456-78-9A-12345"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="block">
+                <span class="u-label text-ink block pb-2">FFL expires</span>
+                <input
+                  v-model="fflExpiresOn"
+                  type="date"
+                  class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
+                />
+              </label>
+            </div>
+          </template>
+        </template>
+
+        <ul v-if="shipTo && shipToCheck.errors.length" class="text-danger space-y-1 text-[14px]" role="alert">
+          <li v-for="e in shipToCheck.errors" :key="e">{{ e }}</li>
+        </ul>
+        <ul
+          v-if="shipToCheck.warnings.length"
+          class="border-line border-l-accent text-ink-2 space-y-1 border border-l-[3px] p-3 text-[14px]"
+        >
+          <li v-for="w in shipToCheck.warnings" :key="w">{{ w }}</li>
+        </ul>
+      </div>
+    </AppCard>
+
+    <!-- 3 · Price list + SKUs -->
+    <AppCard v-if="customerLoaded && customerType" title="3 · Add products">
       <div class="space-y-4">
         <div
           v-if="!effective.isLoading.value && effectiveLists.length === 0"
@@ -600,8 +815,8 @@ onBeforeRouteLeave(() => {
       </div>
     </AppCard>
 
-    <!-- 3 · Lines -->
-    <AppCard v-if="lines.length > 0" title="3 · Order lines" :hint="`${lines.length} lines`">
+    <!-- 4 · Lines -->
+    <AppCard v-if="lines.length > 0" title="4 · Order lines" :hint="`${lines.length} lines`">
       <div class="space-y-4">
         <div
           v-for="status in promoStatus"
@@ -692,8 +907,8 @@ onBeforeRouteLeave(() => {
       </div>
     </AppCard>
 
-    <!-- 4 · Details + actions -->
-    <AppCard v-if="customerLoaded && customerType" title="4 · Details & submit">
+    <!-- 5 · Details + actions -->
+    <AppCard v-if="customerLoaded && customerType" title="5 · Details & submit">
       <div class="grid gap-3 md:grid-cols-3">
         <label class="block">
           <span class="u-label text-ink block pb-2">Customer PO #</span>
