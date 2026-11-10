@@ -97,18 +97,18 @@ const columns: ColumnDef<RepGroupRow, any>[] = [
   { id: 'revenue_ytd', accessorFn: (row) => row.revenue_ytd, header: 'Revenue YTD' },
   {
     id: 'yoy',
-    accessorFn: (row) => yoy(row) ?? Number.NEGATIVE_INFINITY,
+    accessorFn: (row) => yoy(row) ?? undefined,
     header: 'YoY',
   },
   { id: 'bookings_ytd', accessorFn: (row) => row.bookings_ytd, header: 'Booked YTD' },
   {
     id: 'attainment',
-    accessorFn: (row) => attainment(row) ?? -1,
+    accessorFn: (row) => attainment(row) ?? undefined,
     header: '% of goal',
   },
   {
     id: 'coverage',
-    accessorFn: (row) => coveragePct(row) ?? -1,
+    accessorFn: (row) => coveragePct(row) ?? undefined,
     header: 'Contacted 30d',
   },
   { id: 'lapsed_accounts', accessorFn: (row) => row.lapsed_accounts, header: 'Lapsed' },

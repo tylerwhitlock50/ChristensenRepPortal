@@ -72,13 +72,13 @@ const columns: ColumnDef<RepGoalRow, any>[] = [
   {
     id: 'shipped_pct',
     // No-goal reps sort to the bottom either way instead of masquerading as 0%.
-    accessorFn: (row) => row.shipped_pct ?? -1,
+    accessorFn: (row) => row.shipped_pct ?? undefined,
     header: 'Revenue %',
   },
   { id: 'booked_ytd', accessorFn: (row) => row.booked_ytd ?? 0, header: 'Sold YTD' },
   {
     id: 'booked_pct',
-    accessorFn: (row) => row.booked_pct ?? -1,
+    accessorFn: (row) => row.booked_pct ?? undefined,
     header: 'Sold %',
   },
 ]

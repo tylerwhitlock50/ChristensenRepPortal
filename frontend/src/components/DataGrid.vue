@@ -42,6 +42,7 @@ import type {
   TableOptions,
 } from '@tanstack/vue-table'
 import { gridGlobalFilterOptions } from '@/lib/gridFilter'
+import { gridSortDefaults } from '@/lib/gridSort'
 
 /**
  * Per-column filters are OPT-IN via column meta:
@@ -152,7 +153,11 @@ const table = useVueTable<T>({
     return props.columns
   },
   getRowId: props.getRowId,
-  defaultColumn: { filterFn: columnFilterFn },
+  // Null-safe sort for every column (lib/gridSort.ts): TanStack's 'auto'
+  // sort mis-orders blank cells on small grids. Accessors must read only the
+  // row — TanStack caches each row's values until `data` changes, so an
+  // accessor reading some other ref keeps sorting on its first answer.
+  defaultColumn: { filterFn: columnFilterFn, ...gridSortDefaults },
   // Search every column, not just the ones row 0 happens to fill in — see
   // lib/gridFilter.ts (G08: "creedmoor" found 0 of 9 on In stock).
   ...(gridGlobalFilterOptions as Pick<

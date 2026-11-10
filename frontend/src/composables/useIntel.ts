@@ -1,5 +1,5 @@
 import { computed, unref, type MaybeRef } from 'vue'
-import { useQuery } from '@tanstack/vue-query'
+import { keepPreviousData, useQuery } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
@@ -414,6 +414,9 @@ export function useGlobalProductSales(months: MaybeRef<number>) {
   return useQuery({
     queryKey: computed(() => qk.intel.global(m.value)),
     staleTime: ERP_STALE_TIME,
+    // A new window is a new key; keep the old rows up while it loads so the
+    // grid stays mounted and keeps the user's column sort.
+    placeholderData: keepPreviousData,
     retry: retryUnlessMissing,
     queryFn: async (): Promise<GlobalSkuRow[]> => {
       // Ask for the function's max: ranking is by raw units, where component

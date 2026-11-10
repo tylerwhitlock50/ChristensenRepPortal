@@ -179,6 +179,10 @@ export function useAccountTable(
     ),
     enabled: on,
     staleTime: 10 * 60_000,
+    // Flipping Active-only is a new key; without this the data goes
+    // undefined, AsyncState swaps in a skeleton, and the grid remounts —
+    // throwing away the column sort the user picked.
+    placeholderData: keepPreviousData,
     queryFn: async (): Promise<AccountTableRow[]> => {
       const rows = await fetchAllRows<Record<string, unknown>>((from, to) => {
         const base = db
