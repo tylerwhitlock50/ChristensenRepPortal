@@ -51,7 +51,9 @@ const columns: ColumnDef<RepGoalAttainment, any>[] = [
   { id: 'revenue_total', accessorFn: (row) => row.revenue_total, header: 'Actual' },
   {
     id: 'attainment_pct',
-    accessorFn: (row) => row.attainment_pct ?? 0,
+    // A rep with no goals shows '—': sort them below every real percentage
+    // (undefined + DataGrid's sortUndefined 'last'), not tied with a real 0%.
+    accessorFn: (row) => (row.accounts_with_goal > 0 ? (row.attainment_pct ?? 0) : undefined),
     header: '% of goal',
   },
   {

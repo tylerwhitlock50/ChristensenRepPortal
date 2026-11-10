@@ -115,7 +115,7 @@ const columns = computed<ColumnDef<ChannelRow, any>[]>(() => [
   },
   {
     id: 'yoy',
-    accessorFn: (row: ChannelRow) => yoy(row) ?? Number.NEGATIVE_INFINITY,
+    accessorFn: (row: ChannelRow) => yoy(row) ?? undefined,
     header: 'YoY',
   },
   {
@@ -132,7 +132,7 @@ const columns = computed<ColumnDef<ChannelRow, any>[]>(() => [
   },
   {
     id: 'attainment',
-    accessorFn: (row: ChannelRow) => attainment(row) ?? -1,
+    accessorFn: (row: ChannelRow) => attainment(row) ?? undefined,
     header: '% of goal',
   },
   {

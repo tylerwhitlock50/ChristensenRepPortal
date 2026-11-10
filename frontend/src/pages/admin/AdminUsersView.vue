@@ -84,9 +84,24 @@ async function copyEmails() {
 
 /* ---- grid --------------------------------------------------------------- */
 const search = ref('')
-const visibleRows = ref<AdminProfile[]>([])
+type UserRow = AdminProfile & { last_login_at: string | null }
+const visibleRows = ref<UserRow[]>([])
 
-const columns: ColumnDef<AdminProfile, any>[] = [
+/**
+ * The newest sign-in rides on the row, not in a lookup the accessor reads:
+ * TanStack caches each row's values until `data` changes, and sign-ins come
+ * from a second query that usually lands after profiles — so a lookup-reading
+ * accessor cached '' for everyone and the "Last active" sort did nothing.
+ * Building the rows here makes the grid see new data when sign-ins arrive.
+ */
+const gridRows = computed<UserRow[]>(() =>
+  (profiles.data.value ?? []).map((p) => ({
+    ...p,
+    last_login_at: lastLoginByUser.value[p.user_id] ?? null,
+  })),
+)
+
+const columns: ColumnDef<UserRow, any>[] = [
   { id: 'full_name', accessorFn: (r) => r.full_name ?? '', header: 'Name' },
   { id: 'email', accessorFn: (r) => r.email ?? '', header: 'Email' },
   { id: 'role', accessorKey: 'role', header: 'Role' },
@@ -96,7 +111,9 @@ const columns: ColumnDef<AdminProfile, any>[] = [
     accessorFn: (r) => r.rep_group_vendor_id ?? '',
     header: 'Rep group',
   },
-  { id: 'last_login', accessorFn: (r) => lastLoginByUser.value[r.user_id] ?? '', header: 'Last active' },
+  // ISO timestamps sort chronologically as text; never-signed-in is null,
+  // which gridSort ranks oldest. First click shows the most recent.
+  { id: 'last_login', accessorKey: 'last_login_at', header: 'Last active', sortDescFirst: true },
   { id: 'manage', header: '', enableSorting: false, accessorFn: () => '' },
 ]
 
@@ -799,12 +816,12 @@ async function setActive(active: boolean) {
         <DataGrid
           v-model:globalFilter="search"
           :columns="columns"
-          :data="profiles.data.value ?? []"
+          :data="gridRows"
           :initial-sorting="[{ id: 'full_name', desc: false }]"
           searchable
           search-label="Search users"
           search-placeholder="Search users…"
-          :get-row-id="(row: AdminProfile) => row.user_id"
+          :get-row-id="(row: UserRow) => row.user_id"
           min-width="52rem"
           @rows-change="visibleRows = $event"
         >
@@ -826,7 +843,7 @@ async function setActive(active: boolean) {
           </template>
           <template #cell-last_login="{ row }">
             <span class="whitespace-nowrap">
-              {{ daysAgo(lastLoginByUser[row.user_id] ?? null) }}
+              {{ daysAgo(row.last_login_at) }}
             </span>
           </template>
           <template #cell-manage="{ row }">
@@ -848,7 +865,7 @@ async function setActive(active: boolean) {
                 </p>
                 <p class="text-muted mt-0.5 text-[13px]">
                   {{ row.sales_rep_key || 'No rep code' }} · Last active
-                  {{ daysAgo(lastLoginByUser[row.user_id] ?? null) }}
+                  {{ daysAgo(row.last_login_at) }}
                 </p>
               </div>
               <AppButton variant="ghost" @click="manage(row)">Manage</AppButton>

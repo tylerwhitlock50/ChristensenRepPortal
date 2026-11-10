@@ -236,18 +236,20 @@ const columns: ColumnDef<AgencyRepLine, any>[] = [
     header: 'Rep',
   },
   { id: 'revenue_ytd', accessorFn: (row) => row.revenue_ytd, header: 'Revenue YTD' },
-  { id: 'yoy', accessorFn: (row) => yoy(row) ?? Number.NEGATIVE_INFINITY, header: 'YoY' },
-  { id: 'attainment', accessorFn: (row) => attainment(row) ?? -1, header: '% of goal' },
+  { id: 'yoy', accessorFn: (row) => yoy(row) ?? undefined, header: 'YoY' },
+  { id: 'attainment', accessorFn: (row) => attainment(row) ?? undefined, header: '% of goal' },
   { id: 'bookings_ytd', accessorFn: (row) => row.bookings_ytd, header: 'Booked YTD' },
   { id: 'accounts', accessorFn: (row) => row.accounts, header: 'Accounts' },
-  { id: 'coverage', accessorFn: (row) => coveragePct(row) ?? -1, header: 'Contacted 30d' },
+  { id: 'coverage', accessorFn: (row) => coveragePct(row) ?? undefined, header: 'Contacted 30d' },
   {
     id: 'last_login_at',
-    // Never-signed-in sorts first ascending: the row worth chasing.
-    accessorFn: (row) => row.portal?.last_login_at ?? '',
+    // Never-signed-in sorts first ascending: the row worth chasing. A
+    // deactivated login shows "Login deactivated", not its old date, so it
+    // sorts with the no-date rows rather than among active reps.
+    accessorFn: (row) => (row.portal?.active ? (row.portal.last_login_at ?? '') : ''),
     header: 'Last active',
   },
-  { id: 'actions_30d', accessorFn: (row) => row.portal?.actions_30d ?? -1, header: 'Logged 30d' },
+  { id: 'actions_30d', accessorFn: (row) => row.portal?.actions_30d ?? undefined, header: 'Logged 30d' },
 ]
 
 /** A forwarded CSV must not read "no login" where the page said "unknown". */
