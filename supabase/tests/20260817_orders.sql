@@ -21,6 +21,10 @@
 
 begin;
 
+-- Hand entry on for this file (rolled back): the order writer's own rules are
+-- under test here. 20261111_mcp_orders.sql section 8c covers it switched off.
+update public.app_settings set enabled = true where setting_key = 'feature.orders';
+
 \set ON_ERROR_STOP on
 
 --------------------------------------------------------------------------
