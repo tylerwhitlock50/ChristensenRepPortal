@@ -350,7 +350,7 @@ select pg_temp.refusal(pg_temp.create_sql(pg_temp.req('cf-price-0003',
   'invalid_input:expected_unit_price:%', 'a negative expected price is invalid');
 select pg_temp.refusal(pg_temp.create_sql(pg_temp.req('cf-price-0003',
     '{"lines":[{"part_id":"CF-RH","qty":1,"part_confirmed":true,"unit_price":1485}]}')),
-  'invalid_input:unit_price:%', 'unit_price is still never accepted');
+  'price_not_allowed:%', 'unit_price is still never accepted from a rep (only an admin, 20261112120000)');
 
 insert into t_p
 select 'expired', public.mcp_create_order_draft(pg_temp.req('cf-ffl-0001',

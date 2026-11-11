@@ -11,6 +11,7 @@ import * as mcpAuth from '../_shared/mcpAuth.ts'
 import { extractToken, jwtClaims, knownScopes, type McpCaller } from '../_shared/mcpAuth.ts'
 import { describeTool, TOOLS, type ToolDef } from './tools.ts'
 import {
+  ADMIN_ORDERING_INSTRUCTIONS,
   decoratePreview,
   draftPayload,
   forbiddenKeysIn,
@@ -29,6 +30,8 @@ import {
   toolsFor,
   withOrdering,
 } from './orderTools.ts'
+
+type Row = Record<string, unknown>
 
 function assert(ok: unknown, what: string): void {
   if (!ok) throw new Error(`FAILED: ${what}`)
@@ -317,6 +320,13 @@ Deno.test('instructions: Ordering only when the tools are listed', () => {
   for (const phrase of ['get_order_context', 'search_order_products', 'create_order_draft', 'update_order_draft', 'allow_duplicate', 'FFL', 'untrusted']) {
     assert(ORDERING_INSTRUCTIONS.includes(phrase), `Ordering mentions ${phrase}`)
   }
+  assert(!on.includes(ADMIN_ORDERING_INSTRUCTIONS), 'no admin paragraph by default')
+  const admin = withOrdering('BASE', true, true)
+  assert(admin.endsWith(ADMIN_ORDERING_INSTRUCTIONS), 'admin paragraph for an admin')
+  eq(withOrdering('BASE', false, true), 'BASE', 'nothing when the tools are hidden')
+  for (const phrase of ['unit_price', 'price_override_reason', 'resolve_order_parts', 'last_paid_price', 'UNMATCHED']) {
+    assert(ADMIN_ORDERING_INSTRUCTIONS.includes(phrase), `admin paragraph mentions ${phrase}`)
+  }
 })
 
 /*============================================================================
@@ -359,12 +369,15 @@ Deno.test('forward: only whitelisted keys reach the RPC', async () => {
   }, 'payload (a non-boolean confirmation is dropped, not coerced)')
 })
 
-Deno.test('forward: no price or FFL key is ever forwarded', async () => {
+const REP = () => caller({ role: 'rep', realRole: 'rep', fullName: 'Field Rep' })
+
+Deno.test('forward: a rep never forwards a price or FFL key', async () => {
   const attempts: Record<string, unknown>[] = [
     { ...GOOD_ARGS, unit_price: 1 },
     { ...GOOD_ARGS, price: 1 },
     { ...GOOD_ARGS, ffl_license_number: '1-23-456-78-9A-12345' },
     { ...GOOD_ARGS, FFL_License_Number: 'x' },
+    { ...GOOD_ARGS, price_override_reason: 'because' },
     { ...GOOD_ARGS, lines: [{ part_id: 'CA-RIDGE-65', qty: 1, unit_price: 1 }] },
     { ...GOOD_ARGS, lines: [{ part_id: 'CA-RIDGE-65', qty: 1, price: 1 }] },
     { ...GOOD_ARGS, lines: [{ part_id: 'CA-RIDGE-65', qty: 1, discount_pct: 50 }] },
@@ -372,14 +385,14 @@ Deno.test('forward: no price or FFL key is ever forwarded', async () => {
   for (const tname of ['create_order_draft', 'update_order_draft']) {
     for (const args of attempts) {
       const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_update_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
-      const err = await rejects(tool(tname).handler({ ...args, order_id: 4321 }, ctxFor(db)))
+      const err = await rejects(tool(tname).handler({ ...args, order_id: 4321 }, ctxFor(db, REP())))
       assert(err instanceof OrderToolError && err.outcome === 'refused', `${tname} ${JSON.stringify(args)} refused`)
       assert(/never accepted/.test(err.message), 'says prices/FFLs are never accepted')
       assert(!rpcCalls.some((c) => c.name.startsWith('mcp_') && c.name !== 'mcp_log_call'), `${tname}: draft RPC not called`)
       const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!
       eq(log.params.p_outcome, 'refused', `${tname}: refusal logged`)
       const logged = allKeys(log.params.p_args)
-      for (const bad of ['unit_price', 'price', 'ffl_license_number', 'FFL_License_Number', 'discount_pct']) {
+      for (const bad of ['unit_price', 'price', 'ffl_license_number', 'FFL_License_Number', 'discount_pct', 'price_override_reason']) {
         assert(!logged.has(bad), `${tname}: ${bad} not written to the audit log`)
       }
       assert(logged.has('rejected_keys'), 'the attempt is recorded by key name')
@@ -389,6 +402,81 @@ Deno.test('forward: no price or FFL key is ever forwarded', async () => {
   eq(forbiddenKeysIn({ lines: [{ ffl: 'x' }], total_amount: 3 }).sort(), ['lines[0].ffl', 'total_amount'], 'nested + top level')
   const keys = allKeys(draftPayload({ ...GOOD_ARGS }, true))
   for (const bad of ['unit_price', 'price', 'ffl_license_number']) assert(!keys.has(bad), `payload has no ${bad}`)
+})
+
+Deno.test('forward: an admin may send PO prices and the reason, never an FFL', async () => {
+  const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+  await tool('create_order_draft').handler(
+    {
+      ...GOOD_ARGS,
+      price_override_reason: 'Distributor stocking order at program price',
+      lines: [
+        { part_id: '801-15025-01', qty: 2, unit_price: 798.7, customer_part_ref: 'CHR801-15025-01',
+          customer_description: 'CHRISTENSEN EVOKE HNTR 6.5PRC 22" GN' },
+        { part_id: 'CA-RIDGE-65', qty: 1 },
+      ],
+    },
+    ctxFor(db),
+  )
+  const call = rpcCalls.find((c) => c.name === 'mcp_create_order_draft')!
+  eq((call.params.p as Row).price_override_reason, 'Distributor stocking order at program price', 'reason forwarded')
+  eq((call.params.p as Row).lines, [
+    { part_id: '801-15025-01', qty: 2, unit_price: 798.7, customer_part_ref: 'CHR801-15025-01',
+      customer_description: 'CHRISTENSEN EVOKE HNTR 6.5PRC 22" GN' },
+    { part_id: 'CA-RIDGE-65', qty: 1 },
+  ], 'line prices and PO refs forwarded')
+  const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  eq(((log.params.p_args as Row).lines as Row[])[0].unit_price, 798.7, 'an admin price is in the audit log')
+
+  for (const args of [
+    { ...GOOD_ARGS, unit_price: 1 },
+    { ...GOOD_ARGS, lines: [{ part_id: 'X', qty: 1, unit_price: 1, ffl: 'x' }] },
+    { ...GOOD_ARGS, lines: [{ part_id: 'X', qty: 1, discount_pct: 5 }] },
+  ]) {
+    const fake = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+    const err = await rejects(tool('create_order_draft').handler(args, ctxFor(fake.db)))
+    assert(err instanceof OrderToolError && err.outcome === 'refused', `admin ${JSON.stringify(args)} refused`)
+  }
+  eq(forbiddenKeysIn({ unit_price: 1, lines: [{ unit_price: 1 }] }, true), ['unit_price'], 'admin: only a line price')
+})
+
+Deno.test('schemas: only an admin sees unit_price; everyone gets resolve_order_parts', () => {
+  const schemaOf = (c: McpCaller, name: string) =>
+    describeTool(toolsFor(c, setting(true), true).find((t) => t.name === name)!).inputSchema as Row
+  const lineProps = (s: Row) => (((s.properties as Row).lines as Row).items as Row).properties as Row
+  const admin = schemaOf(caller(), 'create_order_draft')
+  const rep = schemaOf(REP(), 'create_order_draft')
+  assert('unit_price' in lineProps(admin) && 'price_override_reason' in (admin.properties as Row), 'admin schema')
+  assert(!('unit_price' in lineProps(rep)) && !('price_override_reason' in (rep.properties as Row)), 'rep schema')
+  assert('customer_part_ref' in lineProps(rep), 'a rep may pass the PO item number')
+  assert('unit_price' in lineProps(schemaOf(caller(), 'update_order_draft')), 'admin update schema')
+  for (const c of [caller(), REP()]) {
+    assert(names(toolsFor(c, setting(true), true)).includes('resolve_order_parts'), `${c.role}: resolve listed`)
+  }
+})
+
+Deno.test('resolve_order_parts: forwards the items and summarises', async () => {
+  const { db, rpcCalls } = fakeDb({
+    order_resolve_parts: ok({
+      customer_type: 'DISTRIBUTOR',
+      items: [
+        { index: 0, ref: 'CHR801-15025-01', status: 'matched', candidates: [{ part_id: '801-15025-01', list_price: null }] },
+        { index: 1, ref: '801-06145-00', status: 'check_description', candidates: [{ part_id: '801-06145-00' }] },
+        { index: 2, ref: 'NOPE', status: 'unmatched', candidates: [] },
+      ],
+    }),
+  })
+  const res = await tool('resolve_order_parts').handler(
+    { customer_key: 'RSR GROU', items: [{ ref: 'CHR801-15025-01', description: 'EVOKE' }, { ref: '801-06145-00' }, { ref: 'NOPE', extra: 1 }] },
+    ctxFor(db),
+  ) as Row
+  eq(rpcCalls[0].params, {
+    p_customer_key: 'RSR GROU',
+    p_items: [{ ref: 'CHR801-15025-01', description: 'EVOKE' }, { ref: '801-06145-00' }, { ref: 'NOPE' }],
+  }, 'only ref/description forwarded')
+  eq(res.summary, { matched: 1, check_description: 1, ambiguous: 0, description_only: 0, unmatched: 1 }, 'summary')
+  assert((res.guidance as string[]).some((g) => /descriptions/.test(g)), 'says to show both descriptions')
+  assert(describeTool(tool('resolve_order_parts')).annotations.readOnlyHint === true, 'read-only')
 })
 
 Deno.test('forward: required inputs refused locally and logged', async () => {
