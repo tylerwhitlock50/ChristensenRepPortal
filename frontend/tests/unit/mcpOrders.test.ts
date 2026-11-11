@@ -18,6 +18,7 @@ import {
   rpcErrorText,
   ordersSectionOpen,
   canEditDraftInWriter,
+  handEntryAllows,
   sourceBadgeLabel,
   submitOrderArgs,
   validateMcpOrdersParams,
@@ -117,6 +118,12 @@ t('orders section: both off', sec(false, false, true, true), false)
 t('writer: hand entry off refuses a hand-typed draft', canEditDraftInWriter(false, 'portal'), false)
 t('writer: hand entry off still edits a Claude draft', canEditDraftInWriter(false, 'mcp'), true)
 t('writer: hand entry on edits any draft', canEditDraftInWriter(true, 'portal'), true)
+
+t('detail: hand entry off blocks a hand-typed order', handEntryAllows(false, 'portal'), false)
+t('detail: hand entry off still allows a Claude draft', handEntryAllows(false, 'mcp'), true)
+t('detail: hand entry off still allows an inbox draft', handEntryAllows(false, 'inbox'), true)
+t('detail: hand entry on allows a hand-typed order', handEntryAllows(true, 'portal'), true)
+t('detail: unknown source is treated as hand-typed', handEntryAllows(false, null), false)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

@@ -26,6 +26,10 @@
 
 begin;
 
+-- Hand entry on for this file (rolled back): the order writer's own rules are
+-- under test here. 20261111_mcp_orders.sql section 8c covers it switched off.
+update public.app_settings set enabled = true where setting_key = 'feature.orders';
+
 \set ON_ERROR_STOP on
 
 create temporary table t_user (label text primary key, id uuid) on commit drop;
@@ -851,6 +855,60 @@ select pg_temp.become('rep');
 select pg_temp.assert(
   not exists (select 1 from public.v_orders_ready_for_erp where order_id = pg_temp.oid('d_noship')),
   'v_orders_ready_for_erp leaves out a submitted MCP order nobody acknowledged');
+
+--------------------------------------------------------------------------
+-- 8c. Hand entry off (feature.orders) is enforced by the server
+--     (20261111160000): no hand-typed order is created or submitted, by a
+--     rep or an admin; a Claude draft still submits once acknowledged.
+--------------------------------------------------------------------------
+-- A hand-typed draft written while hand entry was still on.
+select pg_temp.become('rep');
+with ins as (
+  insert into public.orders (user_id, customer_key, ship_to_key)
+  values ((select id from t_user where label = 'rep'), 'MO-CUST', 'MO-CUST|1') returning id
+) insert into t_ids select 'portal_off', id from ins;
+insert into public.order_lines (order_id, price_list_id, part_id, qty, unit_price, effective_unit_price)
+values (pg_temp.oid('portal_off'), pg_temp.oid('pl'), 'MO-RL-BG', 1, 2000.00, 2000.00);
+
+reset role;
+update public.app_settings set enabled = false where setting_key = 'feature.orders';
+
+select pg_temp.become('rep');
+select pg_temp.assert_fails(
+  $$insert into public.orders (user_id, customer_key, ship_to_key) values ('c1c1c1c1-1111-4111-8111-111111111111', 'MO-CUST', 'MO-CUST|1')$$,
+  'orders_disabled:%', 'hand entry off: a rep cannot create an order over the API');
+select pg_temp.assert_fails(format('select public.submit_order(%s)', pg_temp.oid('portal_off')),
+  'orders_disabled:%', 'hand entry off: a rep cannot submit a hand-typed draft');
+select pg_temp.assert_fails(format('select public.submit_order(%s, true)', pg_temp.oid('portal_off')),
+  'orders_disabled:%', 'nor by passing the acknowledgement');
+select pg_temp.assert(
+  pg_temp.rows(format($$update public.orders set po_number = 'PO-OFF' where id = %s$$, pg_temp.oid('portal_off'))) = 1,
+  'hand entry off: the draft itself can still be edited (it just cannot leave draft)');
+
+select pg_temp.become('admin');
+select pg_temp.assert_fails(
+  $$insert into public.orders (user_id, customer_key, ship_to_key) values ('c3c3c3c3-3333-4333-8333-333333333333', 'MO-CUST', 'MO-CUST|1')$$,
+  'orders_disabled:%', 'hand entry off: an admin cannot create a hand-typed order either');
+select pg_temp.assert_fails(format('select public.submit_order(%s)', pg_temp.oid('portal_off')),
+  'orders_disabled:%', 'hand entry off: an admin cannot submit a rep''s hand-typed draft');
+
+-- Claude's path is governed by feature.mcp_orders, not this flag.
+select pg_temp.become('rep');
+select public.recall_order(pg_temp.oid('d_noship'));
+select public.submit_order(pg_temp.oid('d_noship'), p_acknowledged => true);
+select pg_temp.assert(
+  (select status = 'submitted' and acknowledged_at is not null
+     from public.orders where id = pg_temp.oid('d_noship')),
+  'hand entry off: an acknowledged Claude draft still submits');
+
+-- And the switch is the only thing in the way: on again, the draft submits.
+reset role;
+update public.app_settings set enabled = true where setting_key = 'feature.orders';
+select pg_temp.become('rep');
+select public.submit_order(pg_temp.oid('portal_off'));
+select pg_temp.assert(
+  (select status = 'submitted' from public.orders where id = pg_temp.oid('portal_off')),
+  'hand entry back on: the same hand-typed draft submits');
 
 --------------------------------------------------------------------------
 -- 9. The call log
