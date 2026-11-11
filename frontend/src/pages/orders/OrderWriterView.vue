@@ -113,10 +113,12 @@ const hydrated = ref(!props.id)
 const source = ref<OrderSource>('portal')
 const sourceRef = ref<unknown>(null)
 const mcpWarnings = ref<unknown>(null)
+/** A Claude test draft: editable, never submittable (the server refuses it too). */
+const isTest = ref(false)
 const isMcp = computed(() => needsAcknowledgement(source.value))
 /** The reviewer's tick; required by submit_order() for a non-portal order. */
 const acknowledged = ref(false)
-const canSubmit = computed(() => canSubmitWithAck(source.value, acknowledged.value))
+const canSubmit = computed(() => canSubmitWithAck(source.value, acknowledged.value, isTest.value))
 /** Edited in the portal since Claude drafted it: its warnings may be stale. */
 const editedHere = ref(false)
 
@@ -201,6 +203,7 @@ watch(
     source.value = detail.order.source ?? 'portal'
     sourceRef.value = detail.order.source_ref
     mcpWarnings.value = detail.order.mcp_warnings
+    isTest.value = detail.order.is_test === true
     customerKey.value = detail.order.customer_key
     poNumber.value = detail.order.po_number ?? ''
     shipDate.value = detail.order.requested_ship_date ?? ''
@@ -597,6 +600,13 @@ onBeforeRouteLeave(() => {
   <div class="space-y-5">
     <!-- A Claude draft: what the server flagged and the email it came from.
          The acknowledgement itself sits next to Submit, in step 5. -->
+    <p
+      v-if="isTest"
+      role="note"
+      class="border-danger text-ink bg-surface border-l-[3px] px-3 py-2 text-[14px] font-semibold"
+    >
+      Test order — Claude drafted this as a test. It cannot be submitted.
+    </p>
     <McpDraftReview
       v-if="isMcp"
       :source="source"

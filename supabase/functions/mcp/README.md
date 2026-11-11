@@ -268,6 +268,31 @@ payload is built from a whitelist, and a call that sends `unit_price`,
 refused before anything reaches the database. Prices are resolved server-side;
 the FFL is the one on file, or a person types it in the portal.
 
+**Confirmations, enforced in Postgres** (`20261112090000`, after test draft
+#345 picked its own ship-to and SKU, had no PO, and showed $1,566.67 where the
+user said $1,485). `mcp_order_apply` refuses a create or update unless:
+
+| Rule | Field | Refusal (choices in the error DETAIL) |
+|---|---|---|
+| another active account the caller can see has the same name (`customer_name_key`) | `customer_confirmed: true` | `customer_confirmation_required` — the accounts |
+| more than one orderable ship-to | `ship_to_key` + `ship_to_confirmed: true` | `ship_to_confirmation_required` — ship-tos with FFL number, expiry, current |
+| every line, always (the server can't know which search a part came from) | `lines[].part_confirmed: true` | `part_confirmation_required` — per line, the part and its priced siblings (RH/LH/Ti…) |
+| always | `po_number` | `po_required` |
+
+The flags are the agent's claim that the user was asked, not proof — but a
+step can no longer be skipped by accident, and every refusal is logged.
+`lines[].expected_unit_price` (optional) records the price the user said; it
+never prices the line, and a difference is a `price_mismatch` entry in the
+preview's `alerts`. `is_test: true` makes a draft labelled TEST that can never
+be submitted (trigger `trg_orders_test_never_submits`; a portal session can't
+set or clear it). **Expired FFL:** a ship-to whose FFL on file has expired
+stays orderable (the licence may be renewed but not yet in the ERP), and the
+preview carries a hard `ffl_not_current` alert; `submit_order` already refuses
+it until a person enters the current licence. Search results carry a `label`
+("RH · Ridgeline FFT · Carbon/Gray · 300 PRC · 22 in · $1,566.67") to show as
+a choice; `orderToolError` labels the part choices in a refusal the same way
+and appends the choices JSON to the text the model reads.
+
 **Errors.** The RPCs raise `code[:detail]: text`. `orderToolError` turns each
 code into an instruction the model can follow — `possible_duplicate` says to
 ask the user before retrying with `allow_duplicate`, FFL and acknowledgement

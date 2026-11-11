@@ -21,7 +21,7 @@ import {
 import { useSessionStore } from '@/stores/session'
 import { moneyCents, shortDate } from '@/lib/format'
 import { fflNumbersMatch } from '@/lib/orderShipTo'
-import { canSubmitWithAck, needsAcknowledgement, rpcErrorText } from '@/lib/mcpOrders'
+import { canSubmitWithAck, needsAcknowledgement, priceMismatch, rpcErrorText } from '@/lib/mcpOrders'
 
 /**
  * One order, for all three audiences. Everyone sees the same facts — the
@@ -83,11 +83,15 @@ async function act(action: () => Promise<unknown>) {
 /** Not written by hand here: show the review block, require the tick. */
 const isMcp = computed(() => needsAcknowledgement(order.value?.source))
 const acknowledged = ref(false)
-const canSubmit = computed(() => canSubmitWithAck(order.value?.source, acknowledged.value))
+const canSubmit = computed(() =>
+  canSubmitWithAck(order.value?.source, acknowledged.value, order.value?.is_test === true),
+)
 
 async function onSubmit() {
   if (!canSubmit.value) {
-    actionError.value = "Tick \"I've reviewed this order and it is correct\" first."
+    actionError.value = order.value?.is_test
+      ? 'This is a test order. It cannot be submitted; cancel it instead.'
+      : "Tick \"I've reviewed this order and it is correct\" first."
     return
   }
   await act(() =>
@@ -199,7 +203,7 @@ const timeline = computed(() => {
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <OrderSourceBadge :source="order.source" />
+          <OrderSourceBadge :source="order.source" :is-test="order.is_test" />
           <OrderStatusBadge :status="order.status" />
         </div>
       </header>
@@ -232,6 +236,13 @@ const timeline = computed(() => {
 
       <!-- Claude-drafted: warnings, the source email, and the acknowledgement
            that gates Submit (right above the button, phone-first). -->
+      <p
+        v-if="order.is_test"
+        role="note"
+        class="border-danger text-ink border-l-[3px] bg-surface px-3 py-2 text-[14px] font-semibold"
+      >
+        Test order — Claude drafted this as a test. It cannot be submitted.
+      </p>
       <McpDraftReview
         v-if="isMcp"
         v-model:acknowledged="acknowledged"
@@ -360,6 +371,9 @@ const timeline = computed(() => {
                 ({{ moneyCents(line.unit_price) }} less {{ line.discount_pct }}%)</template
               >
             </p>
+            <p v-if="priceMismatch(line)" class="text-danger text-[13px] font-medium">
+              Customer expected {{ moneyCents(priceMismatch(line)!.expected) }} each
+            </p>
           </li>
           <li v-if="order.total_amount != null" class="flex justify-between py-3">
             <span class="text-ink font-semibold">Order total</span>
@@ -384,6 +398,9 @@ const timeline = computed(() => {
                   <span class="text-ink block font-medium">{{ line.part_id }}</span>
                   <span class="text-muted block max-w-[220px] truncate text-[12px]">
                     {{ line.description || '' }}
+                  </span>
+                  <span v-if="priceMismatch(line)" class="text-danger block text-[12px] font-medium">
+                    Customer expected {{ moneyCents(priceMismatch(line)!.expected) }}
                   </span>
                 </td>
                 <td class="text-ink py-2 pr-3 text-right">{{ line.qty }}</td>

@@ -22,6 +22,8 @@ import {
   orderToolError,
   OrderToolError,
   parseRpcError,
+  partLabel,
+  structuredDetail,
   readMcpOrderListed,
   readMcpOrdersSetting,
   toolsFor,
@@ -326,7 +328,8 @@ const GOOD_ARGS = {
   customer_key: 'C100',
   ship_to_key: 'C100|1',
   po_number: 'PO-77',
-  lines: [{ part_id: 'CA-RIDGE-65', qty: 1 }],
+  ship_to_confirmed: true,
+  lines: [{ part_id: 'CA-RIDGE-65', qty: 1, part_confirmed: true }],
 }
 
 Deno.test('forward: only whitelisted keys reach the RPC', async () => {
@@ -336,7 +339,9 @@ Deno.test('forward: only whitelisted keys reach the RPC', async () => {
       ...GOOD_ARGS,
       surprise: 'dropped',
       source_ref: { kind: 'email', sender: 'buyer@example.com', excerpt: 'one Ridgeline', evil: 'x' },
-      lines: [{ part_id: 'CA-RIDGE-65', qty: 2, price_list_id: 7, note: 'dropped' }],
+      customer_confirmed: 'yes',
+      is_test: true,
+      lines: [{ part_id: 'CA-RIDGE-65', qty: 2, price_list_id: 7, note: 'dropped', part_confirmed: true, expected_unit_price: '1485' }],
     },
     ctxFor(db),
   )
@@ -347,9 +352,11 @@ Deno.test('forward: only whitelisted keys reach the RPC', async () => {
     customer_key: 'C100',
     ship_to_key: 'C100|1',
     po_number: 'PO-77',
+    ship_to_confirmed: true,
+    is_test: true,
     source_ref: { kind: 'email', sender: 'buyer@example.com', excerpt: 'one Ridgeline' },
-    lines: [{ part_id: 'CA-RIDGE-65', qty: 2, price_list_id: 7 }],
-  }, 'payload')
+    lines: [{ part_id: 'CA-RIDGE-65', qty: 2, price_list_id: 7, part_confirmed: true, expected_unit_price: 1485 }],
+  }, 'payload (a non-boolean confirmation is dropped, not coerced)')
 })
 
 Deno.test('forward: no price or FFL key is ever forwarded', async () => {
@@ -515,7 +522,7 @@ Deno.test('search: arguments and ambiguity guidance', async () => {
   const { db, rpcCalls } = fakeDb({ order_product_search: ok({ customer_type: 'Dealer', items }) })
   const res = (await tool('search_order_products').handler({ customer_key: 'C100', query: 'ridgeline fft', limit: 99 }, ctxFor(db))) as { guidance: string[] }
   eq(rpcCalls[0].params, { p_customer_key: 'C100', p_query: 'ridgeline fft', p_limit: 25 }, 'params, limit capped')
-  assert(res.guidance.some((g) => /one short question/.test(g)), 'tie → ask')
+  assert(res.guidance.some((g) => /ask which one/.test(g)), 'tie → ask')
   assert(res.guidance.some((g) => /price_list_id/.test(g)), 'several lists → say so')
 })
 
@@ -529,11 +536,11 @@ Deno.test('search: SQL ties and fits_request drive the guidance, not raw scores'
   const one = await run({ ties: 1, items: [
     { part_id: 'A', match_score: 0.8, fits_request: true, options: [] },
     { part_id: 'B', match_score: 0.8, fits_request: false, options: [] }] })
-  assert(!one.some((g) => /one short question/.test(g)), 'one fitting part: no question')
+  assert(!one.some((g) => /ask which one/.test(g)), 'one fitting part: no question')
   const tie = await run({ ties: 2, items: [
     { part_id: 'A', match_score: 0.8, fits_request: true, options: [] },
     { part_id: 'B', match_score: 0.7, fits_request: true, options: [] }] })
-  assert(tie.some((g) => /one short question/.test(g)), 'SQL tie → ask')
+  assert(tie.some((g) => /ask which one/.test(g)), 'SQL tie → ask')
   const none = await run({ ties: 0, items: [{ part_id: 'A', match_score: 0.5, fits_request: false, options: [] }] })
   assert(none.some((g) => /chambering or model/.test(g)), 'nothing fits → say so')
 })
@@ -581,4 +588,86 @@ Deno.test('status and list: scoped to the caller where "mine" matters', async ()
   const res = (await tool('list_my_order_drafts').handler({}, ctxFor(b.db))) as { orders: Record<string, unknown>[] }
   eq(b.tableCalls[0].filters, [['user_id', TYLER], ['status', 'draft'], ['source', 'mcp']], 'defaults')
   eq(res.orders[0].order_id, 5, 'order_id')
+})
+
+/*============================================================================
+  Confirmations (20261112090000): enforced in SQL, surfaced here
+============================================================================*/
+
+Deno.test('confirmations: schemas require the PO and part_confirmed', () => {
+  for (const name of ['create_order_draft', 'update_order_draft']) {
+    const schema = tool(name).inputSchema as {
+      required: string[]
+      properties: Record<string, { items?: { required: string[]; properties: Record<string, unknown> } }>
+    }
+    assert(schema.required.includes('po_number'), `${name}: po_number required`)
+    for (const f of ['customer_confirmed', 'ship_to_confirmed', 'is_test']) {
+      assert(f in schema.properties, `${name}: ${f} accepted`)
+    }
+    const line = schema.properties.lines.items!
+    assert(line.required.includes('part_confirmed'), `${name}: part_confirmed required on a line`)
+    assert('expected_unit_price' in line.properties, `${name}: expected_unit_price accepted`)
+  }
+  assert(/Never invent one/.test(ORDERING_INSTRUCTIONS), 'instructions: never invent a PO')
+  for (const step of ['customer_confirmed', 'ship_to_confirmed', 'part_confirmed', 'expected_unit_price']) {
+    assert(ORDERING_INSTRUCTIONS.includes(step), `instructions name ${step}`)
+  }
+})
+
+Deno.test('confirmations: a refusal carries its choices, part choices labelled', () => {
+  const details = JSON.stringify({
+    error: 'part_confirmation_required',
+    lines: [{
+      line: 0,
+      part_id: '801-06159-00',
+      choices: [
+        { part_id: '801-06159-00', family: 'RIDGELINE FLASH FORGED TECHNOLOGY', handedness: 'RIGHT',
+          stock_color: 'CARBON / GRAY', chambering: '300 PRC', barrel_length: '22', unit_price: 1566.67, as_sent: true },
+        { part_id: '801-06227-00', family: 'RIDGELINE TITANIUM FLASH FORGED TECHNOLOGY', handedness: 'RIGHT',
+          stock_color: 'CARBON / METALLIC GRAY', chambering: '300 PRC', barrel_length: '22', unit_price: 2310.79 },
+      ],
+    }],
+  })
+  const err = orderToolError({
+    message: 'part_confirmation_required:801-06159-00: 1 line(s) were not confirmed by the user',
+    details,
+  })
+  eq(err.code, 'part_confirmation_required', 'code')
+  assert(/show the\s+user the top 2-3 choices/.test(err.message), 'tells the model to ask')
+  const s = err.structured as { lines: { choices: { label: string }[] }[] }
+  eq(s.lines[0].choices.map((c) => c.label), [
+    'RH · Ridgeline FFT · Carbon/Gray · 300 PRC · 22 in · $1,566.67',
+    'RH · Ridgeline Ti FFT · Carbon/Metallic Gray · 300 PRC · 22 in · $2,310.79',
+  ], 'labels')
+  assert(err.message.includes('"label":"RH · Ridgeline FFT'), 'choices are in the text the model reads')
+
+  const ship = orderToolError({
+    message: 'ship_to_confirmation_required:ALS SPORT: ALS SPORT has 5 orderable ship-tos',
+    details: JSON.stringify({ error: 'ship_to_confirmation_required', choices: [
+      { ship_to_key: 'ALS SPORT|2', ship_to_id: '002', city: 'Logan', ffl_number: '1-87-000', ffl_expires: '2028-01-01', ffl_current: true },
+      { ship_to_key: 'ALS SPORT|5', ship_to_id: '005', city: 'Boise', ffl_number: null, ffl_current: false },
+    ] }),
+  })
+  assert(/FFL number, expiry/.test(ship.message) && /ship_to_confirmed: true/.test(ship.message), 'ship-to guidance')
+  eq((ship.structured as { choices: unknown[] }).choices.length, 2, 'ship-to choices kept')
+  eq(structuredDetail('not json'), null, 'a plain DETAIL is ignored')
+  eq(structuredDetail(undefined), null, 'no DETAIL')
+
+  const po = orderToolError({ message: "po_required: the customer's PO number is required" })
+  assert(/never\s+invent one/.test(po.message), 'po_required → ask, never invent')
+  const acct = orderToolError({ message: 'customer_confirmation_required:ALS SPORT: 4 active accounts' })
+  assert(/customer_confirmed: true/.test(acct.message), 'account guidance')
+})
+
+Deno.test('confirmations: search items carry a label from the general list price', async () => {
+  const { db } = fakeDb({ order_product_search: ok({ ties: 3, items: [
+    { part_id: 'L', family: 'RIDGELINE FLASH FORGED TECHNOLOGY', handedness: 'LEFT', stock_color: 'CARBON / GRAY',
+      chambering: '300 PRC', barrel_length: '22', fits_request: true,
+      options: [{ price_list_id: 9, is_special: true, unit_price: 1 }, { price_list_id: 2, is_special: false, unit_price: 1566.67 }] },
+  ] }) })
+  const res = (await tool('search_order_products').handler({ customer_key: 'C100', query: 'ridgeline 300 prc' }, ctxFor(db))) as {
+    items: { label: string }[]
+  }
+  eq(res.items[0].label, 'LH · Ridgeline FFT · Carbon/Gray · 300 PRC · 22 in · $1,566.67', 'label')
+  eq(partLabel({ part_id: 'X' }), 'X', 'nothing to say → the part id')
 })

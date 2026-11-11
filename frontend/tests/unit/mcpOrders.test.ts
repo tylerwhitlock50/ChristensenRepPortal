@@ -11,6 +11,7 @@
 import {
   MCP_ORDERS_DEFAULTS,
   canSubmitWithAck,
+  priceMismatch,
   emailSourceRef,
   isMcpOrdersUserAllowed,
   needsAcknowledgement,
@@ -120,3 +121,13 @@ t('writer: hand entry on edits any draft', canEditDraftInWriter(true, 'portal'),
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
+
+// 20261112090000: a test draft never submits; expected-price mismatches
+t('test draft never submits, even ticked', canSubmitWithAck('mcp', true, true), false)
+t('mismatch shown', priceMismatch({ effective_unit_price: 1566.67, mcp_expected_unit_price: 1485 }), {
+  expected: 1485,
+  list: 1566.67,
+  difference: 81.67,
+})
+t('match not shown', priceMismatch({ effective_unit_price: 1485, mcp_expected_unit_price: 1485 }), null)
+t('no expectation', priceMismatch({ effective_unit_price: 1485, mcp_expected_unit_price: null }), null)

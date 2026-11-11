@@ -89,9 +89,12 @@ async function onFile(event: Event) {
       return
     }
     seen.add(partId)
+    const description = hasDescription ? (descriptionRaw ?? '').trim() || null : null
     items.push({
       part_id: partId,
-      description: hasDescription ? (descriptionRaw ?? '').trim() || null : null,
+      // A bare 8-14 digit number is a UPC/EAN in the wrong column (the 2026
+      // Buy Group sheet), not a description: leave the ERP's to show.
+      description: description && /^\d{8,14}$/.test(description) ? null : description,
       unit_price: Math.round(price * 100) / 100,
     })
   })

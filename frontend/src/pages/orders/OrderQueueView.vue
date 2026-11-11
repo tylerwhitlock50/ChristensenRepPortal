@@ -170,7 +170,7 @@ async function recheck(order: OrderRow) {
             </p>
           </RouterLink>
           <div class="flex shrink-0 flex-wrap items-center gap-3">
-            <OrderSourceBadge :source="order.source" />
+            <OrderSourceBadge :source="order.source" :is-test="order.is_test" />
             <span v-if="order.total_amount != null" class="text-ink text-[15px] font-semibold">
               {{ money(order.total_amount) }}
             </span>

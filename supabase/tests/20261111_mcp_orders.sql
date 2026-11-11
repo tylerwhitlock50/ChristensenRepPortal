@@ -119,6 +119,10 @@ from (values ('MO-RL-BG', 2000.00), ('MO-RL-CG', 2000.00), ('MO-RL-TI', 3000.00)
 insert into public.price_list_items (price_list_id, part_id, unit_price)
 values ((select id from t_ids where label = 'pl_special'), 'MO-SPC', 500.00);
 
+-- Portal hand entry (feature.orders) is independent of MCP drafting and may
+-- be off live; the portal-order cases below need it on (rolled back).
+update public.app_settings set enabled = true where setting_key = 'feature.orders';
+
 --------------------------------------------------------------------------
 -- Harness
 --------------------------------------------------------------------------
@@ -205,10 +209,24 @@ begin
 end $$;
 
 -- A create request for MO-CUST at the STORE ship-to; p_extra overrides.
+-- Since 20261112090000 every draft carries a PO, the ship-to confirmation
+-- (MO-CUST has two orderable ship-tos) and part_confirmed on each line;
+-- 20261112_mcp_order_confirmations.sql tests those rules themselves.
+create or replace function pg_temp.confirmed(p_lines jsonb) returns jsonb
+language sql as $$
+  select case when jsonb_typeof(p_lines) = 'array'
+              then coalesce((select jsonb_agg(case when jsonb_typeof(e) = 'object'
+                                                   then jsonb_build_object('part_confirmed', true) || e
+                                                   else e end order by n)
+                               from jsonb_array_elements(p_lines) with ordinality as x(e, n)), '[]'::jsonb)
+              else p_lines end
+$$;
 create or replace function pg_temp.req(p_key text, p_lines jsonb, p_extra jsonb default '{}') returns jsonb
 language sql as $$
   select jsonb_build_object('idempotency_key', p_key, 'customer_key', 'MO-CUST',
-                            'ship_to_key', 'MO-CUST|1', 'lines', p_lines) || p_extra
+                            'ship_to_key', 'MO-CUST|1', 'ship_to_confirmed', true,
+                            'po_number', 'PO-' || p_key,
+                            'lines', pg_temp.confirmed(p_lines)) || p_extra
 $$;
 create or replace function pg_temp.create_sql(p jsonb) returns text
 language sql as $$ select format('select public.mcp_create_order_draft(%L::jsonb)', p) $$;
@@ -587,18 +605,18 @@ select pg_temp.create('d1_dup', pg_temp.req('order-key-0002', '[{"part_id":"MO-R
 select pg_temp.assert(pg_temp.oid('d1_dup') is not null and pg_temp.oid('d1_dup') <> pg_temp.oid('d1'),
   'allow_duplicate drafts it anyway');
 
--- No ship-to given and two orderable addresses: the draft is made, the dry
--- run reports the ship-to.
-select pg_temp.create('d_noship', pg_temp.req('order-key-0003', '[{"part_id":"MO-RL-CG","qty":2}]', '{"ship_to_key":null}'));
+-- No ship-to given and two orderable addresses: refused since
+-- 20261112090000 (ship_to_confirmation_required). d_noship is now drafted
+-- to the Range Annex (no FFL on file) and moved to the store by update.
+select pg_temp.assert_fails(pg_temp.create_sql(pg_temp.req('order-key-0003', '[{"part_id":"MO-RL-CG","qty":2}]', '{"ship_to_key":null}')),
+  'ship_to_confirmation_required:MO-CUST:%', 'no ship-to with two orderable addresses is refused');
+select pg_temp.create('d_noship', pg_temp.req('order-key-0003', '[{"part_id":"MO-RL-CG","qty":2}]', '{"ship_to_key":"MO-CUST|3"}'));
 select pg_temp.assert(
-  (select j ->> 'status' = 'draft' and j -> 'ship_to' = 'null'::jsonb
+  (select j ->> 'status' = 'draft' and j -> 'ship_to' ->> 'ship_to_key' = 'MO-CUST|3'
           and not (j -> 'would_submit' ->> 'ok')::boolean
-          and j -> 'would_submit' ->> 'error' ilike '%pick a ship-to%'
-          and exists (select 1 from jsonb_array_elements_text(j -> 'warnings') w
-                      where w like 'No ship-to chosen: the account has 2 ship-to%')
      from t_prev where label = 'd_noship')
   and (select status = 'draft' from public.orders where id = pg_temp.oid('d_noship')),
-  'dry run reports a missing ship-to and leaves a draft');
+  'dry run reports the problem and leaves a draft');
 
 -- The ship-to has no FFL on file: Claude cannot supply one, the dry run says so.
 select pg_temp.create('d_noffl', pg_temp.req('order-key-0004', '[{"part_id":"MO-RL-CG","qty":3}]', '{"ship_to_key":"MO-CUST|3"}'));
@@ -606,13 +624,13 @@ select pg_temp.assert(
   (select (j ->> 'requires_ffl')::boolean and not (j -> 'ffl' ->> 'current')::boolean
           and not (j -> 'would_submit' ->> 'ok')::boolean
           and j -> 'would_submit' ->> 'error' ilike '%no current FFL on file%'
-          and exists (select 1 from jsonb_array_elements_text(j -> 'warnings') w where w like '%must enter the FFL in the portal%')
+          and exists (select 1 from jsonb_array_elements_text(j -> 'warnings') w where w like '%must enter the current FFL in the portal%')
      from t_prev where label = 'd_noffl')
   and (select status = 'draft' and ffl_license_number is null from public.orders where id = pg_temp.oid('d_noffl')),
   'dry run reports the FFL problem and leaves a draft');
 
 -- One orderable ship-to is used without asking; accessories need no FFL.
-select pg_temp.create('d_one', '{"idempotency_key":"order-key-0005","customer_key":"MO-ONE","lines":[{"part_id":"MO-ACC","qty":4}]}');
+select pg_temp.create('d_one', '{"idempotency_key":"order-key-0005","customer_key":"MO-ONE","po_number":"PO-ONE-5","lines":[{"part_id":"MO-ACC","qty":4,"part_confirmed":true}]}');
 select pg_temp.assert(
   (select j -> 'ship_to' ->> 'ship_to_key' = 'MO-ONE|1' and not (j ->> 'requires_ffl')::boolean
           and (j -> 'would_submit' ->> 'ok')::boolean
@@ -620,8 +638,8 @@ select pg_temp.assert(
   'the only orderable ship-to is used; an accessory order would submit');
 
 -- A special list by id, with its buy-2-get-1 settled as a prorated percent.
-select pg_temp.create('d_promo', jsonb_build_object('idempotency_key', 'order-key-0006', 'customer_key', 'MO-ONE',
-  'lines', jsonb_build_array(jsonb_build_object('part_id', 'MO-SPC', 'qty', 3,
+select pg_temp.create('d_promo', jsonb_build_object('idempotency_key', 'order-key-0006', 'customer_key', 'MO-ONE', 'po_number', 'PO-ONE-6',
+  'lines', jsonb_build_array(jsonb_build_object('part_id', 'MO-SPC', 'qty', 3, 'part_confirmed', true,
                                                 'price_list_id', pg_temp.oid('pl_special')))));
 select pg_temp.assert(
   (select (j -> 'lines' -> 0 ->> 'discount_pct')::numeric = 33.3333
@@ -634,7 +652,7 @@ select pg_temp.assert(
 
 -- Admin (no book of their own) may draft for any account.
 select pg_temp.become_mcp('admin', 'w_admin');
-select pg_temp.create('d_admin', '{"idempotency_key":"admin-key-0001","customer_key":"MO-OTHER","lines":[{"part_id":"MO-ACC","qty":5}]}');
+select pg_temp.create('d_admin', '{"idempotency_key":"admin-key-0001","customer_key":"MO-OTHER","po_number":"PO-ADMIN-1","lines":[{"part_id":"MO-ACC","qty":5,"part_confirmed":true}]}');
 select pg_temp.assert(
   (select o.user_id = (select id from t_user where label = 'admin') and o.customer_key = 'MO-OTHER' and o.ship_to_key = 'MO-OTHER|1'
      from public.orders o where o.id = pg_temp.oid('d_admin')),
@@ -658,7 +676,7 @@ select pg_temp.flag(true, '{"max_drafts_per_user_per_day": 25}');
 select pg_temp.become_mcp('rep', 'w_rep');
 insert into t_prev
 select 'upd', public.mcp_update_order_draft(pg_temp.oid('d_noship'),
-  '{"ship_to_key":"MO-CUST|1","lines":[{"part_id":"MO-RL-CG","qty":1},{"part_id":"MO-ACC","qty":2}]}');
+  '{"ship_to_key":"MO-CUST|1","ship_to_confirmed":true,"po_number":"PO-NOSHIP","lines":[{"part_id":"MO-RL-CG","qty":1,"part_confirmed":true},{"part_id":"MO-ACC","qty":2,"part_confirmed":true}]}');
 select pg_temp.assert(
   (select (j -> 'would_submit' ->> 'ok')::boolean and j -> 'ship_to' ->> 'ship_to_key' = 'MO-CUST|1'
           and jsonb_array_length(j -> 'lines') = 2 and (j ->> 'total_amount')::numeric = 2100
@@ -796,7 +814,7 @@ select pg_temp.assert_fails(format('delete from public.orders where id = %s', pg
 -- connector URL (no scopes on the row, empty scope claim). End to end it
 -- drafts, updates and cancels, but it can never submit or write orders.
 select pg_temp.become_mcp('rep', 'ro_rep', '{}');
-select pg_temp.create('d_ro', '{"idempotency_key":"ro-url-key-0001","customer_key":"MO-ONE","lines":[{"part_id":"MO-ACC","qty":2}]}');
+select pg_temp.create('d_ro', '{"idempotency_key":"ro-url-key-0001","customer_key":"MO-ONE","po_number":"PO-RO-1","lines":[{"part_id":"MO-ACC","qty":2,"part_confirmed":true}]}');
 select pg_temp.assert(
   (select o.source = 'mcp' and o.status = 'draft'
           and o.user_id = (select id from t_user where label = 'rep')
@@ -806,7 +824,7 @@ select pg_temp.assert(
 select pg_temp.assert(
   (select (j ->> 'order_id')::bigint = pg_temp.oid('d_ro')
      from (select public.mcp_update_order_draft(pg_temp.oid('d_ro'),
-             '{"lines":[{"part_id":"MO-ACC","qty":3}]}') j) q)
+             '{"po_number":"PO-RO-1","lines":[{"part_id":"MO-ACC","qty":3,"part_confirmed":true}]}') j) q)
   and (select status = 'draft' from public.orders where id = pg_temp.oid('d_ro')),
   'a read-only URL token updates its draft, which stays a draft');
 select pg_temp.assert_fails(format('select public.submit_order(%s, true)', pg_temp.oid('d_ro')),
