@@ -190,13 +190,6 @@ export function emailSourceRef(raw: unknown): EmailSourceRef | null {
   return ref.sender || ref.subject || ref.excerpt ? ref : null
 }
 
-/** The MCP scope that lets a token draft orders. */
-export const ORDERS_DRAFT_SCOPE = 'orders:draft'
-
-export function hasDraftScope(scopes: readonly string[] | null | undefined): boolean {
-  return !!scopes && scopes.includes(ORDERS_DRAFT_SCOPE)
-}
-
 /**
  * The order RPCs raise '<code>[:<detail>]: human text' (e.g.
  * 'acknowledge_required: …', 'invalid_input:unknown_field:foo: …'). Split on

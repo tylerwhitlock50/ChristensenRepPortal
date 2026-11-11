@@ -9,7 +9,7 @@ https://<project-ref>.supabase.co/functions/v1/mcp
 
 Read-only, apart from gated order **drafting** (see "Order drafting, gated"
 below): twenty-one read tools, plus seven order tools that only a pilot user
-with a header token and the `orders:draft` scope ever sees. No new access
+on the order-drafting allow-list ever sees (with any valid token). No new access
 model: a token identifies a user, and that user's existing RLS decides
 everything they can see.
 
@@ -108,16 +108,21 @@ The token is also accepted as `x-mcp-token`, and as a trailing path segment
 It is a real trade, taken deliberately: claude.ai custom connectors accept a URL
 and nothing else, and a sales team that cannot connect is a feature that does
 not exist. What makes it acceptable is that the credential is per-user,
-expiring, revocable on its own from `/connect`, read-only, and scoped to data
-its holder can already see. Only a **read-only** token may travel in a URL:
-an order-drafting token (`orders:draft`) that arrives as `?token=` or a path
-segment is refused with `401 write_token_in_url`, because whoever holds the
-URL holds the plaintext and could simply send it as a header. Dropping its
-scopes would not protect a leaked URL; refusing it does, and the message says
-to revoke the token. (Belt and braces: any URL token still resolves with no
-effective scopes, so the JWT carries `mcp_scopes: []` and `mcp_orders_gate()`
-refuses.) The Connect page shows no connector URL for a drafting token. Reps
-whose client can send a header should send a header.
+expiring, revocable on its own from `/connect`, and scoped to data its holder
+can already see.
+
+**Since 2026-11-11 the transport does not matter.** A token in a URL works
+exactly like one in a header, and token scopes no longer gate anything: once a
+user is on the order-drafting allow-list (and `feature.mcp_orders` is on),
+*any* valid token of theirs — including an existing read-only one pasted into
+a claude.ai connector URL — exposes the order tools. The tradeoff, accepted
+until OAuth: **a leaked connector URL lets whoever holds it read that user's
+book and create drafts as them.** It can never submit an order (only a person
+in the portal can, after ticking the review box), and revoking the token on
+the Connect page ends it immediately. `mcp_tokens.scopes` (and the JWT's
+informational `mcp_scopes` claim) remain for OAuth, which will bring back
+per-connection consent. Reps whose client can send a header should still send
+a header.
 
 ---
 
@@ -231,7 +236,7 @@ here touches the ERP; Tyler's middleware reads submitted orders from
 | `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS | read-only |
 | `list_my_order_drafts` | `orders` where `user_id` = caller | read-only |
 
-**Who sees them.** All seven are listed and callable only when all three hold;
+**Who sees them.** All seven are listed and callable only when both hold;
 otherwise they are absent from `tools/list` and `tools/call` calls them
 unknown:
 
@@ -240,19 +245,22 @@ unknown:
 2. the caller has a row in `public.mcp_order_users` (the allow-list an
    admin manages under Admin → Feature flags → Claude order drafting; RLS
    lets a user read only their own row, and an MCP session can never add or
-   remove one);
-3. the token carries `orders:draft` **and** arrived in a header.
+   remove one).
+
+Any valid MCP token qualifies, header or URL, whatever scopes it carries
+(see "On putting a secret in a URL").
 
 `toolsFor(caller, setting, onList)` decides this as a pure function;
 `index.ts` feeds it one read of `feature.mcp_orders` and one read of the
 caller's own `mcp_order_users` row per HTTP request, both through the
 caller's own client and both failing closed. Nothing is cached at module scope, but `listChanged` is
 false, so a client sees a flag change when it reconnects. `whoami` reports
-`capabilities: {mcp_orders, write_scope_active}` and, when drafting is off,
+`capabilities: {mcp_orders, order_drafting}` and, when drafting is off,
 why. The server instructions gain an "Ordering" paragraph only when the tools
-are listed. Postgres enforces the same gate again in `mcp_orders_gate()`,
-from the JWT's `app_metadata.mcp_scopes`; hiding the tools is a convenience,
-not the boundary.
+are listed. Postgres enforces the same gate again in `mcp_orders_gate()`
+(flag, account active, allow-list, and that the JWT is an MCP session whose
+`app_metadata.mcp_token_id` names a live token of the caller's); hiding the
+tools is a convenience, not the boundary.
 
 **No money, no FFL.** No input schema has a price or FFL field, the RPC
 payload is built from a whitelist, and a call that sends `unit_price`,

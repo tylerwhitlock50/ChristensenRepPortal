@@ -1,8 +1,7 @@
 import { computed } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { isMissingDbObject, supabase } from '@/lib/supabase'
-import { ORDERS_DRAFT_SCOPE } from '@/lib/mcpOrders'
+import { supabase } from '@/lib/supabase'
 import { useSessionStore } from '@/stores/session'
 
 /**
@@ -35,8 +34,6 @@ export interface McpTokenRow {
   expires_at: string
   last_used_at: string | null
   revoked_at: string | null
-  /** What the token may do beyond reading (mcp_tokens.scopes). [] = read-only. */
-  scopes: string[]
 }
 
 export interface MintedToken {
@@ -44,7 +41,6 @@ export interface MintedToken {
   token: string
   name: string
   expires_at: string
-  scopes: string[]
 }
 
 export const mcpTokenKeys = {
@@ -55,21 +51,16 @@ export const mcpTokenKeys = {
 const TOKEN_COLUMNS = 'id, name, token_prefix, created_at, expires_at, last_used_at, revoked_at'
 
 async function fetchTokens(userId: string): Promise<McpTokenRow[]> {
-  const read = (columns: string) =>
-    db
-      .from('mcp_tokens')
-      .select(columns)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-  let { data, error } = await read(`${TOKEN_COLUMNS}, scopes`)
-  // Before the scopes migration is live (a preview on an older database),
-  // list the tokens without it rather than breaking the page.
-  if (error && isMissingDbObject(error)) ({ data, error } = await read(TOKEN_COLUMNS))
+  // mcp_tokens.scopes is not read: since 2026-11-11 a token's scopes gate
+  // nothing (order drafting follows the user's mcp_order_users row, for any
+  // token), so the page has nothing to show for them.
+  const { data, error } = await db
+    .from('mcp_tokens')
+    .select(TOKEN_COLUMNS)
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
   if (error) throw error
-  return ((data ?? []) as unknown as Record<string, unknown>[]).map((r) => ({
-    ...(r as unknown as McpTokenRow),
-    scopes: Array.isArray(r.scopes) ? (r.scopes as string[]) : [],
-  }))
+  return (data ?? []) as unknown as McpTokenRow[]
 }
 
 export function useMcpTokens() {
@@ -96,16 +87,13 @@ export function useCreateMcpToken() {
   const session = useSessionStore()
 
   return useMutation({
-    mutationFn: async (input: { name?: string; days?: number; draftOrders?: boolean }) => {
-      const scopes = input.draftOrders ? [ORDERS_DRAFT_SCOPE] : []
-      // p_scopes only when asked for: a read-only token stays on the
-      // argument list every deployed mcp_token_create() accepts.
-      const args: Record<string, unknown> = {
+    mutationFn: async (input: { name?: string; days?: number }) => {
+      // No p_scopes: every token is minted the same way. Whether Claude may
+      // draft orders is the user's mcp_order_users row, not the token.
+      const { data, error } = await db.rpc('mcp_token_create', {
         p_name: input.name?.trim() || 'Claude',
         p_days: input.days ?? 365,
-      }
-      if (scopes.length) args.p_scopes = scopes
-      const { data, error } = await db.rpc('mcp_token_create', args)
+      })
       if (error) throw error
       // A `returns table` RPC comes back as a one-row array.
       const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null
@@ -117,7 +105,6 @@ export function useCreateMcpToken() {
         token: String(row.token),
         name: String(row.token_name ?? 'Claude'),
         expires_at: String(row.expires_at),
-        scopes,
       } satisfies MintedToken
     },
     onSuccess: () => {
@@ -148,6 +135,9 @@ export function useRevokeMcpToken() {
  * The URL form for clients that cannot send a header — claude.ai custom
  * connectors take a URL and nothing else. Header auth is preferred wherever
  * it is available; see the Connect page for the guidance the rep reads.
+ * Every token gets one, drafting users included (2026-11-11): a leaked URL
+ * can at worst create drafts as that user, never submit, and revoking the
+ * token kills it.
  */
 export function connectorUrl(token: string): string {
   return `${MCP_URL}?token=${encodeURIComponent(token)}`

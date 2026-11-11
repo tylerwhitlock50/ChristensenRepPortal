@@ -144,8 +144,8 @@ function rpcError(id: Id, code: number, message: string, data?: unknown) {
 
   The tool set is per REQUEST, not per module: the read tools always, plus
   the order-drafting tools when this caller passes the gate (orderTools.ts
-  toolsFor — the flag, the caller's row in mcp_order_users, and a header
-  token carrying orders:draft). `surface()` reads feature.mcp_orders and the
+  toolsFor — the flag and the caller's row in mcp_order_users; any valid
+  token, header or URL, qualifies). `surface()` reads feature.mcp_orders and the
   caller's mcp_order_users row at most once per HTTP request, and only for
   methods that need it. A tool the caller cannot see is
   "unknown" to tools/call as well as absent from tools/list. listChanged stays
@@ -300,8 +300,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           'portal under your account menu → Connect Claude.',
       )
     }
-    // An order-drafting token in a URL is refused outright, and any other URL
-    // token resolves with no scopes (see extractToken).
+    // Header and URL tokens resolve identically (see extractToken).
     caller = await resolveCaller(token.token, token.via)
     db = await callerClient(caller)
   } catch (error) {

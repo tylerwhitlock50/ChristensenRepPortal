@@ -9,8 +9,8 @@
   applies.
 
   The one exception to read-only lives in mcp/orderTools.ts: order DRAFTING,
-  gated three ways (feature.mcp_orders, a row in mcp_order_users, and an
-  orders:draft scope on a header token) and enforced again in Postgres by
+  gated two ways (feature.mcp_orders and a row in mcp_order_users; any valid
+  MCP token, header or URL) and enforced again in Postgres by
   mcp_orders_gate(). Those tools write drafts only; a person submits in the
   portal. toolsFor() there decides, per request, which tools a caller sees.
 
@@ -50,9 +50,7 @@ import { bestContact, rankContacts, type RankableContact } from '../_shared/cont
 export interface OrderAccess {
   /** feature.mcp_orders is on and this user has a row in mcp_order_users. */
   mcp_orders: boolean
-  /** The token carries orders:draft AND arrived in a header. */
-  write_scope_active: boolean
-  /** Both of the above: the order tools are listed and callable. */
+  /** The order tools are listed and callable (today: same as mcp_orders). */
   order_tools_listed: boolean
   /** Why order_tools_listed is false, in words a user can act on. */
   reason: string | null
@@ -80,12 +78,6 @@ export interface ToolDef {
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>
   /** Overrides the read-only defaults in describeTool. */
   annotations?: ToolAnnotations
-  /**
-   * The effective token scope a caller needs for this tool to be listed or
-   * callable at all. Tools that set it are also subject to feature.mcp_orders
-   * (see orderTools.ts toolsFor).
-   */
-  requiresScope?: 'orders:draft'
 }
 
 /** A failure the model should read and retry differently, not a protocol bug. */
@@ -309,9 +301,8 @@ const whoami: ToolDef = {
           : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
       capabilities: compact({
         mcp_orders: orders?.mcp_orders ?? false,
-        write_scope_active: orders?.write_scope_active ?? false,
         order_drafting: orders?.order_tools_listed
-          ? 'On: you can draft orders. A person submits them in the portal.'
+          ? 'On: you can draft orders (never submit). The user reviews and submits them in the portal.'
           : null,
         order_drafting_off_because: orders?.order_tools_listed ? null : orders?.reason ?? null,
       }),

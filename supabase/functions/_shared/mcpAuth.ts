@@ -6,8 +6,8 @@
   Three steps, in this order, and the order is the whole point:
 
     1. Pull the token off the request (header, query string, or path — see
-       extractToken for why three), noting which: only a header token keeps
-       its scopes.
+       extractToken for why three), noting which (informational only: since
+       2026-11-11 the transport no longer changes what a token can do).
     2. Resolve it to a user with service_role, calling ONE function that
        returns no account data (mcp_token_resolve, migration 20260816120000).
     3. Mint a five-minute `authenticated` JWT for that user and build a normal
@@ -54,11 +54,16 @@ const JWT_SECRET =
  *  if it ever escapes into a log. */
 const JWT_TTL_SECONDS = 300
 
-/** Scopes a token may carry. Anything else in the column is ignored. */
+/**
+ * Scopes a token may carry. Anything else in the column is ignored. Since
+ * 2026-11-11 no scope gates anything: order drafting is decided by
+ * feature.mcp_orders + mcp_order_users alone (mcp_orders_gate(), migration
+ * 20261111150000). The column stays for per-connection consent under OAuth.
+ */
 export const KNOWN_SCOPES = ['orders:draft'] as const
 export type McpScope = (typeof KNOWN_SCOPES)[number]
 
-/** How the token reached us. Only a header token may carry write scopes. */
+/** How the token reached us. Informational: both transports are equivalent. */
 export type TokenVia = 'header' | 'url'
 
 export interface McpCaller {
@@ -74,13 +79,8 @@ export interface McpCaller {
   tokenExpiresAt: string
   /** Where the token arrived: Authorization / x-mcp-token, or the URL. */
   tokenVia: TokenVia
-  /** Scopes stored on the token row, whatever the transport. */
+  /** Scopes stored on the token row. Informational; nothing gates on them. */
   tokenScopes: McpScope[]
-  /**
-   * EFFECTIVE scopes: tokenScopes when the token came in a header, [] when it
-   * came in the URL. This is what tools/list and the JWT's mcp_scopes use.
-   */
-  scopes: McpScope[]
 }
 
 export interface ExtractedToken {
@@ -101,16 +101,14 @@ export interface ExtractedToken {
                                   URL and nothing else.
 
   The URL forms are a deliberate trade: a secret in a URL can land in a
-  server log or a referrer, which is why tokens expire, are per-user, are
-  revocable from /connect on their own, and only READ-ONLY tokens may use
-  them. extractToken reports how the token arrived, and resolveCaller REFUSES
-  (401 write_token_in_url) an order-drafting token that arrived in a URL:
-  dropping its scopes would not be enough, because whoever copies the URL
-  holds the full plaintext and could send it as a header instead. So a
-  drafting token must never be put in a URL in the first place, and if it
-  is, it stops working there and the message says to revoke it. Belt and
-  braces, effectiveScopes still gives a URL token no scopes. Reps who can
-  send a header should send a header.
+  server log or a referrer, which is why tokens expire, are per-user, and are
+  revocable from /connect on their own. Since 2026-11-11 a URL token is
+  treated exactly like a header token (claude.ai connectors can only send a
+  URL): if its user is on mcp_order_users and feature.mcp_orders is on, the
+  order-DRAFTING tools are listed for it too. So a leaked connector URL lets
+  whoever holds it read that user's book and create drafts as them — never
+  submit (only a person in the portal can). The remedy is revoking the token
+  on the Connect page. Per-connection consent comes back with OAuth.
 ----------------------------------------------------------------------------*/
 export function extractToken(req: Request): ExtractedToken | null {
   const auth = req.headers.get('Authorization') ?? ''
@@ -142,25 +140,6 @@ export function knownScopes(raw: unknown): McpScope[] {
   return [...new Set(raw.map(String).filter((s) => known.has(s)))] as McpScope[]
 }
 
-/** Header tokens keep their scopes; URL tokens get none. */
-export function effectiveScopes(tokenScopes: McpScope[], via: TokenVia): McpScope[] {
-  return via === 'header' ? [...tokenScopes] : []
-}
-
-/** A token that can write (any scope) never authenticates from a URL. */
-export function assertTokenTransport(tokenScopes: McpScope[], via: TokenVia): void {
-  if (via === 'url' && tokenScopes.length > 0) {
-    throw new HttpError(
-      401,
-      'write_token_in_url',
-      'This token can draft orders, so it only works in the Authorization header ' +
-        '(Claude Desktop or Claude Code), never in a connector URL. A URL can end up in ' +
-        'logs or be shared: revoke this token in the portal (account menu → Connect ' +
-        'Claude) and mint a read-only one for a connector URL.',
-    )
-  }
-}
-
 /*----------------------------------------------------------------------------
   Resolution. The single service_role call in this server.
 ----------------------------------------------------------------------------*/
@@ -188,9 +167,8 @@ export async function resolveCaller(token: string, via: TokenVia): Promise<McpCa
   }
 
   // `scopes` arrived with the order-drafting migration; a database without
-  // it resolves to no scopes, which is the read-only behaviour.
+  // it resolves to no scopes. Informational only (see KNOWN_SCOPES).
   const tokenScopes = knownScopes(row.scopes)
-  assertTokenTransport(tokenScopes, via)
   return {
     tokenId: String(row.token_id),
     userId: String(row.user_id),
@@ -202,7 +180,6 @@ export async function resolveCaller(token: string, via: TokenVia): Promise<McpCa
     tokenExpiresAt: String(row.expires_at),
     tokenVia: via,
     tokenScopes,
-    scopes: effectiveScopes(tokenScopes, via),
   }
 }
 
@@ -259,13 +236,15 @@ export function jwtClaims(caller: McpCaller, now: number) {
     exp: now + JWT_TTL_SECONDS,
     // provider marks the origin of the session: mcp_orders_gate() and
     // mcp_log_call() refuse a JWT without it, so a portal session cannot call
-    // the drafting RPCs. mcp_scopes is the EFFECTIVE set (empty for a URL
-    // token) and is what lets the gate pass. Only this function can mint
-    // these claims, because only it holds the signing secret.
+    // the drafting RPCs; the gate also checks the token row named by
+    // mcp_token_id is live and the caller's. mcp_scopes is the token row's
+    // stored scopes, informational since 20261111150000 (the gate no longer
+    // reads it). Only this function can mint these claims, because only it
+    // holds the signing secret.
     app_metadata: {
       provider: 'mcp',
       mcp_token_id: caller.tokenId,
-      mcp_scopes: [...caller.scopes],
+      mcp_scopes: [...caller.tokenScopes],
     },
   }
 }

@@ -1,7 +1,8 @@
 /*============================================================================
   20261111_mcp_orders.sql — assertions for 20261111100000_mcp_order_drafting
   and 20261111100100_mcp_order_rpcs: Claude drafts portal orders over MCP and
-  never submits.
+  never submits. Since 20261111150000_mcp_orders_any_token the gate ignores
+  token scopes: any live MCP token of an allowed, active user may draft.
 
   Covers: the feature flag, the mcp_order_users allow-list (admin-only
   writes, own-row reads, never from an MCP session), and token scopes (the 3-arg mcp_token_create is
@@ -133,7 +134,7 @@ begin
 end $$;
 
 -- An MCP session as the edge function mints it: provider mcp, the token id,
--- and the effective scopes (header token: the token's; URL token: none).
+-- and an mcp_scopes claim (ignored by the gate since 20261111150000).
 create or replace function pg_temp.become_mcp(p_label text, p_token_label text,
                                              p_scopes text[] default array['orders:draft']) returns void
 language plpgsql as $$
@@ -145,6 +146,19 @@ begin
                         'provider', 'mcp',
                         'mcp_token_id', (select id from t_tok where label = p_token_label),
                         'mcp_scopes', to_json(coalesce(p_scopes, '{}'::text[]))))::text, true);
+  perform set_config('role', 'authenticated', true);
+end $$;
+
+-- The same without any mcp_scopes claim.
+create or replace function pg_temp.become_mcp_bare(p_label text, p_token_label text) returns void
+language plpgsql as $$
+begin
+  perform set_config('request.jwt.claim.sub', '', true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', (select id from t_user where label = p_label), 'role', 'authenticated',
+                      'app_metadata', json_build_object(
+                        'provider', 'mcp',
+                        'mcp_token_id', (select id from t_tok where label = p_token_label)))::text, true);
   perform set_config('role', 'authenticated', true);
 end $$;
 
@@ -252,13 +266,16 @@ select pg_temp.assert(
   and not has_function_privilege('authenticated', 'public.mcp_order_preview(bigint,boolean)', 'execute'),
   'mcp_* RPCs: authenticated yes, anon no; internals unreachable');
 select pg_temp.assert(
-  (select not enabled and not (params ? 'allowed_user_ids')
+  (select not (params ? 'allowed_user_ids')
           and (params ->> 'max_lines')::int = 40 and (params ->> 'max_units_per_line')::int = 200
           and (params ->> 'max_order_value')::numeric = 250000
           and (params ->> 'max_drafts_per_user_per_day')::int = 25
           and (params ->> 'duplicate_window_days')::int = 14
      from public.app_settings where setting_key = 'feature.mcp_orders'),
-  'feature.mcp_orders is seeded OFF with the caps and no allowed_user_ids param');
+  'feature.mcp_orders carries the caps and no allowed_user_ids param');
+-- Seeded OFF, but production has since turned it on (2026-11-11): start
+-- every run from OFF (rolled back with everything else).
+select pg_temp.flag(false);
 select pg_temp.assert(
   has_table_privilege('authenticated', 'public.mcp_order_users', 'select')
   and has_table_privilege('authenticated', 'public.mcp_order_users', 'insert')
@@ -367,13 +384,58 @@ select pg_temp.assert_fails(
   $$select public.mcp_log_call('create_order_draft', '{}'::jsonb, 'ok', null, null)$$,
   'not_mcp_session:%', 'a portal session cannot write the MCP call log');
 
+-- 20261111150000_mcp_orders_any_token: scopes no longer matter. Any live
+-- token of an allowed, active user passes - a read-only token row, an empty
+-- scope claim (URL-delivered), or no mcp_scopes claim at all.
 select pg_temp.become_mcp('rep', 'w_rep', '{}');
-select pg_temp.assert_fails(pg_temp.create_sql(pg_temp.req('gate-key-1', '[{"part_id":"MO-ACC","qty":1}]')),
-  'mcp_scope_missing:%', 'URL-delivered token (no effective scopes) is read-only');
-
+select pg_temp.assert(
+  (public.mcp_orders_gate() ->> 'max_lines')::int = 40,
+  'a URL-delivered token (empty scope claim) passes the gate for an allowed user');
+select pg_temp.become_mcp('rep', 'ro_rep', '{}');
+select pg_temp.assert(
+  (public.mcp_orders_gate() ->> 'max_lines')::int = 40,
+  'a token with NO scopes, on an allowed user, passes the gate');
 select pg_temp.become_mcp('rep', 'ro_rep');
-select pg_temp.assert_fails(pg_temp.create_sql(pg_temp.req('gate-key-1', '[{"part_id":"MO-ACC","qty":1}]')),
-  'mcp_scope_missing:%', 'a claim of orders:draft on a read-only token row is refused');
+select pg_temp.assert(
+  (public.mcp_orders_gate() ->> 'max_lines')::int = 40,
+  'a stray orders:draft claim on a read-only token row changes nothing (passes)');
+select pg_temp.become_mcp_bare('rep', 'ro_rep');
+select pg_temp.assert(
+  (public.mcp_orders_gate() ->> 'max_lines')::int = 40,
+  'no mcp_scopes claim at all still passes');
+select pg_temp.assert(
+  (select pg_get_functiondef('public.mcp_orders_gate()'::regprocedure) not ilike '%scope%')
+  and (select prosecdef and proconfig @> array['search_path=public']
+         from pg_proc where oid = 'public.mcp_orders_gate()'::regprocedure)
+  and has_function_privilege('authenticated', 'public.mcp_orders_gate()', 'execute')
+  and not has_function_privilege('anon', 'public.mcp_orders_gate()', 'execute'),
+  'mcp_orders_gate: no scope check left; security definer, pinned search_path, grants unchanged');
+
+-- The token row is still the truth: someone else's token, an expired one,
+-- a missing or malformed token id, or a non-MCP provider all stop here.
+select pg_temp.become_mcp('rep', 'w_admin', '{}');
+select pg_temp.assert_fails('select public.mcp_orders_gate()',
+  'not_mcp_session:%', 'another user''s token id is refused');
+select pg_temp.become_mcp('rep', 'no_such_token', '{}');
+select pg_temp.assert_fails('select public.mcp_orders_gate()',
+  'not_mcp_session:%', 'an MCP session with no token id is refused');
+reset role;
+select set_config('request.jwt.claims',
+  json_build_object('sub', (select id from t_user where label = 'rep'), 'role', 'authenticated',
+                    'app_metadata', json_build_object('provider', 'mcp', 'mcp_token_id', 'not-a-uuid'))::text, true);
+set local role authenticated;
+select pg_temp.assert_fails('select public.mcp_orders_gate()',
+  'not_mcp_session:%', 'a malformed token id is refused');
+select pg_temp.become('rep');
+select pg_temp.assert_fails('select public.mcp_orders_gate()',
+  'not_mcp_session:%', 'a non-MCP (portal) JWT is refused, even for an allowed user');
+select pg_temp.mint('rep', 'ro_rep_expired', '{}');
+reset role;
+update public.mcp_tokens set expires_at = now() - interval '1 minute'
+ where id = (select id from t_tok where label = 'ro_rep_expired');
+select pg_temp.become_mcp('rep', 'ro_rep_expired', '{}');
+select pg_temp.assert_fails('select public.mcp_orders_gate()',
+  'not_mcp_session:%', 'an expired token is refused');
 
 select pg_temp.become('rep2');
 select public.mcp_token_revoke((select id from t_tok where label = 'w_rep2_revoked'));
@@ -397,6 +459,10 @@ select pg_temp.become_mcp('rep2', 'w_rep2');
 select pg_temp.assert_fails(
   $$select public.mcp_create_order_draft('{"idempotency_key":"gate-key-2","customer_key":"MO-OTHER","lines":[{"part_id":"MO-ACC","qty":1}]}')$$,
   'mcp_user_not_allowed:%', 'removing the row refuses the next call, live token or not');
+select pg_temp.mint('rep2', 'ro_rep2', '{}');
+select pg_temp.become_mcp('rep2', 'ro_rep2', '{}');
+select pg_temp.assert_fails('select public.mcp_orders_gate()',
+  'mcp_user_not_allowed:%', 'an unlisted user with a plain (no-scope) token is refused');
 select pg_temp.become_mcp('admin', 'w_admin');
 select pg_temp.assert_fails(
   $$insert into public.mcp_order_users (user_id) select id from t_user where label = 'rep2'$$,
@@ -725,6 +791,39 @@ select pg_temp.assert_fails(format($$update public.orders set notes = 'x' where 
   'mcp_direct_write:%', 'an MCP session cannot update orders directly');
 select pg_temp.assert_fails(format('delete from public.orders where id = %s', pg_temp.oid('d_noship')),
   'mcp_direct_write:%', 'an MCP session cannot delete orders directly');
+
+-- 20261111150000: the common path now is a read-only token pasted in a
+-- connector URL (no scopes on the row, empty scope claim). End to end it
+-- drafts, updates and cancels, but it can never submit or write orders.
+select pg_temp.become_mcp('rep', 'ro_rep', '{}');
+select pg_temp.create('d_ro', '{"idempotency_key":"ro-url-key-0001","customer_key":"MO-ONE","lines":[{"part_id":"MO-ACC","qty":2}]}');
+select pg_temp.assert(
+  (select o.source = 'mcp' and o.status = 'draft'
+          and o.user_id = (select id from t_user where label = 'rep')
+     from public.orders o where o.id = pg_temp.oid('d_ro'))
+  and (select j ->> 'status' = 'draft' and (j -> 'would_submit' ->> 'ok')::boolean from t_prev where label = 'd_ro'),
+  'a read-only URL token (no scopes) drafts an order: source mcp, status draft');
+select pg_temp.assert(
+  (select (j ->> 'order_id')::bigint = pg_temp.oid('d_ro')
+     from (select public.mcp_update_order_draft(pg_temp.oid('d_ro'),
+             '{"lines":[{"part_id":"MO-ACC","qty":3}]}') j) q)
+  and (select status = 'draft' from public.orders where id = pg_temp.oid('d_ro')),
+  'a read-only URL token updates its draft, which stays a draft');
+select pg_temp.assert_fails(format('select public.submit_order(%s, true)', pg_temp.oid('d_ro')),
+  'mcp_cannot_submit:%', 'a read-only URL token cannot submit, acknowledged or not');
+select pg_temp.assert_fails(format('select public.submit_order(%s)', pg_temp.oid('d_ro')),
+  'mcp_cannot_submit:%', 'nor without the acknowledgement');
+select pg_temp.assert_fails(format($$update public.orders set status = 'submitted', submitted_at = now() where id = %s$$, pg_temp.oid('d_ro')),
+  'mcp_direct_write:%', 'a read-only URL token cannot move an order''s status directly');
+select pg_temp.assert_fails(format($$update public.orders set notes = 'x' where id = %s$$, pg_temp.oid('d_ro')),
+  'mcp_direct_write:%', 'a read-only URL token cannot update orders directly');
+select pg_temp.assert_fails(
+  $$insert into public.mcp_order_users (user_id) select id from t_user where label = 'rep'$$,
+  'mcp_cannot_change_allow_list:%', 'a read-only URL token cannot touch the allow-list');
+select public.mcp_cancel_order_draft(pg_temp.oid('d_ro'));
+select pg_temp.assert(
+  (select status <> 'submitted' and submitted_at is null from public.orders where id = pg_temp.oid('d_ro')),
+  'a read-only URL token cancels its draft; it was never submitted');
 
 select pg_temp.become('admin');
 select pg_temp.assert_fails(format($$update public.orders set status = 'submitted', submitted_at = now() where id = %s$$, pg_temp.oid('d_noship')),
