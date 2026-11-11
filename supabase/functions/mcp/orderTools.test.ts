@@ -7,15 +7,8 @@
 ============================================================================*/
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
-import {
-  assertTokenTransport,
-  effectiveScopes,
-  extractToken,
-  jwtClaims,
-  knownScopes,
-  type McpCaller,
-} from '../_shared/mcpAuth.ts'
-import { HttpError } from '../_shared/supabase.ts'
+import * as mcpAuth from '../_shared/mcpAuth.ts'
+import { extractToken, jwtClaims, knownScopes, type McpCaller } from '../_shared/mcpAuth.ts'
 import { describeTool, TOOLS, type ToolDef } from './tools.ts'
 import {
   decoratePreview,
@@ -51,8 +44,6 @@ const OTHER = '22222222-2222-2222-2222-222222222222'
 const ORDER_TOOL_NAMES = ORDER_TOOLS.map((t) => t.name)
 
 function caller(over: Partial<McpCaller> = {}): McpCaller {
-  const tokenScopes = over.tokenScopes ?? ['orders:draft']
-  const tokenVia = over.tokenVia ?? 'header'
   return {
     tokenId: 'aaaaaaaa-0000-0000-0000-000000000001',
     userId: TYLER,
@@ -62,9 +53,8 @@ function caller(over: Partial<McpCaller> = {}): McpCaller {
     salesRepKey: null,
     repGroupVendorId: null,
     tokenExpiresAt: '2027-01-01T00:00:00Z',
-    tokenVia,
-    tokenScopes,
-    scopes: over.scopes ?? effectiveScopes(tokenScopes, tokenVia),
+    tokenVia: 'header',
+    tokenScopes: [],
     ...over,
   }
 }
@@ -200,10 +190,14 @@ Deno.test('visibility: the matrix', () => {
     ['setting row missing', caller(), null, true, false],
     ['flag off', caller(), setting(false), true, false],
     ['flag off, not on the list', caller(), setting(false), false, false],
-    ['flag on, token without scope', caller({ tokenScopes: [] }), setting(true), true, false],
-    ['flag on, scoped token sent in URL', caller({ tokenVia: 'url' }), setting(true), true, false],
     ['flag on, not on the list', caller(), setting(true), false, false],
-    ['flag on, on the list, header token with scope', caller(), setting(true), true, true],
+    ['flag on, not on the list, scoped header token', caller({ tokenScopes: ['orders:draft'] }), setting(true), false, false],
+    // Since 2026-11-11 any valid token works once the user is on the list.
+    ['flag on, on the list, header token, no scopes', caller(), setting(true), true, true],
+    ['flag on, on the list, read-only token in the URL', caller({ tokenVia: 'url' }), setting(true), true, true],
+    ['flag on, on the list, scoped token in the URL',
+      caller({ tokenVia: 'url', tokenScopes: ['orders:draft'] }), setting(true), true, true],
+    ['flag on, on the list, scoped header token', caller({ tokenScopes: ['orders:draft'] }), setting(true), true, true],
     // A leftover params key from the old design grants nothing.
     ['flag on, stale allowed_user_ids "*" but no row', caller({ userId: OTHER }),
       { enabled: true, params: { allowed_user_ids: ['*'] } }, false, false],
@@ -225,12 +219,11 @@ Deno.test('visibility: reasons say what to fix', () => {
     'This user is not on the order-drafting list (Admin → Feature flags → Claude order drafting).',
     'not on the list',
   )
-  assert(/sent in the URL/.test(orderAccess(caller({ tokenVia: 'url' }), setting(true), true).reason ?? ''), 'url token')
-  assert(/minted without order drafting/.test(orderAccess(caller({ tokenScopes: [] }), setting(true), true).reason ?? ''), 'no scope')
   eq(orderAccess(caller(), setting(true), true).reason, null, 'allowed: no reason')
-  // Capabilities whoami reports.
+  // Capabilities whoami reports: a URL token with no scopes is fully allowed.
   const url = orderAccess(caller({ tokenVia: 'url' }), setting(true), true)
-  eq([url.mcp_orders, url.write_scope_active], [true, false], 'url token: allowed but no write scope')
+  eq(url, { mcp_orders: true, order_tools_listed: true, reason: null }, 'url token: allowed')
+  assert(!('write_scope_active' in url), 'no write_scope_active any more')
 })
 
 Deno.test('visibility: the setting is read through ctx.db, fails closed', async () => {
@@ -282,24 +275,25 @@ Deno.test('auth: header vs URL tokens, scopes, JWT claims', () => {
 
   eq(knownScopes(['orders:draft', 'admin:all', 'orders:draft']), ['orders:draft'], 'unknown scopes dropped')
   eq(knownScopes(null), [], 'no scopes column')
-  eq(effectiveScopes(['orders:draft'], 'url'), [], 'URL token: no effective scopes')
-  // A drafting token in a URL is refused outright: whoever has the URL has the
-  // plaintext and could send it as a header.
-  let refused: unknown = null
-  try { assertTokenTransport(['orders:draft'], 'url') } catch (e) { refused = e }
-  assert(refused instanceof HttpError && refused.status === 401 && refused.code === 'write_token_in_url',
-    'write token in a URL → 401 write_token_in_url')
-  assertTokenTransport([], 'url')
-  assertTokenTransport(['orders:draft'], 'header')
+  // The URL refusal and the header-only scope rule are gone (2026-11-11).
+  const gone = mcpAuth as unknown as Record<string, unknown>
+  eq([typeof gone.assertTokenTransport, typeof gone.effectiveScopes], ['undefined', 'undefined'], 'no transport rule')
 
-  const header = jwtClaims(caller(), 1000)
+  const header = jwtClaims(caller({ tokenScopes: ['orders:draft'] }), 1000)
   eq(header.app_metadata, {
     provider: 'mcp',
     mcp_token_id: 'aaaaaaaa-0000-0000-0000-000000000001',
     mcp_scopes: ['orders:draft'],
   }, 'header token claims')
   eq(header.role, 'authenticated', 'never service_role')
-  eq(jwtClaims(caller({ tokenVia: 'url' }), 1000).app_metadata.mcp_scopes, [], 'URL token claims carry no scopes')
+  // Transport changes nothing in the claims; mcp_scopes is the stored set.
+  eq(
+    jwtClaims(caller({ tokenVia: 'url', tokenScopes: ['orders:draft'] }), 1000).app_metadata,
+    header.app_metadata,
+    'URL token claims identical to header token claims',
+  )
+  eq(jwtClaims(caller({ tokenVia: 'url' }), 1000).app_metadata.mcp_token_id,
+    'aaaaaaaa-0000-0000-0000-000000000001', 'gate still gets the token id')
 })
 
 Deno.test('annotations: reads read-only, writes say so', () => {
@@ -310,7 +304,7 @@ Deno.test('annotations: reads read-only, writes say so', () => {
   eq([ann('create_order_draft').readOnlyHint, ann('create_order_draft').idempotentHint, ann('create_order_draft').destructiveHint], [false, true, false], 'create')
   eq([ann('update_order_draft').readOnlyHint, ann('update_order_draft').destructiveHint], [false, false], 'update')
   eq([ann('cancel_order_draft').readOnlyHint, ann('cancel_order_draft').destructiveHint], [false, true], 'cancel')
-  for (const t of ORDER_TOOLS) eq(t.requiresScope, 'orders:draft', `${t.name} requires the scope`)
+  for (const t of ORDER_TOOLS) assert(!('requiresScope' in t), `${t.name} needs no token scope`)
   for (const t of TOOLS) eq(describeTool(t).annotations.readOnlyHint, true, `${t.name} stays read-only`)
 })
 
@@ -432,8 +426,12 @@ Deno.test('errors: refusals become actionable text', () => {
   const ffl = orderToolError({ message: 'ffl_required: No current FFL on file.' })
   assert(/portal/.test(ffl.message) && /Do not ask for one or pass one/.test(ffl.message), 'ffl → portal, never pass one')
 
-  const gate = orderToolError({ message: 'mcp_scope_missing: no orders:draft' })
-  assert(/header/i.test(gate.message), 'scope → send a header token')
+  const gate = orderToolError({ message: 'mcp_user_not_allowed: not on the list' })
+  assert(/order-drafting list/.test(gate.message), 'not on the list → admin controls the list')
+  // mcp_scope_missing is no longer raised (20261111150000); if an old gate
+  // ever did, it passes through like any unknown code.
+  const stale = orderToolError({ message: 'mcp_scope_missing: no orders:draft' })
+  assert(stale.outcome === 'refused' && /mcp_scope_missing/.test(stale.message), 'stale scope code passes through')
   const unknown = orderToolError({ message: 'brand_new_code: something' })
   assert(unknown.outcome === 'refused' && /brand_new_code: something/.test(unknown.message), 'unknown code passes through')
   const crash = orderToolError(new Error('fetch failed'))

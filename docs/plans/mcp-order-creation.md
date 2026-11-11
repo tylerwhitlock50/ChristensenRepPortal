@@ -14,6 +14,16 @@ This is research only. No files were edited and no SQL was run. Paths without a 
   - Open: should the acknowledgement apply to all orders, or only to MCP-created ones?
 - **Phase 0 is done** (2026-11-11): the three FFL migrations are live and the order guard tests pass.
 
+## Decision: any token drafts for an allowed user (2026-11-11, v1.1)
+
+Claude.ai connectors can only carry the token in the URL. That means the v1 rule (the `orders:draft` scope counts only when the token arrives in a header) blocked drafting from every connector. Tyler decided that, until OAuth is in place, being on `public.mcp_order_users` is the only per-person switch. `feature.mcp_orders` must be on and the account must be active. Any live MCP token of that user then exposes the order tools, including an existing read-only token pasted into a connector URL.
+
+- SQL: migration `20261111150000_mcp_orders_any_token.sql` restates only `mcp_orders_gate()`. Both scope checks are gone (the JWT claim and the token row), so `mcp_scope_missing` is no longer raised. The token row must still exist, belong to the caller, be unrevoked and be unexpired. Otherwise the gate raises `not_mcp_session`.
+- Not changed: `mcp_tokens.scopes`, its CHECK, and `mcp_token_create(p_scopes)`. They are kept for OAuth. Every other guard also stays: MCP can never submit, `protected_status`, `mcp_cannot_change_allow_list`, server-side pricing, and the caps.
+- Edge and frontend: the scope gating and the 401 refusal for a write token in the URL are removed. ConnectView drops the "Let Claude draft orders" checkbox.
+- Tradeoff: anyone with a leaked connector URL can create, update and cancel **drafts** as that user, but can never submit them. They keep that access until the token is revoked on the Connect page.
+- **OAuth (v1.2)** brings back per-connection consent. At that point a scope or consent grant on the connection becomes the gate again, on top of the allow-list.
+
 ## Revised design (2026-11-11, after Tyler's use cases)
 
 Where this section and the older sections below disagree, this section wins.

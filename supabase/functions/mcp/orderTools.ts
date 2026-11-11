@@ -7,7 +7,7 @@
   "I've reviewed this order and it is correct", and submits it there
   (submit_order(p_order_id, p_acknowledged)). Nothing here touches the ERP.
 
-  Three gates, all of which must pass for any of the seven tools to be listed
+  Two gates, both of which must pass for any of the seven tools to be listed
   or callable (toolsFor below; a hidden tool is "unknown"):
 
     1. app_settings 'feature.mcp_orders' is enabled. Independent of
@@ -15,13 +15,18 @@
     2. The caller has a row in public.mcp_order_users (the admin-managed
        allow-list; RLS lets a user read only their own row). No row, or an
        unreadable one, = not allowed.
-    3. The caller's EFFECTIVE scopes include 'orders:draft': the token row
-       carries the scope AND the token arrived in a header. A URL token is
-       always read-only (_shared/mcpAuth.ts).
+
+  ANY valid MCP token qualifies, header or URL, whatever scopes it was minted
+  with (decision 2026-11-11: claude.ai connectors can only send a URL; the
+  orders:draft scope and the URL refusal are gone until OAuth brings back
+  per-connection consent). A leaked connector URL can therefore create
+  drafts as its user — never submit; revoking the token on the Connect page
+  ends it.
 
   The same gates are enforced again in Postgres by mcp_orders_gate(), which
-  every mcp_* RPC calls first, reading app_metadata.mcp_scopes from the JWT
-  mcpAuth mints. This file hides tools; it is not the security boundary.
+  every mcp_* RPC calls first, also checking the JWT mcpAuth mints is an MCP
+  session for a live token of the caller's. This file hides tools; it is not
+  the security boundary.
 
   Money and FFLs never come from the model. No input schema here has a price
   or FFL field, the payload is built from a whitelist, and a call that tries
@@ -57,7 +62,6 @@ import {
 } from './tools.ts'
 
 export const MCP_ORDERS_SETTING = 'feature.mcp_orders'
-export const ORDER_SCOPE = 'orders:draft' as const
 
 /*----------------------------------------------------------------------------
   The gate, as pure functions (unit-tested in orderTools.test.ts)
@@ -135,15 +139,12 @@ export async function readMcpOrderListed(db: SupabaseClient, userId: string): Pr
  * `onList` is readMcpOrderListed's answer for this caller.
  */
 export function orderAccess(
-  caller: McpCaller,
+  _caller: McpCaller,
   setting: McpOrdersSetting | null,
   onList: boolean,
 ): OrderAccess {
   const flagOn = setting?.enabled === true
   const allowed = flagOn && onList === true
-  const scopes = caller.scopes ?? []
-  const tokenScopes = caller.tokenScopes ?? []
-  const scoped = scopes.includes(ORDER_SCOPE)
 
   let reason: string | null = null
   if (!flagOn) {
@@ -151,20 +152,11 @@ export function orderAccess(
   } else if (!allowed) {
     reason =
       'This user is not on the order-drafting list (Admin → Feature flags → Claude order drafting).'
-  } else if (!scoped && tokenScopes.includes(ORDER_SCOPE)) {
-    reason =
-      'This token allows order drafting, but it was sent in the URL, which is always ' +
-      'read-only. Send it as an `Authorization: Bearer` header instead.'
-  } else if (!scoped) {
-    reason =
-      'This token was minted without order drafting (orders:draft). Mint one with order ' +
-      'drafting in the portal under Connect Claude, and send it as a header.'
   }
 
   return {
     mcp_orders: allowed,
-    write_scope_active: scoped,
-    order_tools_listed: allowed && scoped,
+    order_tools_listed: allowed,
     reason,
   }
 }
@@ -182,12 +174,7 @@ export function toolsFor(
 ): ToolDef[] {
   const access = orderAccess(caller, setting, onList)
   if (!access.order_tools_listed) return [...TOOLS]
-  const scopes = caller.scopes ?? []
-  const extra = ORDER_TOOLS.filter(
-    (tool) =>
-      !toolDisabled(tool.name) && (!tool.requiresScope || scopes.includes(tool.requiresScope)),
-  )
-  return [...TOOLS, ...extra]
+  return [...TOOLS, ...ORDER_TOOLS.filter((tool) => !toolDisabled(tool.name))]
 }
 
 /*----------------------------------------------------------------------------
@@ -271,10 +258,6 @@ const GUIDANCE: Record<string, (detail: string | null) => string> = {
   not_mcp_session: () =>
     'The database did not accept this as an MCP session. Nothing was saved. This is a ' +
     'server problem, not something to retry: tell the user.',
-  mcp_scope_missing: () =>
-    'This connection may not draft orders: the token lacks order drafting (orders:draft) ' +
-    'or was sent in the URL. Nothing was saved. The user can mint a token with order ' +
-    'drafting in the portal (Connect Claude) and send it as an Authorization header.',
   mcp_user_not_allowed: () =>
     'This user is not on the order-drafting list. Nothing was saved. Tell the user; an ' +
     'admin controls the list (Admin → Feature flags → Claude order drafting).',
@@ -718,7 +701,6 @@ const getOrderContext: ToolDef = {
     required: ['customer_key'],
     additionalProperties: false,
   },
-  requiresScope: ORDER_SCOPE,
   async handler(args, { db }) {
     const key = requireKey(args)
     const { data, error } = await db.rpc('order_context', { p_customer_key: key })
@@ -794,7 +776,6 @@ const searchOrderProducts: ToolDef = {
     required: ['customer_key', 'query'],
     additionalProperties: false,
   },
-  requiresScope: ORDER_SCOPE,
   async handler(args, { db }) {
     const key = requireKey(args)
     const query = str(args.query)
@@ -876,7 +857,6 @@ const createOrderDraft: ToolDef = {
     additionalProperties: false,
   },
   annotations: { ...WRITE, idempotentHint: true },
-  requiresScope: ORDER_SCOPE,
   handler(args, ctx) {
     return audited(ctx, 'create_order_draft', args, async () => {
       const p = draftPayload(args, true)
@@ -899,7 +879,6 @@ const updateOrderDraft: ToolDef = {
     additionalProperties: false,
   },
   annotations: { ...WRITE, idempotentHint: false },
-  requiresScope: ORDER_SCOPE,
   handler(args, ctx) {
     return audited(ctx, 'update_order_draft', args, async () => {
       const orderId = num(args.order_id)
@@ -923,7 +902,6 @@ const cancelOrderDraft: ToolDef = {
     additionalProperties: false,
   },
   annotations: { ...WRITE, destructiveHint: true, idempotentHint: false },
-  requiresScope: ORDER_SCOPE,
   handler(args, ctx) {
     return audited(ctx, 'cancel_order_draft', args, async () => {
       const orderId = num(args.order_id)
@@ -953,7 +931,6 @@ const getOrderStatus: ToolDef = {
     },
     additionalProperties: false,
   },
-  requiresScope: ORDER_SCOPE,
   async handler(args, { db, caller }) {
     const orderId = num(args.order_id)
     const key = str(args.idempotency_key)
@@ -1025,7 +1002,6 @@ const listMyOrderDrafts: ToolDef = {
     },
     additionalProperties: false,
   },
-  requiresScope: ORDER_SCOPE,
   async handler(args, { db, caller }) {
     const statuses = ['draft', 'submitted', 'entered', 'verified', 'discrepancy', 'cancelled', 'any']
     const status = statuses.includes(String(args.status)) ? String(args.status) : 'draft'

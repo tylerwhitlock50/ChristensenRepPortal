@@ -6,7 +6,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { useSessionStore } from '@/stores/session'
 import { useMcpOrders } from '@/composables/useAppSettings'
-import { hasDraftScope, rpcErrorText } from '@/lib/mcpOrders'
+import { rpcErrorText } from '@/lib/mcpOrders'
 import { shortDate, daysAgo } from '@/lib/format'
 import {
   MCP_URL,
@@ -35,11 +35,13 @@ const revoke = useRevokeMcpToken()
 
 const name = ref('')
 /**
- * Claude order drafting (feature.mcp_orders): offered only to users on its
- * allow-list. The server re-checks both when minting and on every call.
+ * Claude order drafting (feature.mcp_orders): follows the USER, not the
+ * token. Flag on + a row in mcp_order_users and every token this user holds
+ * (header or connector URL) gets the order tools; mcp_orders_gate() re-checks
+ * on every call. Nothing to pick when minting, so this only drives one line
+ * of copy.
  */
 const mcpOrders = useMcpOrders()
-const draftOrders = ref(false)
 const minted = ref<MintedToken | null>(null)
 const copied = ref<string | null>(null)
 const confirmingRevoke = ref<string | null>(null)
@@ -77,12 +79,8 @@ async function mint() {
   actionError.value = ''
   minted.value = null
   try {
-    minted.value = await create.mutateAsync({
-      name: name.value,
-      draftOrders: mcpOrders.available.value && draftOrders.value,
-    })
+    minted.value = await create.mutateAsync({ name: name.value })
     name.value = ''
-    draftOrders.value = false
   } catch (e) {
     actionError.value = rpcErrorText((e as Error).message) || 'Could not create that token.'
   }
@@ -111,12 +109,11 @@ async function doRevoke(token: McpTokenRow) {
         plain English — “which of my dealers are behind pace”, “what did Smoky
         Mountain buy last year”, “what’s on backorder for me”. Claude sees
         <strong class="text-ink">exactly the accounts you see in this portal</strong>,
-        nothing more, and it cannot change anything.
-        <template v-if="mcpOrders.available.value">
-          The one exception is opt-in: a token can also let Claude
-          <strong class="text-ink">draft orders</strong> for you to review and
-          submit here. Claude never submits an order itself.
-        </template>
+        nothing more<template v-if="!mcpOrders.available.value">, and it cannot change anything</template>.
+      </p>
+      <p v-if="mcpOrders.available.value" class="text-ink-2 mt-2 max-w-2xl text-sm">
+        Your Claude connection can also <strong class="text-ink">draft orders</strong>
+        — never submit them. You review and submit each one here in the portal.
       </p>
     </header>
 
@@ -128,7 +125,9 @@ async function doRevoke(token: McpTokenRow) {
         </p>
         <p class="text-muted mt-1 text-xs">
           If you lose it, revoke it below and create another. Treat it like your
-          password: anyone holding it can read your account data.
+          password: anyone holding it (or the connector URL) can read your
+          account data<template v-if="mcpOrders.available.value"> and draft
+          orders as you — never submit them</template>.
         </p>
       </div>
 
@@ -145,18 +144,7 @@ async function doRevoke(token: McpTokenRow) {
           </div>
         </div>
 
-        <p
-          v-if="hasDraftScope(minted.scopes)"
-          class="border-line border-l-accent text-ink-2 border border-l-[3px] p-3 text-sm"
-        >
-          <strong class="text-ink">This token can draft orders, so it only works from a header.</strong>
-          Use the Claude Code command below, or put the token in an
-          <code class="font-mono text-xs">Authorization: Bearer</code> header in
-          Claude Desktop. Never paste it into a URL or a claude.ai connector: the
-          portal refuses it there. If it ever ends up in a URL, revoke it.
-        </p>
-
-        <div v-if="!hasDraftScope(minted.scopes)">
+        <div>
           <p class="u-label text-muted mb-1">Connector URL — for claude.ai</p>
           <div class="flex flex-wrap items-center gap-2">
             <code
@@ -194,8 +182,7 @@ async function doRevoke(token: McpTokenRow) {
           <p class="u-label text-muted mb-1">claude.ai (web or desktop)</p>
           <ol class="text-muted list-decimal space-y-1 pl-5">
             <li>Settings → Connectors → <strong class="text-ink">Add custom connector</strong>.</li>
-            <li>Name it “Rep Portal” and paste the <strong class="text-ink">connector URL</strong> above
-              (read-only tokens only: an order-drafting token is refused in a URL).</li>
+            <li>Name it “Rep Portal” and paste the <strong class="text-ink">connector URL</strong> above.</li>
             <li>Add it, then start a chat and ask something about your accounts.</li>
           </ol>
         </div>
@@ -241,22 +228,6 @@ async function doRevoke(token: McpTokenRow) {
         >
           Create token
         </AppButton>
-        <label
-          v-if="mcpOrders.available.value"
-          class="flex w-full cursor-pointer items-start gap-3 pt-1"
-        >
-          <input v-model="draftOrders" type="checkbox" class="mt-0.5 size-5 shrink-0" />
-          <span class="text-sm">
-            <span class="text-ink block font-semibold">Let Claude draft orders</span>
-            <span class="text-muted block">
-              Claude can create, change and cancel order drafts; you review and
-              submit each one here. Drafting needs the header setup — Claude
-              Desktop or Claude Code with an Authorization header. A drafting
-              token is refused in a connector URL, so no URL is shown for it. One
-              drafting token at a time.
-            </span>
-          </span>
-        </label>
       </div>
 
       <p v-if="atLimit" class="text-muted mb-3 text-sm">
@@ -286,7 +257,6 @@ async function doRevoke(token: McpTokenRow) {
             <div class="min-w-0">
               <p class="text-ink flex flex-wrap items-center gap-2 text-sm font-semibold">
                 {{ token.name }}
-                <AppBadge v-if="hasDraftScope(token.scopes)" tone="high">Drafts orders</AppBadge>
                 <AppBadge v-if="token.revoked_at" tone="neutral">Revoked</AppBadge>
                 <AppBadge v-else-if="!isLive(token)" tone="neutral">Expired</AppBadge>
               </p>

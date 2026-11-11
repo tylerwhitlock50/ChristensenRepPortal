@@ -12,7 +12,6 @@ import {
   MCP_ORDERS_DEFAULTS,
   canSubmitWithAck,
   emailSourceRef,
-  hasDraftScope,
   isMcpOrdersUserAllowed,
   needsAcknowledgement,
   parseMcpOrdersParams,
@@ -118,8 +117,6 @@ t('orders section: both off', sec(false, false, true, true), false)
 t('writer: hand entry off refuses a hand-typed draft', canEditDraftInWriter(false, 'portal'), false)
 t('writer: hand entry off still edits a Claude draft', canEditDraftInWriter(false, 'mcp'), true)
 t('writer: hand entry on edits any draft', canEditDraftInWriter(true, 'portal'), true)
-t('draft scope present', hasDraftScope(['orders:draft']), true)
-t('draft scope absent', hasDraftScope([]), false)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
