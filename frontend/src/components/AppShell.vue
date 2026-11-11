@@ -5,7 +5,7 @@ import { onClickOutside } from '@vueuse/core'
 import { format, isToday } from 'date-fns'
 import { useSessionStore } from '@/stores/session'
 import { isMission, useNeedsAttention } from '@/composables/useRecommendations'
-import { useFeatureFlags } from '@/composables/useAppSettings'
+import { useFeatureFlags, useMcpOrders } from '@/composables/useAppSettings'
 import { useMyDueTasks } from '@/composables/useTasks'
 import { useOpenSupportCount } from '@/composables/useSupport'
 import { useErpHeartbeat } from '@/composables/useDataFreshness'
@@ -16,11 +16,14 @@ import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
 import GlobalSearch from '@/components/GlobalSearch.vue'
 import { daysUntilDue } from '@/lib/format'
+import { ordersSectionOpen } from '@/lib/mcpOrders'
 
 const session = useSessionStore()
 const router = useRouter()
 const route = useRoute()
 const flags = useFeatureFlags()
+/** Claude-drafted orders are reviewed and submitted under /orders too. */
+const mcpOrders = useMcpOrders()
 
 /* ERP data is cached until the nightly load moves, not on a timer; this is
    the one check that notices (see useDataFreshness.ts). */
@@ -130,7 +133,15 @@ const nav = computed<NavItem[]>(() => {
   if (session.isPrincipal) {
     items.splice(1, 0, { to: { name: 'agency' }, label: 'Agency', icon: 'agency' })
   }
-  if (flags.orders.value) {
+  // Same rule as the /orders route guard (featureAny).
+  if (
+    ordersSectionOpen({
+      ordersOn: flags.orders.value,
+      mcpOrdersOn: mcpOrders.enabled.value,
+      mcpUserAllowed: mcpOrders.userAllowed.value,
+      isOrderEntry: session.isOrderEntry,
+    })
+  ) {
     // Path, like Intel: stays lit on the writer, the detail, the queue.
     items.push({ to: '/orders', label: 'Orders', icon: 'orders' })
   }

@@ -7,8 +7,11 @@ can point Claude at their own sales data and ask questions in English.
 https://<project-ref>.supabase.co/functions/v1/mcp
 ```
 
-Read-only. Twenty tools. No new access model: a token identifies a user, and
-that user's existing RLS decides everything they can see.
+Read-only, apart from gated order **drafting** (see "Order drafting, gated"
+below): twenty-one read tools, plus seven order tools that only a pilot user
+with a header token and the `orders:draft` scope ever sees. No new access
+model: a token identifies a user, and that user's existing RLS decides
+everything they can see.
 
 ---
 
@@ -65,6 +68,7 @@ else in the design changes; the signing algorithm is the only assumption.
 |---|---|---|
 | `MCP_DISABLED_TOOLS` | *(empty)* | Comma-separated tool names to turn off without a deploy. |
 | `MCP_ALLOWED_ORIGIN` | `*` | CORS origin. Pin it if browser-based MCP clients are ever the only consumers. |
+| `PORTAL_URL` | *(empty)* | Portal origin, e.g. `https://portal.example.com`. Draft previews add `portal_url` = this + `/orders/<id>`; without it they carry only `portal_path`. |
 
 `MCP_DISABLED_TOOLS` exists mainly for `list_contacts`. `ai-account-summary`
 deliberately keeps contact PII out of a model's context (see the PII note in
@@ -105,14 +109,22 @@ It is a real trade, taken deliberately: claude.ai custom connectors accept a URL
 and nothing else, and a sales team that cannot connect is a feature that does
 not exist. What makes it acceptable is that the credential is per-user,
 expiring, revocable on its own from `/connect`, read-only, and scoped to data
-its holder can already see. Reps whose client can send a header should send a
-header, and the Connect page says so.
+its holder can already see. Only a **read-only** token may travel in a URL:
+an order-drafting token (`orders:draft`) that arrives as `?token=` or a path
+segment is refused with `401 write_token_in_url`, because whoever holds the
+URL holds the plaintext and could simply send it as a header. Dropping its
+scopes would not protect a leaked URL; refusing it does, and the message says
+to revoke the token. (Belt and braces: any URL token still resolves with no
+effective scopes, so the JWT carries `mcp_scopes: []` and `mcp_orders_gate()`
+refuses.) The Connect page shows no connector URL for a drafting token. Reps
+whose client can send a header should send a header.
 
 ---
 
 ## Tools
 
-All read-only, all scoped automatically. `whoami` first — it reports
+All read-only (the order tools are separate — see below), all scoped
+automatically. `whoami` first — it reports
 `data_through`, the newest invoice date in the warehouse, which is what "today"
 means for every other answer, plus when orders/shipments/invoices
 (`etl_loaded_at`, hourly on weekdays) and stock (`ats_loaded_at`, every 15
@@ -156,10 +168,11 @@ rank the same rows differently (`deno test --allow-env supabase/functions/`).
 
 Two deliberate omissions:
 
-- **No write tools.** Logging a call or closing a recommendation are portal
-  actions with outcome constraints and triggers behind them (`005`, `016`,
-  `020`). Exposing them through a chat client is a separate decision with its
-  own audit story, not a bonus feature of a read endpoint.
+- **No write tools beyond order drafts.** Logging a call or closing a
+  recommendation are portal actions with outcome constraints and triggers
+  behind them (`005`, `016`, `020`). Exposing them through a chat client is a
+  separate decision with its own audit story, not a bonus feature of a read
+  endpoint. Order drafting was that decision, made on its own (below).
 - **No company-level revenue.** `get_global_product_sales` returns units and
   counts only, because `033_global_intel_units_only.sql` says reps see
   company-wide units and never company-wide dollars. The function it calls
@@ -200,12 +213,78 @@ or an unknown tool name.
 
 ---
 
+## Order drafting, gated
+
+`mcp/orderTools.ts` lets Claude draft orders in the portal. It never submits:
+a person opens the draft, ticks "I've reviewed this order and it is correct",
+and submits it there (`submit_order(p_order_id, p_acknowledged)`). Nothing
+here touches the ERP; Tyler's middleware reads submitted orders from
+`v_orders_ready_for_erp`.
+
+| Tool | Calls | Annotations |
+|---|---|---|
+| `get_order_context` | `order_context(p_customer_key)` + contact ranking from `_shared/contacts.ts` (same as `list_contacts`) | read-only |
+| `search_order_products` | `order_product_search(p_customer_key, p_query, p_limit)` | read-only |
+| `create_order_draft` | `mcp_create_order_draft(p)` | write, idempotent (keyed) |
+| `update_order_draft` | `mcp_update_order_draft(p_order_id, p)` | write |
+| `cancel_order_draft` | `mcp_cancel_order_draft(p_order_id)` | write, destructive |
+| `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS | read-only |
+| `list_my_order_drafts` | `orders` where `user_id` = caller | read-only |
+
+**Who sees them.** All seven are listed and callable only when all three hold;
+otherwise they are absent from `tools/list` and `tools/call` calls them
+unknown:
+
+1. `app_settings` row `feature.mcp_orders` is enabled (independent of
+   `feature.orders`, which is hand entry in the portal);
+2. the caller has a row in `public.mcp_order_users` (the allow-list an
+   admin manages under Admin → Feature flags → Claude order drafting; RLS
+   lets a user read only their own row, and an MCP session can never add or
+   remove one);
+3. the token carries `orders:draft` **and** arrived in a header.
+
+`toolsFor(caller, setting, onList)` decides this as a pure function;
+`index.ts` feeds it one read of `feature.mcp_orders` and one read of the
+caller's own `mcp_order_users` row per HTTP request, both through the
+caller's own client and both failing closed. Nothing is cached at module scope, but `listChanged` is
+false, so a client sees a flag change when it reconnects. `whoami` reports
+`capabilities: {mcp_orders, write_scope_active}` and, when drafting is off,
+why. The server instructions gain an "Ordering" paragraph only when the tools
+are listed. Postgres enforces the same gate again in `mcp_orders_gate()`,
+from the JWT's `app_metadata.mcp_scopes`; hiding the tools is a convenience,
+not the boundary.
+
+**No money, no FFL.** No input schema has a price or FFL field, the RPC
+payload is built from a whitelist, and a call that sends `unit_price`,
+`price`, `ffl_license_number` (or similar) at the top level or on a line is
+refused before anything reaches the database. Prices are resolved server-side;
+the FFL is the one on file, or a person types it in the portal.
+
+**Errors.** The RPCs raise `code[:detail]: text`. `orderToolError` turns each
+code into an instruction the model can follow — `possible_duplicate` says to
+ask the user before retrying with `allow_duplicate`, FFL and acknowledgement
+codes say a person finishes in the portal — and keeps the raw text in
+brackets.
+
+**Audit.** After every write tool, success or failure, the function calls
+`mcp_log_call` in its own request (a refusal is a RAISE, so a row written
+inside the RPC would roll back with it). Outcomes are `ok`, `refused` (a
+coded refusal or a local validation failure) or `error`. Logged args never
+include a rejected price/FFL value, only the key names. A logging failure is
+printed and never replaces the tool's result.
+
+Kill switch without a deploy: turn `feature.mcp_orders` off, or name tools in
+`MCP_DISABLED_TOOLS`.
+
+---
+
 ## Files
 
 ```
 mcp/
 ├── index.ts        transport, JSON-RPC dispatch, auth handover
-├── tools.ts        the twenty-one tools + the registry
+├── tools.ts        the twenty-one read tools + the registry
+├── orderTools.ts   the seven gated order-drafting tools + toolsFor()
 ├── prompts.ts      the three MCP prompts
 └── README.md       this file
 ../_shared/mcpAuth.ts   token extraction, resolution, JWT minting

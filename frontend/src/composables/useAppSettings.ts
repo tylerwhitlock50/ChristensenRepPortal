@@ -4,6 +4,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { qk, queryClient } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
+import { useMyMcpOrderAccess } from '@/composables/useMcpOrderUsers'
+import {
+  isMcpOrdersUserAllowed,
+  parseMcpOrdersParams,
+  type McpOrdersParams,
+} from '@/lib/mcpOrders'
 
 /**
  * Feature flags (public.app_settings, migration 024).
@@ -38,6 +44,8 @@ export const FEATURE_KEYS = [
   'feature.action_logging',
   'feature.orders',
   'feature.quick_log',
+  /** Claude drafts orders over MCP. Independent of feature.orders (hand entry). */
+  'feature.mcp_orders',
 ] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
 
@@ -99,20 +107,60 @@ export function useFeatureFlags() {
     orders: flag('feature.orders'),
     /** After a Call tap on a list, ask how it went (20261013130000). */
     quickLog: flag('feature.quick_log'),
+    /** Claude order drafting over MCP (feature.mcp_orders). */
+    mcpOrders: flag('feature.mcp_orders'),
     isLoading: query.isLoading,
   }
 }
 
-/** Admin: flip one flag. RLS rejects non-admins server-side. */
+/** The feature.mcp_orders params, defaults filled in, from a settings list. */
+export function mcpOrdersParamsOf(settings: AppSettingRow[] | undefined): McpOrdersParams {
+  return parseMcpOrdersParams(
+    settings?.find((s) => s.setting_key === 'feature.mcp_orders')?.params,
+  )
+}
+
+/**
+ * Claude order drafting for the signed-in user: the flag, its params, and
+ * whether this user has a row in public.mcp_order_users. `available` is the
+ * one to gate on; it is false while either read is loading (fail closed, like
+ * every flag here). The server applies the same rule in mcp_orders_gate().
+ */
+export function useMcpOrders() {
+  const query = useAppSettings()
+  const session = useSessionStore()
+  const access = useMyMcpOrderAccess()
+  const enabled = computed(() => isFeatureEnabled(query.data.value, 'feature.mcp_orders'))
+  const params = computed(() => mcpOrdersParamsOf(query.data.value))
+  const userAllowed = computed(() =>
+    isMcpOrdersUserAllowed(access.onAllowList.value, session.user?.id ?? null),
+  )
+  return {
+    enabled,
+    params,
+    userAllowed,
+    available: computed(() => enabled.value && userAllowed.value),
+    isLoading: query.isLoading,
+  }
+}
+
+/** Admin: flip one flag and/or replace its params. RLS rejects non-admins server-side. */
 export function useUpdateAppSetting() {
   const qc = useQueryClient()
   const session = useSessionStore()
 
   return useMutation({
-    mutationFn: async (input: { setting_key: string; enabled: boolean }) => {
+    mutationFn: async (input: {
+      setting_key: string
+      enabled?: boolean
+      params?: Record<string, unknown>
+    }) => {
+      const patch: Record<string, unknown> = { updated_by: session.user?.id ?? null }
+      if (input.enabled !== undefined) patch.enabled = input.enabled
+      if (input.params !== undefined) patch.params = input.params
       const { data, error } = await db
         .from('app_settings')
-        .update({ enabled: input.enabled, updated_by: session.user?.id ?? null })
+        .update(patch)
         .eq('setting_key', input.setting_key)
         .select('setting_key, enabled, params, description, updated_at')
         .single()

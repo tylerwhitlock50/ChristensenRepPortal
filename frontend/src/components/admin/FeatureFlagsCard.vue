@@ -7,7 +7,10 @@ import {
 } from '@/composables/useAppSettings'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import McpOrdersParamsEditor from '@/components/admin/McpOrdersParamsEditor.vue'
+import McpOrderUsersEditor from '@/components/admin/McpOrderUsersEditor.vue'
 import { daysAgo } from '@/lib/format'
+import { useSessionStore } from '@/stores/session'
 
 /**
  * Feature flags — the "boil the frog slowly" control panel (data-first
@@ -16,6 +19,7 @@ import { daysAgo } from '@/lib/format'
  * on restores everything. Lives on the admin Settings page above the
  * scoring/rules tuning.
  */
+const session = useSessionStore()
 const query = useAppSettings()
 const update = useUpdateAppSetting()
 
@@ -30,6 +34,7 @@ const LABELS: Record<string, string> = {
   'feature.action_logging': 'Action logging & notes',
   'feature.orders': 'Order writer & entry queue',
   'feature.quick_log': 'Quick call log',
+  'feature.mcp_orders': 'Claude order drafting (MCP)',
 }
 
 function label(row: AppSettingRow): string {
@@ -77,42 +82,45 @@ async function toggle(row: AppSettingRow) {
       @retry="query.refetch()"
     >
       <ul class="divide-line divide-y">
-        <li
-          v-for="row in rows"
-          :key="row.setting_key"
-          class="flex items-center justify-between gap-4 px-4 py-3"
-        >
-          <div class="min-w-0">
-            <p class="text-ink text-[15px] font-semibold">{{ label(row) }}</p>
-            <p v-if="row.description" class="text-muted mt-0.5 text-xs">
-              {{ row.description }}
-            </p>
-            <p class="text-muted mt-0.5 text-xs">
-              Changed {{ daysAgo(row.updated_at) }}
-            </p>
-          </div>
-          <!-- A real switch: 48px hit area, state readable without color. -->
-          <button
-            type="button"
-            role="switch"
-            :aria-checked="row.enabled"
-            :aria-label="`${label(row)} — ${row.enabled ? 'on' : 'off'}`"
-            :disabled="busyKey === row.setting_key"
-            class="tap-target font-label flex shrink-0 items-center gap-2 text-[13px] font-semibold tracking-[0.12em] uppercase disabled:opacity-50"
-            @click="toggle(row)"
-          >
-            <span
-              class="relative block h-7 w-12 border transition-colors"
-              :class="row.enabled ? 'bg-brand border-brand' : 'bg-canvas border-line-2'"
-              aria-hidden="true"
+        <li v-for="row in rows" :key="row.setting_key">
+          <div class="flex items-center justify-between gap-4 px-4 py-3">
+            <div class="min-w-0">
+              <p class="text-ink text-[15px] font-semibold">{{ label(row) }}</p>
+              <p v-if="row.description" class="text-muted mt-0.5 text-xs">
+                {{ row.description }}
+              </p>
+              <p class="text-muted mt-0.5 text-xs">
+                Changed {{ daysAgo(row.updated_at) }}
+              </p>
+            </div>
+            <!-- A real switch: 48px hit area, state readable without color. -->
+            <button
+              type="button"
+              role="switch"
+              :aria-checked="row.enabled"
+              :aria-label="`${label(row)} — ${row.enabled ? 'on' : 'off'}`"
+              :disabled="busyKey === row.setting_key"
+              class="tap-target font-label flex shrink-0 items-center gap-2 text-[13px] font-semibold tracking-[0.12em] uppercase disabled:opacity-50"
+              @click="toggle(row)"
             >
               <span
-                class="absolute top-0.5 block size-6 bg-surface shadow-sm transition-all"
-                :class="row.enabled ? 'left-[22px]' : 'left-0.5'"
-              />
-            </span>
-            {{ row.enabled ? 'On' : 'Off' }}
-          </button>
+                class="relative block h-7 w-12 border transition-colors"
+                :class="row.enabled ? 'bg-brand border-brand' : 'bg-canvas border-line-2'"
+                aria-hidden="true"
+              >
+                <span
+                  class="absolute top-0.5 block size-6 bg-surface shadow-sm transition-all"
+                  :class="row.enabled ? 'left-[22px]' : 'left-0.5'"
+                />
+              </span>
+              {{ row.enabled ? 'On' : 'Off' }}
+            </button>
+          </div>
+          <!-- Who may draft (the mcp_order_users table), then the caps (params). -->
+          <template v-if="row.setting_key === 'feature.mcp_orders' && session.isAdmin">
+            <McpOrderUsersEditor />
+            <McpOrdersParamsEditor :row="row" />
+          </template>
         </li>
       </ul>
     </AsyncState>

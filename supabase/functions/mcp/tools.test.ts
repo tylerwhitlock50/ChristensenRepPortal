@@ -169,3 +169,40 @@ Deno.test('handler: 25 and more read and return exactly what was asked', async (
     eq(res.months.length, months, `series length for ${months}`)
   }
 })
+
+/* --- whoami: capabilities for order drafting ------------------------------ */
+
+function whoamiDb() {
+  const b: Record<string, unknown> = {
+    select: () => b,
+    eq: () => b,
+    is: () => b,
+    maybeSingle: () => Promise.resolve({ data: { data_through: '2026-11-10' }, error: null }),
+    then: (ok: (v: unknown) => unknown) => Promise.resolve({ data: null, error: null, count: 3 }).then(ok),
+  }
+  return { from: () => b } as unknown as SupabaseClient
+}
+
+Deno.test('whoami: capabilities report the order-drafting gate', async () => {
+  const who = TOOLS_BY_NAME.get('whoami')!
+  const me = { fullName: 'Pilot', role: 'admin' } as unknown as McpCaller
+
+  const off = (await who.handler({}, { db: whoamiDb(), caller: me })) as { capabilities: Record<string, unknown> }
+  eq(off.capabilities.mcp_orders, false, 'no access info → off')
+  eq(off.capabilities.write_scope_active, false, 'no access info → no write scope')
+
+  const on = (await who.handler({}, {
+    db: whoamiDb(),
+    caller: me,
+    orders: { mcp_orders: true, write_scope_active: true, order_tools_listed: true, reason: null },
+  })) as { capabilities: Record<string, unknown> }
+  eq([on.capabilities.mcp_orders, on.capabilities.write_scope_active], [true, true], 'on')
+  assert(/submits them in the portal/.test(String(on.capabilities.order_drafting)), 'says who submits')
+
+  const url = (await who.handler({}, {
+    db: whoamiDb(),
+    caller: me,
+    orders: { mcp_orders: true, write_scope_active: false, order_tools_listed: false, reason: 'sent in the URL' },
+  })) as { capabilities: Record<string, unknown> }
+  eq(url.capabilities.order_drafting_off_because, 'sent in the URL', 'reason passed through')
+})

@@ -1,7 +1,8 @@
 import { computed } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { isMissingDbObject, supabase } from '@/lib/supabase'
+import { ORDERS_DRAFT_SCOPE } from '@/lib/mcpOrders'
 import { useSessionStore } from '@/stores/session'
 
 /**
@@ -34,6 +35,8 @@ export interface McpTokenRow {
   expires_at: string
   last_used_at: string | null
   revoked_at: string | null
+  /** What the token may do beyond reading (mcp_tokens.scopes). [] = read-only. */
+  scopes: string[]
 }
 
 export interface MintedToken {
@@ -41,6 +44,7 @@ export interface MintedToken {
   token: string
   name: string
   expires_at: string
+  scopes: string[]
 }
 
 export const mcpTokenKeys = {
@@ -48,14 +52,24 @@ export const mcpTokenKeys = {
   mine: (userId: string) => ['mcp-tokens', userId] as const,
 }
 
+const TOKEN_COLUMNS = 'id, name, token_prefix, created_at, expires_at, last_used_at, revoked_at'
+
 async function fetchTokens(userId: string): Promise<McpTokenRow[]> {
-  const { data, error } = await db
-    .from('mcp_tokens')
-    .select('id, name, token_prefix, created_at, expires_at, last_used_at, revoked_at')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
+  const read = (columns: string) =>
+    db
+      .from('mcp_tokens')
+      .select(columns)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+  let { data, error } = await read(`${TOKEN_COLUMNS}, scopes`)
+  // Before the scopes migration is live (a preview on an older database),
+  // list the tokens without it rather than breaking the page.
+  if (error && isMissingDbObject(error)) ({ data, error } = await read(TOKEN_COLUMNS))
   if (error) throw error
-  return (data ?? []) as unknown as McpTokenRow[]
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map((r) => ({
+    ...(r as unknown as McpTokenRow),
+    scopes: Array.isArray(r.scopes) ? (r.scopes as string[]) : [],
+  }))
 }
 
 export function useMcpTokens() {
@@ -82,11 +96,16 @@ export function useCreateMcpToken() {
   const session = useSessionStore()
 
   return useMutation({
-    mutationFn: async (input: { name?: string; days?: number }) => {
-      const { data, error } = await db.rpc('mcp_token_create', {
+    mutationFn: async (input: { name?: string; days?: number; draftOrders?: boolean }) => {
+      const scopes = input.draftOrders ? [ORDERS_DRAFT_SCOPE] : []
+      // p_scopes only when asked for: a read-only token stays on the
+      // argument list every deployed mcp_token_create() accepts.
+      const args: Record<string, unknown> = {
         p_name: input.name?.trim() || 'Claude',
         p_days: input.days ?? 365,
-      })
+      }
+      if (scopes.length) args.p_scopes = scopes
+      const { data, error } = await db.rpc('mcp_token_create', args)
       if (error) throw error
       // A `returns table` RPC comes back as a one-row array.
       const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null
@@ -98,6 +117,7 @@ export function useCreateMcpToken() {
         token: String(row.token),
         name: String(row.token_name ?? 'Claude'),
         expires_at: String(row.expires_at),
+        scopes,
       } satisfies MintedToken
     },
     onSuccess: () => {

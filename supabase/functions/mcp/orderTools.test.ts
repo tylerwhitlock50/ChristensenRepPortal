@@ -1,0 +1,586 @@
+/*============================================================================
+  orderTools.test.ts — order drafting over MCP: who sees the tools, what the
+  write tools forward (never a price or an FFL), how SQL refusals read to the
+  model, and that every write is logged without the log masking the result.
+
+      deno test --allow-env --allow-net supabase/functions/mcp/
+============================================================================*/
+
+import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
+import {
+  assertTokenTransport,
+  effectiveScopes,
+  extractToken,
+  jwtClaims,
+  knownScopes,
+  type McpCaller,
+} from '../_shared/mcpAuth.ts'
+import { HttpError } from '../_shared/supabase.ts'
+import { describeTool, TOOLS, type ToolDef } from './tools.ts'
+import {
+  decoratePreview,
+  draftPayload,
+  forbiddenKeysIn,
+  type McpOrdersSetting,
+  NEXT_STEP,
+  ORDER_TOOLS,
+  ORDERING_INSTRUCTIONS,
+  orderAccess,
+  orderToolError,
+  OrderToolError,
+  parseRpcError,
+  readMcpOrderListed,
+  readMcpOrdersSetting,
+  toolsFor,
+  withOrdering,
+} from './orderTools.ts'
+
+function assert(ok: unknown, what: string): void {
+  if (!ok) throw new Error(`FAILED: ${what}`)
+}
+
+function eq(got: unknown, want: unknown, what: string): void {
+  assert(
+    JSON.stringify(got) === JSON.stringify(want),
+    `${what}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`,
+  )
+}
+
+const TYLER = '11111111-1111-1111-1111-111111111111'
+const OTHER = '22222222-2222-2222-2222-222222222222'
+const ORDER_TOOL_NAMES = ORDER_TOOLS.map((t) => t.name)
+
+function caller(over: Partial<McpCaller> = {}): McpCaller {
+  const tokenScopes = over.tokenScopes ?? ['orders:draft']
+  const tokenVia = over.tokenVia ?? 'header'
+  return {
+    tokenId: 'aaaaaaaa-0000-0000-0000-000000000001',
+    userId: TYLER,
+    fullName: 'Pilot Admin',
+    role: 'admin',
+    realRole: 'admin',
+    salesRepKey: null,
+    repGroupVendorId: null,
+    tokenExpiresAt: '2027-01-01T00:00:00Z',
+    tokenVia,
+    tokenScopes,
+    scopes: over.scopes ?? effectiveScopes(tokenScopes, tokenVia),
+    ...over,
+  }
+}
+
+function setting(enabled: boolean): McpOrdersSetting {
+  return {
+    enabled,
+    params: {
+      max_lines: 40,
+      max_units_per_line: 200,
+      max_order_value: 250000,
+      max_drafts_per_user_per_day: 25,
+      duplicate_window_days: 14,
+    },
+  }
+}
+
+function names(tools: ToolDef[]): string[] {
+  return tools.map((t) => t.name)
+}
+
+/*----------------------------------------------------------------------------
+  A fake supabase client: rpc() answers from a table of handlers and records
+  every call; from() answers from canned rows and records the filters.
+----------------------------------------------------------------------------*/
+type RpcHandler = (params: Record<string, unknown>) => { data: unknown; error: unknown } | Promise<never>
+
+function fakeDb(
+  rpcs: Record<string, RpcHandler> = {},
+  tables: Record<string, unknown> = {},
+) {
+  const rpcCalls: { name: string; params: Record<string, unknown> }[] = []
+  const tableCalls: { table: string; filters: [string, unknown][] }[] = []
+
+  function builder(table: string) {
+    const filters: [string, unknown][] = []
+    tableCalls.push({ table, filters })
+    const result = () => {
+      const data = tables[table]
+      return { data: data ?? null, error: null }
+    }
+    const b: Record<string, unknown> = {
+      select: () => b,
+      eq: (col: string, v: unknown) => (filters.push([col, v]), b),
+      is: () => b,
+      in: () => b,
+      order: () => b,
+      limit: () => b,
+      maybeSingle: () => {
+        const r = result()
+        return Promise.resolve({ ...r, data: Array.isArray(r.data) ? r.data[0] ?? null : r.data })
+      },
+      then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) =>
+        Promise.resolve(result()).then(ok, bad),
+    }
+    return b
+  }
+
+  const db = {
+    rpc(name: string, params: Record<string, unknown>) {
+      rpcCalls.push({ name, params })
+      const handler = rpcs[name]
+      if (!handler) return Promise.resolve({ data: null, error: { message: `no fake for ${name}` } })
+      try {
+        return Promise.resolve(handler(params))
+      } catch (e) {
+        return Promise.reject(e)
+      }
+    },
+    from: (table: string) => builder(table),
+    schema: () => ({ from: (table: string) => builder(`erp.${table}`) }),
+  }
+  return { db: db as unknown as SupabaseClient, rpcCalls, tableCalls }
+}
+
+const ok = (data: unknown) => () => ({ data, error: null })
+const raise = (message: string) => () => ({ data: null, error: { message, code: 'P0001' } })
+
+const PREVIEW = {
+  order_id: 4321,
+  status: 'draft',
+  replayed: false,
+  source: 'mcp',
+  customer_key: 'C100',
+  customer_name: 'Example Outdoors',
+  requires_ffl: true,
+  ffl: { on_file: true, current: true },
+  lines: [{ part_id: 'CA-RIDGE-65', qty: 1, unit_price: 1899, line_total: 1899 }],
+  total_amount: 1899,
+  would_submit: { ok: true, error: null },
+  warnings: [],
+  portal_path: '/orders/4321',
+}
+
+function tool(name: string): ToolDef {
+  const t = ORDER_TOOLS.find((x) => x.name === name)
+  assert(t, `tool ${name} exists`)
+  return t!
+}
+
+function ctxFor(db: SupabaseClient, c: McpCaller = caller()) {
+  return { db, caller: c, orders: orderAccess(c, setting(true), true) }
+}
+
+async function rejects(p: Promise<unknown>): Promise<Error> {
+  try {
+    await p
+  } catch (e) {
+    return e as Error
+  }
+  throw new Error('FAILED: expected a rejection')
+}
+
+/** Every key anywhere in a JSON value. */
+function allKeys(value: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) value.forEach((v) => allKeys(v, out))
+  else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      out.add(k)
+      allKeys(v, out)
+    }
+  }
+  return out
+}
+
+/*============================================================================
+  Visibility
+============================================================================*/
+
+Deno.test('visibility: the matrix', () => {
+  const readOnly = names(TOOLS)
+  const cases: [string, McpCaller, McpOrdersSetting | null, boolean, boolean][] = [
+    ['setting row missing', caller(), null, true, false],
+    ['flag off', caller(), setting(false), true, false],
+    ['flag off, not on the list', caller(), setting(false), false, false],
+    ['flag on, token without scope', caller({ tokenScopes: [] }), setting(true), true, false],
+    ['flag on, scoped token sent in URL', caller({ tokenVia: 'url' }), setting(true), true, false],
+    ['flag on, not on the list', caller(), setting(true), false, false],
+    ['flag on, on the list, header token with scope', caller(), setting(true), true, true],
+    // A leftover params key from the old design grants nothing.
+    ['flag on, stale allowed_user_ids "*" but no row', caller({ userId: OTHER }),
+      { enabled: true, params: { allowed_user_ids: ['*'] } }, false, false],
+  ]
+  for (const [what, c, s, onList, listed] of cases) {
+    const got = names(toolsFor(c, s, onList))
+    for (const name of readOnly) assert(got.includes(name), `${what}: read tool ${name} always listed`)
+    for (const name of ORDER_TOOL_NAMES) {
+      assert(got.includes(name) === listed, `${what}: ${name} ${listed ? 'listed' : 'hidden'}`)
+    }
+    eq(orderAccess(c, s, onList).order_tools_listed, listed, `${what}: order_tools_listed`)
+  }
+})
+
+Deno.test('visibility: reasons say what to fix', () => {
+  assert(/switched off/.test(orderAccess(caller(), setting(false), true).reason ?? ''), 'flag off')
+  eq(
+    orderAccess(caller({ userId: OTHER }), setting(true), false).reason,
+    'This user is not on the order-drafting list (Admin → Feature flags → Claude order drafting).',
+    'not on the list',
+  )
+  assert(/sent in the URL/.test(orderAccess(caller({ tokenVia: 'url' }), setting(true), true).reason ?? ''), 'url token')
+  assert(/minted without order drafting/.test(orderAccess(caller({ tokenScopes: [] }), setting(true), true).reason ?? ''), 'no scope')
+  eq(orderAccess(caller(), setting(true), true).reason, null, 'allowed: no reason')
+  // Capabilities whoami reports.
+  const url = orderAccess(caller({ tokenVia: 'url' }), setting(true), true)
+  eq([url.mcp_orders, url.write_scope_active], [true, false], 'url token: allowed but no write scope')
+})
+
+Deno.test('visibility: the setting is read through ctx.db, fails closed', async () => {
+  const { db, tableCalls } = fakeDb({}, { app_settings: { enabled: true, params: { max_lines: 40 } } })
+  const s = await readMcpOrdersSetting(db)
+  eq(s?.enabled, true, 'enabled read')
+  eq(tableCalls[0].filters, [['setting_key', 'feature.mcp_orders']], 'one row, by key')
+
+  const broken = {
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: { message: 'boom' } }) }) }) }),
+  } as unknown as SupabaseClient
+  eq(await readMcpOrdersSetting(broken), null, 'error → null')
+  eq(toolsFor(caller(), null, true).length, TOOLS.length, 'null setting → read tools only')
+})
+
+Deno.test('visibility: the allow-list row is the caller’s own, read through ctx.db, fails closed', async () => {
+  const listed = fakeDb({}, { mcp_order_users: { user_id: TYLER } })
+  eq(await readMcpOrderListed(listed.db, TYLER), true, 'row present → on the list')
+  eq(listed.tableCalls.map((c) => c.table), ['mcp_order_users'], 'reads mcp_order_users')
+  eq(listed.tableCalls[0].filters, [['user_id', TYLER]], 'own row, by user_id')
+
+  const absent = fakeDb({}, {})
+  eq(await readMcpOrderListed(absent.db, TYLER), false, 'no row → not on the list')
+
+  const errored = {
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: { message: 'boom' } }) }) }) }),
+  } as unknown as SupabaseClient
+  eq(await readMcpOrderListed(errored, TYLER), false, 'query error → not on the list')
+
+  const thrown = {
+    from: () => { throw new Error('network down') },
+  } as unknown as SupabaseClient
+  eq(await readMcpOrderListed(thrown, TYLER), false, 'throw → not on the list')
+})
+
+Deno.test('auth: header vs URL tokens, scopes, JWT claims', () => {
+  const h = extractToken(new Request('https://x/functions/v1/mcp', { headers: { Authorization: 'Bearer crp_abc' } }))
+  eq(h, { token: 'crp_abc', via: 'header' }, 'Authorization header')
+  const x = extractToken(new Request('https://x/functions/v1/mcp', { headers: { 'x-mcp-token': 'crp_abc' } }))
+  eq(x, { token: 'crp_abc', via: 'header' }, 'x-mcp-token header')
+  eq(extractToken(new Request('https://x/functions/v1/mcp?token=crp_abc'))?.via, 'url', 'query token')
+  eq(extractToken(new Request('https://x/functions/v1/mcp/crp_abc'))?.via, 'url', 'path token')
+  // The gateway's anon JWT riding in Authorization is not ours; the URL one is.
+  eq(
+    extractToken(new Request('https://x/functions/v1/mcp?token=crp_abc', { headers: { Authorization: 'Bearer a.b.c' } })),
+    { token: 'crp_abc', via: 'url' },
+    'anon JWT ignored, URL token used',
+  )
+
+  eq(knownScopes(['orders:draft', 'admin:all', 'orders:draft']), ['orders:draft'], 'unknown scopes dropped')
+  eq(knownScopes(null), [], 'no scopes column')
+  eq(effectiveScopes(['orders:draft'], 'url'), [], 'URL token: no effective scopes')
+  // A drafting token in a URL is refused outright: whoever has the URL has the
+  // plaintext and could send it as a header.
+  let refused: unknown = null
+  try { assertTokenTransport(['orders:draft'], 'url') } catch (e) { refused = e }
+  assert(refused instanceof HttpError && refused.status === 401 && refused.code === 'write_token_in_url',
+    'write token in a URL → 401 write_token_in_url')
+  assertTokenTransport([], 'url')
+  assertTokenTransport(['orders:draft'], 'header')
+
+  const header = jwtClaims(caller(), 1000)
+  eq(header.app_metadata, {
+    provider: 'mcp',
+    mcp_token_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+    mcp_scopes: ['orders:draft'],
+  }, 'header token claims')
+  eq(header.role, 'authenticated', 'never service_role')
+  eq(jwtClaims(caller({ tokenVia: 'url' }), 1000).app_metadata.mcp_scopes, [], 'URL token claims carry no scopes')
+})
+
+Deno.test('annotations: reads read-only, writes say so', () => {
+  const ann = (name: string) => describeTool(tool(name)).annotations as Record<string, unknown>
+  for (const name of ['get_order_context', 'search_order_products', 'get_order_status', 'list_my_order_drafts']) {
+    eq(ann(name).readOnlyHint, true, `${name} readOnly`)
+  }
+  eq([ann('create_order_draft').readOnlyHint, ann('create_order_draft').idempotentHint, ann('create_order_draft').destructiveHint], [false, true, false], 'create')
+  eq([ann('update_order_draft').readOnlyHint, ann('update_order_draft').destructiveHint], [false, false], 'update')
+  eq([ann('cancel_order_draft').readOnlyHint, ann('cancel_order_draft').destructiveHint], [false, true], 'cancel')
+  for (const t of ORDER_TOOLS) eq(t.requiresScope, 'orders:draft', `${t.name} requires the scope`)
+  for (const t of TOOLS) eq(describeTool(t).annotations.readOnlyHint, true, `${t.name} stays read-only`)
+})
+
+Deno.test('instructions: Ordering only when the tools are listed', () => {
+  eq(withOrdering('BASE', false), 'BASE', 'not listed')
+  const on = withOrdering('BASE', true)
+  assert(on.startsWith('BASE\n\n') && on.includes(ORDERING_INSTRUCTIONS), 'listed')
+  for (const phrase of ['get_order_context', 'search_order_products', 'create_order_draft', 'update_order_draft', 'allow_duplicate', 'FFL', 'untrusted']) {
+    assert(ORDERING_INSTRUCTIONS.includes(phrase), `Ordering mentions ${phrase}`)
+  }
+})
+
+/*============================================================================
+  What the write tools forward
+============================================================================*/
+
+const GOOD_ARGS = {
+  idempotency_key: 'req-2026-11-11-0001',
+  customer_key: 'C100',
+  ship_to_key: 'C100|1',
+  po_number: 'PO-77',
+  lines: [{ part_id: 'CA-RIDGE-65', qty: 1 }],
+}
+
+Deno.test('forward: only whitelisted keys reach the RPC', async () => {
+  const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+  await tool('create_order_draft').handler(
+    {
+      ...GOOD_ARGS,
+      surprise: 'dropped',
+      source_ref: { kind: 'email', sender: 'buyer@example.com', excerpt: 'one Ridgeline', evil: 'x' },
+      lines: [{ part_id: 'CA-RIDGE-65', qty: 2, price_list_id: 7, note: 'dropped' }],
+    },
+    ctxFor(db),
+  )
+  const call = rpcCalls.find((c) => c.name === 'mcp_create_order_draft')!
+  eq(Object.keys(call.params), ['p'], 'one jsonb argument')
+  eq(call.params.p, {
+    idempotency_key: 'req-2026-11-11-0001',
+    customer_key: 'C100',
+    ship_to_key: 'C100|1',
+    po_number: 'PO-77',
+    source_ref: { kind: 'email', sender: 'buyer@example.com', excerpt: 'one Ridgeline' },
+    lines: [{ part_id: 'CA-RIDGE-65', qty: 2, price_list_id: 7 }],
+  }, 'payload')
+})
+
+Deno.test('forward: no price or FFL key is ever forwarded', async () => {
+  const attempts: Record<string, unknown>[] = [
+    { ...GOOD_ARGS, unit_price: 1 },
+    { ...GOOD_ARGS, price: 1 },
+    { ...GOOD_ARGS, ffl_license_number: '1-23-456-78-9A-12345' },
+    { ...GOOD_ARGS, FFL_License_Number: 'x' },
+    { ...GOOD_ARGS, lines: [{ part_id: 'CA-RIDGE-65', qty: 1, unit_price: 1 }] },
+    { ...GOOD_ARGS, lines: [{ part_id: 'CA-RIDGE-65', qty: 1, price: 1 }] },
+    { ...GOOD_ARGS, lines: [{ part_id: 'CA-RIDGE-65', qty: 1, discount_pct: 50 }] },
+  ]
+  for (const tname of ['create_order_draft', 'update_order_draft']) {
+    for (const args of attempts) {
+      const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_update_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+      const err = await rejects(tool(tname).handler({ ...args, order_id: 4321 }, ctxFor(db)))
+      assert(err instanceof OrderToolError && err.outcome === 'refused', `${tname} ${JSON.stringify(args)} refused`)
+      assert(/never accepted/.test(err.message), 'says prices/FFLs are never accepted')
+      assert(!rpcCalls.some((c) => c.name.startsWith('mcp_') && c.name !== 'mcp_log_call'), `${tname}: draft RPC not called`)
+      const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!
+      eq(log.params.p_outcome, 'refused', `${tname}: refusal logged`)
+      const logged = allKeys(log.params.p_args)
+      for (const bad of ['unit_price', 'price', 'ffl_license_number', 'FFL_License_Number', 'discount_pct']) {
+        assert(!logged.has(bad), `${tname}: ${bad} not written to the audit log`)
+      }
+      assert(logged.has('rejected_keys'), 'the attempt is recorded by key name')
+    }
+  }
+  // And the builder itself, directly.
+  eq(forbiddenKeysIn({ lines: [{ ffl: 'x' }], total_amount: 3 }).sort(), ['lines[0].ffl', 'total_amount'], 'nested + top level')
+  const keys = allKeys(draftPayload({ ...GOOD_ARGS }, true))
+  for (const bad of ['unit_price', 'price', 'ffl_license_number']) assert(!keys.has(bad), `payload has no ${bad}`)
+})
+
+Deno.test('forward: required inputs refused locally and logged', async () => {
+  for (const [what, args] of [
+    ['no idempotency_key', { ...GOOD_ARGS, idempotency_key: undefined }],
+    ['short idempotency_key', { ...GOOD_ARGS, idempotency_key: 'abc' }],
+    ['idempotency_key with spaces (SQL refuses it too)', { ...GOOD_ARGS, idempotency_key: 'order for Bob 1' }],
+    ['no lines', { ...GOOD_ARGS, lines: [] }],
+  ] as const) {
+    const { db, rpcCalls } = fakeDb({ mcp_log_call: ok(null) })
+    const err = await rejects(tool('create_order_draft').handler(args as Record<string, unknown>, ctxFor(db)))
+    assert(err instanceof OrderToolError, `${what}: refused`)
+    eq(rpcCalls.map((c) => c.name), ['mcp_log_call'], `${what}: only the log call`)
+  }
+})
+
+/*============================================================================
+  Error mapping
+============================================================================*/
+
+Deno.test('errors: parse code, detail, text', () => {
+  eq(parseRpcError('mcp_orders_disabled: Order drafting is off.'), { code: 'mcp_orders_disabled', detail: null, text: 'Order drafting is off.' }, 'plain')
+  eq(parseRpcError('possible_duplicate:4120: Same PO within 14 days.'), { code: 'possible_duplicate', detail: '4120', text: 'Same PO within 14 days.' }, 'with detail')
+  eq(parseRpcError('part_not_orderable:CA-14-6.5CM: not priced'), { code: 'part_not_orderable', detail: 'CA-14-6.5CM', text: 'not priced' }, 'part id detail')
+  eq(parseRpcError('permission denied for function x').code, null, 'not a code')
+  eq(parseRpcError('invalid_input:unknown_field:colour: not an order field'),
+    { code: 'invalid_input', detail: 'unknown_field:colour', text: 'not an order field' }, 'two-segment detail')
+  eq(parseRpcError('ship_to_invalid:MR MONEY|2: not one of this account'),
+    { code: 'ship_to_invalid', detail: 'MR MONEY|2', text: 'not one of this account' }, 'detail with a space')
+  eq(parseRpcError('customer_not_in_book: X is not on your book: ask'),
+    { code: 'customer_not_in_book', detail: null, text: 'X is not on your book: ask' }, 'later colons stay in the text')
+})
+
+Deno.test('errors: refusals become actionable text', () => {
+  const dup = orderToolError({ message: 'possible_duplicate:4120: Same PO within 14 days.' })
+  assert(dup.outcome === 'refused' && dup.code === 'possible_duplicate', 'refused')
+  assert(/ask/.test(dup.message) && /allow_duplicate: true/.test(dup.message) && /4120/.test(dup.message), 'ask before allow_duplicate')
+  assert(/Do\s+NOT retry on your own/.test(dup.message), 'no silent retry')
+
+  const ack = orderToolError({ message: 'acknowledge_required: A person must acknowledge.' })
+  assert(/portal/.test(ack.message), 'acknowledge → finish in the portal')
+  const ffl = orderToolError({ message: 'ffl_required: No current FFL on file.' })
+  assert(/portal/.test(ffl.message) && /Do not ask for one or pass one/.test(ffl.message), 'ffl → portal, never pass one')
+
+  const gate = orderToolError({ message: 'mcp_scope_missing: no orders:draft' })
+  assert(/header/i.test(gate.message), 'scope → send a header token')
+  const unknown = orderToolError({ message: 'brand_new_code: something' })
+  assert(unknown.outcome === 'refused' && /brand_new_code: something/.test(unknown.message), 'unknown code passes through')
+  const crash = orderToolError(new Error('fetch failed'))
+  eq(crash.outcome, 'error', 'no code → error')
+  assert(/get_order_status|list_my_order_drafts/.test(crash.message), 'tells the model to check before retrying')
+})
+
+/*============================================================================
+  Logging
+============================================================================*/
+
+Deno.test('logging: success logs ok with the order id', async () => {
+  Deno.env.set('PORTAL_URL', 'https://portal.example.test/')
+  const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+  const res = (await tool('create_order_draft').handler(GOOD_ARGS, ctxFor(db))) as Record<string, unknown>
+  eq(rpcCalls.map((c) => c.name), ['mcp_create_order_draft', 'mcp_log_call'], 'RPC, then the log')
+  const log = rpcCalls[1].params
+  eq([log.p_tool, log.p_outcome, log.p_error, log.p_order_id], ['create_order_draft', 'ok', null, 4321], 'log row')
+  eq(res.portal_url, 'https://portal.example.test/orders/4321', 'portal_url')
+  eq(res.next, NEXT_STEP, 'next step')
+  Deno.env.delete('PORTAL_URL')
+})
+
+Deno.test('logging: refusal logs refused with the raw SQL text', async () => {
+  const { db, rpcCalls } = fakeDb({
+    mcp_update_order_draft: raise('possible_duplicate:4120: Same lines within 14 days.'),
+    mcp_log_call: ok(null),
+  })
+  const err = await rejects(tool('update_order_draft').handler({ ...GOOD_ARGS, order_id: 4321 }, ctxFor(db)))
+  assert(/allow_duplicate/.test(err.message), 'mapped')
+  const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!.params
+  eq([log.p_tool, log.p_outcome, log.p_error, log.p_order_id], ['update_order_draft', 'refused', 'possible_duplicate:4120: Same lines within 14 days.', 4321], 'log row')
+})
+
+Deno.test('logging: an unexpected failure logs error', async () => {
+  const { db, rpcCalls } = fakeDb({
+    mcp_cancel_order_draft: () => {
+      throw new Error('socket hang up')
+    },
+    mcp_log_call: ok(null),
+  })
+  const err = await rejects(tool('cancel_order_draft').handler({ order_id: 9 }, ctxFor(db)))
+  assert(err instanceof OrderToolError && err.outcome === 'error', 'error outcome')
+  const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!.params
+  eq([log.p_outcome, log.p_order_id], ['error', 9], 'logged as error')
+})
+
+Deno.test('logging: a failing log never masks the result', async () => {
+  // The log RPC returns an error…
+  const a = fakeDb({ mcp_cancel_order_draft: ok({ order_id: 9, status: 'cancelled' }), mcp_log_call: raise('not_mcp_session: no') })
+  eq(await tool('cancel_order_draft').handler({ order_id: 9 }, ctxFor(a.db)), { order_id: 9, status: 'cancelled' }, 'result survives a log error')
+  // …or throws.
+  const b = fakeDb({
+    mcp_cancel_order_draft: ok({ order_id: 9, status: 'cancelled' }),
+    mcp_log_call: () => {
+      throw new Error('network')
+    },
+  })
+  eq(await tool('cancel_order_draft').handler({ order_id: 9 }, ctxFor(b.db)), { order_id: 9, status: 'cancelled' }, 'result survives a log throw')
+  // And a refusal stays the refusal, not the log's failure.
+  const c = fakeDb({ mcp_cancel_order_draft: raise('mcp_orders_disabled: off'), mcp_log_call: raise('boom: log') })
+  const err = await rejects(tool('cancel_order_draft').handler({ order_id: 9 }, ctxFor(c.db)))
+  assert(/switched off/.test(err.message), 'refusal text kept')
+})
+
+Deno.test('logging: reads are not logged', async () => {
+  const { db, rpcCalls } = fakeDb({ order_product_search: ok({ customer_type: 'Dealer', items: [] }) })
+  await tool('search_order_products').handler({ customer_key: 'C100', query: '6.5 cm ridgeline' }, ctxFor(db))
+  eq(rpcCalls.map((c) => c.name), ['order_product_search'], 'no mcp_log_call')
+})
+
+/*============================================================================
+  Read tools
+============================================================================*/
+
+Deno.test('search: arguments and ambiguity guidance', async () => {
+  const items = [
+    { part_id: 'A', match_score: 3, options: [{ price_list_id: 1 }, { price_list_id: 2 }] },
+    { part_id: 'B', match_score: 3, options: [{ price_list_id: 1 }] },
+  ]
+  const { db, rpcCalls } = fakeDb({ order_product_search: ok({ customer_type: 'Dealer', items }) })
+  const res = (await tool('search_order_products').handler({ customer_key: 'C100', query: 'ridgeline fft', limit: 99 }, ctxFor(db))) as { guidance: string[] }
+  eq(rpcCalls[0].params, { p_customer_key: 'C100', p_query: 'ridgeline fft', p_limit: 25 }, 'params, limit capped')
+  assert(res.guidance.some((g) => /one short question/.test(g)), 'tie → ask')
+  assert(res.guidance.some((g) => /price_list_id/.test(g)), 'several lists → say so')
+})
+
+Deno.test('search: SQL ties and fits_request drive the guidance, not raw scores', async () => {
+  const run = async (row: Record<string, unknown>) => {
+    const { db } = fakeDb({ order_product_search: ok(row) })
+    const res = (await tool('search_order_products').handler({ customer_key: 'C100', query: 'x y' }, ctxFor(db))) as { guidance?: string[] }
+    return res.guidance ?? []
+  }
+  // Equal scores but SQL says one fitting part: no question.
+  const one = await run({ ties: 1, items: [
+    { part_id: 'A', match_score: 0.8, fits_request: true, options: [] },
+    { part_id: 'B', match_score: 0.8, fits_request: false, options: [] }] })
+  assert(!one.some((g) => /one short question/.test(g)), 'one fitting part: no question')
+  const tie = await run({ ties: 2, items: [
+    { part_id: 'A', match_score: 0.8, fits_request: true, options: [] },
+    { part_id: 'B', match_score: 0.7, fits_request: true, options: [] }] })
+  assert(tie.some((g) => /one short question/.test(g)), 'SQL tie → ask')
+  const none = await run({ ties: 0, items: [{ part_id: 'A', match_score: 0.5, fits_request: false, options: [] }] })
+  assert(none.some((g) => /chambering or model/.test(g)), 'nothing fits → say so')
+})
+
+Deno.test('context: contacts ranked, order keys exposed', async () => {
+  const { db, rpcCalls } = fakeDb({
+    order_context: ok({
+      customer: { customer_key: 'C100', customer_name: 'Example Outdoors' },
+      orderable: true,
+      blockers: [],
+      ship_tos: [{ ship_to_key: 'C100|1', orderable: true, name: null }],
+      default_ship_to_key: 'C100|1',
+      contacts: [
+        { contact_key: 'erp-77', source: 'erp', name: 'Accounts Payable', email: 'ap@example.com', is_primary: true },
+        { contact_key: 'erp-78', source: 'erp', name: 'Pat Buyer', title: 'Buyer', phone: '555-0100' },
+        { contact_key: 'rep-5', source: 'rep', name: 'Sam', phone: '555-0101' },
+      ],
+    }),
+  })
+  const res = (await tool('get_order_context').handler({ customer_key: 'C100' }, ctxFor(db))) as {
+    contacts: { best_contact: Record<string, unknown>; ranked: Record<string, unknown>[] }
+    ship_tos: Record<string, unknown>[]
+  }
+  eq(rpcCalls[0], { name: 'order_context', params: { p_customer_key: 'C100' } }, 'rpc')
+  eq(res.contacts.best_contact.customer_contact_key, '78', 'the buyer, not the AP primary')
+  eq(res.contacts.ranked.at(-1)?.name, 'Accounts Payable', 'billing last')
+  eq(res.contacts.ranked.find((c) => c.name === 'Sam')?.customer_contact_key, undefined, 'rep-entered contact has no order key')
+  eq(res.ship_tos[0], { ship_to_key: 'C100|1', orderable: true }, 'nulls stripped')
+})
+
+Deno.test('preview: would_submit failure gets a portal hint', () => {
+  const out = decoratePreview({ ...PREVIEW, would_submit: { ok: false, error: 'ffl_required: no current FFL on file' } })
+  const ws = out.would_submit as Record<string, unknown>
+  assert(/portal/.test(String(ws.hint)), 'hint points at the portal')
+  eq(out.portal_path, '/orders/4321', 'path kept')
+  eq(out.next, NEXT_STEP, 'next')
+})
+
+Deno.test('status and list: scoped to the caller where "mine" matters', async () => {
+  const a = fakeDb({}, { orders: { id: 5, status: 'draft', source: 'mcp' }, order_lines: [], order_qc_results: [] })
+  await tool('get_order_status').handler({ idempotency_key: 'req-2026-11-11-0001' }, ctxFor(a.db))
+  eq(a.tableCalls[0].filters, [['client_request_id', 'req-2026-11-11-0001'], ['user_id', TYLER]], 'by key: own orders only')
+
+  const b = fakeDb({}, { orders: [{ id: 5, status: 'draft', source: 'mcp' }] })
+  const res = (await tool('list_my_order_drafts').handler({}, ctxFor(b.db))) as { orders: Record<string, unknown>[] }
+  eq(b.tableCalls[0].filters, [['user_id', TYLER], ['status', 'draft'], ['source', 'mcp']], 'defaults')
+  eq(res.orders[0].order_id, 5, 'order_id')
+})

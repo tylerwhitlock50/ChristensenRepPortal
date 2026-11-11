@@ -1,11 +1,18 @@
 /*============================================================================
   mcp/tools.ts — the tools an MCP client can call.
 
-  Every tool is READ-ONLY and every read goes through `ctx.db`, which is the
-  rep's own client (see _shared/mcpAuth.ts). There is no service_role in this
-  file and there must never be one: the moment a tool filters by "the rep's
-  accounts" in TypeScript instead of letting RLS do it, the access rules have
-  a second implementation and the 010 header's argument applies.
+  Every tool in THIS file is READ-ONLY and every read goes through `ctx.db`,
+  which is the rep's own client (see _shared/mcpAuth.ts). There is no
+  service_role in this file and there must never be one: the moment a tool
+  filters by "the rep's accounts" in TypeScript instead of letting RLS do it,
+  the access rules have a second implementation and the 010 header's argument
+  applies.
+
+  The one exception to read-only lives in mcp/orderTools.ts: order DRAFTING,
+  gated three ways (feature.mcp_orders, a row in mcp_order_users, and an
+  orders:draft scope on a header token) and enforced again in Postgres by
+  mcp_orders_gate(). Those tools write drafts only; a person submits in the
+  portal. toolsFor() there decides, per request, which tools a caller sees.
 
   What that buys: not one tool below carries a customer-scoping predicate.
   `search_accounts` selects from v_account_list unfiltered and gets exactly
@@ -35,9 +42,34 @@ import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 import type { McpCaller } from '../_shared/mcpAuth.ts'
 import { bestContact, rankContacts, type RankableContact } from '../_shared/contacts.ts'
 
+/**
+ * What this caller may do beyond reading, computed once per request from the
+ * caller, feature.mcp_orders and mcp_order_users (orderTools.ts
+ * orderAccess). Optional so a test or a read tool can ignore it; absent means "no order drafting".
+ */
+export interface OrderAccess {
+  /** feature.mcp_orders is on and this user has a row in mcp_order_users. */
+  mcp_orders: boolean
+  /** The token carries orders:draft AND arrived in a header. */
+  write_scope_active: boolean
+  /** Both of the above: the order tools are listed and callable. */
+  order_tools_listed: boolean
+  /** Why order_tools_listed is false, in words a user can act on. */
+  reason: string | null
+}
+
 export interface ToolContext {
   db: SupabaseClient
   caller: McpCaller
+  orders?: OrderAccess
+}
+
+/** MCP tool annotations (hints to the client, never a security control). */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
 }
 
 export interface ToolDef {
@@ -46,6 +78,14 @@ export interface ToolDef {
   description: string
   inputSchema: Record<string, unknown>
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>
+  /** Overrides the read-only defaults in describeTool. */
+  annotations?: ToolAnnotations
+  /**
+   * The effective token scope a caller needs for this tool to be listed or
+   * callable at all. Tools that set it are also subject to feature.mcp_orders
+   * (see orderTools.ts toolsFor).
+   */
+  requiresScope?: 'orders:draft'
 }
 
 /** A failure the model should read and retry differently, not a protocol bug. */
@@ -62,13 +102,13 @@ const READ_ONLY = {
   openWorldHint: false,
 } as const
 
-function num(value: unknown): number | null {
+export function num(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
 
-function money(value: unknown): number | null {
+export function money(value: unknown): number | null {
   const n = num(value)
   return n === null ? null : Math.round(n * 100) / 100
 }
@@ -79,7 +119,7 @@ function pct(part: number, whole: number): number | null {
 }
 
 /** Drops null/undefined/'' so a 40-column row does not cost 40 keys. */
-function compact<T extends Record<string, unknown>>(row: T): Partial<T> {
+export function compact<T extends Record<string, unknown>>(row: T): Partial<T> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(row)) {
     if (v === null || v === undefined || v === '') continue
@@ -88,19 +128,19 @@ function compact<T extends Record<string, unknown>>(row: T): Partial<T> {
   return out as Partial<T>
 }
 
-function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+export function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = num(value)
   if (n === null) return fallback
   return Math.min(max, Math.max(min, Math.trunc(n)))
 }
 
-function str(value: unknown): string | null {
+export function str(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed === '' ? null : trimmed
 }
 
-function requireKey(args: Record<string, unknown>, field = 'customer_key'): string {
+export function requireKey(args: Record<string, unknown>, field = 'customer_key'): string {
   const value = str(args[field])
   if (!value) {
     throw new ToolError(
@@ -120,11 +160,11 @@ function safeLike(term: string): string {
   return term.replace(/[,()*"\\%]/g, ' ').trim()
 }
 
-function fail(error: { message?: string } | null, what: string): never {
+export function fail(error: { message?: string } | null, what: string): never {
   throw new ToolError(`Could not read ${what}: ${error?.message ?? 'unknown error'}`)
 }
 
-type Row = Record<string, unknown>
+export type Row = Record<string, unknown>
 
 /**
  * supabase-js resolves `.select('a, b')` against the client's schema types.
@@ -134,9 +174,9 @@ type Row = Record<string, unknown>
  * composables solve with a cast; solved once here instead of at 30 call sites,
  * with the error check folded in so no caller can forget it.
  */
-type PgResult = { data: unknown; error: unknown; count?: number | null }
+export type PgResult = { data: unknown; error: unknown; count?: number | null }
 
-function rowsOf(result: PgResult, what: string): Row[] {
+export function rowsOf(result: PgResult, what: string): Row[] {
   if (result.error) fail(result.error as { message?: string }, what)
   // PostgREST returns a bare object rather than an array whenever the request
   // asked for a single row. Coercing beats `.map is not a function`, which is
@@ -146,7 +186,7 @@ function rowsOf(result: PgResult, what: string): Row[] {
   return data ? [data as Row] : []
 }
 
-function rowOf(result: PgResult, what: string): Row | null {
+export function rowOf(result: PgResult, what: string): Row | null {
   if (result.error) fail(result.error as { message?: string }, what)
   return (result.data ?? null) as Row | null
 }
@@ -181,13 +221,13 @@ const currentYear = () => new Date().getUTCFullYear()
   Shared schema fragments
 ----------------------------------------------------------------------------*/
 
-const CUSTOMER_KEY = {
+export const CUSTOMER_KEY = {
   type: 'string',
   description:
     'ERP customer key identifying one account (from search_accounts). Not the account name.',
 } as const
 
-const limitProp = (fallback: number, max: number) =>
+export const limitProp = (fallback: number, max: number) =>
   ({
     type: 'integer',
     minimum: 1,
@@ -211,7 +251,7 @@ const whoami: ToolDef = {
     '`etl_loaded_at` is the last order/shipment/invoice load (hourly on ' +
     'weekdays); `ats_loaded_at` the last stock load (every 15 minutes on weekdays).',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-  async handler(_args, { db, caller }) {
+  async handler(_args, { db, caller, orders }) {
     const freshnessRead = (columns: string) =>
       db.from('v_data_freshness').select(columns).maybeSingle()
     const [all, active, firstFresh] = await Promise.all([
@@ -267,6 +307,14 @@ const whoami: ToolDef = {
         caller.role === 'admin'
           ? 'Admin: every account in the ERP is visible.'
           : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
+      capabilities: compact({
+        mcp_orders: orders?.mcp_orders ?? false,
+        write_scope_active: orders?.write_scope_active ?? false,
+        order_drafting: orders?.order_tools_listed
+          ? 'On: you can draft orders. A person submits them in the portal.'
+          : null,
+        order_drafting_off_because: orders?.order_tools_listed ? null : orders?.reason ?? null,
+      }),
     }
   },
 }
@@ -1741,9 +1789,37 @@ const CONTACT_COLUMNS =
   'contact_key, source, name, title, phone, email, is_primary, do_not_call, notes, updated_at'
 
 /** "column … does not exist" — display_name on a database without 20261013100000. */
-function isMissingColumn(error: unknown): boolean {
+export function isMissingColumn(error: unknown): boolean {
   const e = error as { code?: string; message?: string } | null
   return e?.code === '42703' || /column .* does not exist/i.test(e?.message ?? '')
+}
+
+/**
+ * Ranks one account's contacts exactly as the account page does
+ * (frontend/src/lib/contacts.ts, copied to _shared/contacts.ts with a parity
+ * test). Shared by list_contacts and get_order_context so "who to ask for"
+ * never has two answers.
+ */
+export async function rankAccountContacts<T extends RankableContact>(
+  db: SupabaseClient,
+  customerKey: string,
+  rows: T[],
+) {
+  // The account's own billing addresses: a contact at one of them is
+  // accounts payable, not the buyer. Best-effort — ranking still works
+  // on names and titles without them.
+  const billing = await db
+    .schema('erp')
+    .from('dim_customer')
+    .select('invoice_email, statement_email')
+    .eq('customer_key', customerKey)
+    .maybeSingle()
+  const b = (billing.error ? null : billing.data) as Row | null
+  const opts = {
+    invoiceEmail: (b?.invoice_email as string | null) ?? null,
+    statementEmail: (b?.statement_email as string | null) ?? null,
+  }
+  return { ranked: rankContacts(rows, opts), best: bestContact(rows, opts) }
 }
 
 const listContacts: ToolDef = {
@@ -1772,26 +1848,8 @@ const listContacts: ToolDef = {
     let result: PgResult = await read(`${CONTACT_COLUMNS}, display_name`)
     if (result.error && isMissingColumn(result.error)) result = await read(CONTACT_COLUMNS)
 
-    // The account's own billing addresses: a contact at one of them is
-    // accounts payable, not the buyer. Best-effort — ranking still works
-    // on names and titles without them.
-    const billing = await db
-      .schema('erp')
-      .from('dim_customer')
-      .select('invoice_email, statement_email')
-      .eq('customer_key', key)
-      .maybeSingle()
-    const b = (billing.error ? null : billing.data) as Row | null
-    const opts = {
-      invoiceEmail: (b?.invoice_email as string | null) ?? null,
-      statementEmail: (b?.statement_email as string | null) ?? null,
-    }
-
-    // Same ranking as the account page (frontend/src/lib/contacts.ts, copied
-    // to _shared/contacts.ts with a parity test).
     const rowsIn = rowsOf(result, 'contacts') as Array<RankableContact & { notes?: string | null }>
-    const ranked = rankContacts(rowsIn, opts)
-    const best = bestContact(rowsIn, opts)
+    const { ranked, best } = await rankAccountContacts(db, key, rowsIn)
 
     return {
       customer_key: key,
@@ -2105,6 +2163,16 @@ const disabled = new Set(
     .filter(Boolean),
 )
 
+/** True when MCP_DISABLED_TOOLS names this tool (read tools and order tools). */
+export function toolDisabled(name: string): boolean {
+  return disabled.has(name)
+}
+
+/**
+ * The READ tools, always listed. The order tools are added per request by
+ * orderTools.ts toolsFor(), never here: whether they appear depends on the
+ * caller and on app_settings, neither of which is known at module scope.
+ */
 export const TOOLS: ToolDef[] = ALL_TOOLS.filter((tool) => !disabled.has(tool.name))
 
 export const TOOLS_BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]))
@@ -2116,6 +2184,6 @@ export function describeTool(tool: ToolDef) {
     title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema,
-    annotations: { title: tool.title, ...READ_ONLY },
+    annotations: { title: tool.title, ...READ_ONLY, ...(tool.annotations ?? {}) },
   }
 }

@@ -189,7 +189,7 @@ select pg_temp.assert(
 
 select pg_temp.become('entry');
 select pg_temp.assert(
-  (select count(*) from public.orders) = 0,
+  (select count(*) from public.orders where customer_key like 'OW-CUST-%') = 0,
   'order entry does NOT see drafts');
 
 --------------------------------------------------------------------------
@@ -251,7 +251,7 @@ select pg_temp.assert(
 --------------------------------------------------------------------------
 select pg_temp.become('entry');
 select pg_temp.assert(
-  (select count(*) from public.orders where status = 'submitted') = 1,
+  (select count(*) from public.orders where status = 'submitted' and customer_key like 'OW-CUST-%') = 1,
   'order entry sees the submitted order');
 
 update public.orders set status = 'entered'

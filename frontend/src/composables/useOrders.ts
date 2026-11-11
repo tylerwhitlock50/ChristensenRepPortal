@@ -1,12 +1,13 @@
 import { computed, unref, type MaybeRef } from 'vue'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { erp, supabase } from '@/lib/supabase'
+import { erp, isMissingDbObject, supabase } from '@/lib/supabase'
 import { fetchAllRows } from '@/lib/fetchAll'
 import { qk } from '@/lib/queryClient'
 import { useSessionStore } from '@/stores/session'
 import type { OrderStatus, QcResult } from '@/types/domain'
 import type { FflContext, ShipToRow } from '@/lib/orderShipTo'
+import { submitOrderArgs, type OrderSource } from '@/lib/mcpOrders'
 
 /**
  * Portal-written orders (public.orders / order_lines / order_qc_results,
@@ -56,6 +57,27 @@ export interface OrderRow {
   resolution_note: string | null
   created_at: string
   updated_at: string
+  /**
+   * Provenance (feature.mcp_orders). 'portal' = written by hand here; 'mcp' /
+   * 'inbox' = drafted by Claude. Everything below is READ-ONLY from the
+   * portal: a trigger refuses a client write to source, created_by,
+   * mcp_token_id, client_request_id, request_hash, mcp_warnings and
+   * acknowledged_*. Only the mcp_* RPCs and submit_order() set them, so the
+   * draft inputs below must never carry them.
+   */
+  source: OrderSource
+  created_by: string | null
+  mcp_token_id: string | null
+  client_request_id: string | null
+  request_hash: string | null
+  customer_contact_key: string | null
+  /** {kind:'email', sender, subject, received_at, excerpt} when from an email. */
+  source_ref: Record<string, unknown> | null
+  /** What the server flagged when Claude drafted it (dry-run submit, caps). */
+  mcp_warnings: unknown
+  /** Stamped by submit_order(p_acknowledged => true). */
+  acknowledged_at: string | null
+  acknowledged_by: string | null
 }
 
 export interface OrderLineRow {
@@ -344,8 +366,33 @@ function useOrderRpc<TInput>(toArgs: (input: TInput) => Record<string, unknown>,
   })
 }
 
+/**
+ * submit_order(p_order_id, p_acknowledged). A non-portal (Claude-drafted)
+ * order is refused with acknowledge_required unless the reviewer ticked the
+ * acknowledgement; for a hand-written order the flag only stamps it.
+ */
 export function useSubmitOrder() {
-  return useOrderRpc((id: number) => ({ p_order_id: id }), 'submit_order')
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: { id: number; acknowledged: boolean }) => {
+      const { data, error } = await db.rpc(
+        'submit_order',
+        submitOrderArgs(input.id, input.acknowledged),
+      )
+      // Deploy order: until the two-argument submit_order() is live, PostgREST
+      // finds no function taking p_acknowledged. Nothing ran, so a hand-written
+      // order retries on the old signature; an acknowledged one never does
+      // (the old function would drop the acknowledgement on the floor).
+      if (error && isMissingDbObject(error) && !input.acknowledged) {
+        const retry = await db.rpc('submit_order', { p_order_id: input.id })
+        if (retry.error) throw retry.error
+        return retry.data as OrderRow
+      }
+      if (error) throw error
+      return data as OrderRow
+    },
+    onSuccess: () => invalidateOrders(qc),
+  })
 }
 export function useRecallOrder() {
   return useOrderRpc((id: number) => ({ p_order_id: id }), 'recall_order')

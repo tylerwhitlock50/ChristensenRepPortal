@@ -33,7 +33,15 @@
 
 import { HttpError } from '../_shared/supabase.ts'
 import { callerClient, extractToken, resolveCaller } from '../_shared/mcpAuth.ts'
-import { describeTool, ToolError, TOOLS, TOOLS_BY_NAME } from './tools.ts'
+import { describeTool, type OrderAccess, ToolError, type ToolDef } from './tools.ts'
+import {
+  type McpOrdersSetting,
+  orderAccess,
+  readMcpOrderListed,
+  readMcpOrdersSetting,
+  toolsFor,
+  withOrdering,
+} from './orderTools.ts'
 import { getPrompt, listPrompts, PromptError } from './prompts.ts'
 
 const SERVER_NAME = 'christensen-rep-portal'
@@ -48,7 +56,8 @@ const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
  * is the one distinction this dataset punishes you for missing.
  */
 const INSTRUCTIONS = `
-Sales data for a Christensen Arms rep territory, read-only.
+Sales data for a Christensen Arms rep territory. Read-only, except for the
+order drafts described under "Ordering" when that section is present.
 
 Scope is automatic: every tool returns only the accounts assigned to the
 connected rep. There is no way to widen it and no need to filter for it.
@@ -131,13 +140,29 @@ function rpcError(id: Id, code: number, message: string, data?: unknown) {
 }
 
 /*----------------------------------------------------------------------------
-  Method dispatch. `ctx` is built lazily — `initialize` and `tools/list` need
-  the caller's identity for nothing, but authentication has already happened
-  by the time we get here, so there is no fast path worth the branch.
+  Method dispatch.
+
+  The tool set is per REQUEST, not per module: the read tools always, plus
+  the order-drafting tools when this caller passes the gate (orderTools.ts
+  toolsFor — the flag, the caller's row in mcp_order_users, and a header
+  token carrying orders:draft). `surface()` reads feature.mcp_orders and the
+  caller's mcp_order_users row at most once per HTTP request, and only for
+  methods that need it. A tool the caller cannot see is
+  "unknown" to tools/call as well as absent from tools/list. listChanged stays
+  false: turning the flag on or off shows up when the client reconnects.
 ----------------------------------------------------------------------------*/
+type Caller = Awaited<ReturnType<typeof resolveCaller>>
+type Db = Awaited<ReturnType<typeof callerClient>>
+
+interface Surface {
+  tools: ToolDef[]
+  byName: Map<string, ToolDef>
+  access: OrderAccess
+}
+
 async function dispatch(
   message: RpcMessage,
-  ctx: { db: Awaited<ReturnType<typeof callerClient>>; caller: Awaited<ReturnType<typeof resolveCaller>> },
+  ctx: { db: Db; caller: Caller; surface: () => Promise<Surface> },
 ): Promise<unknown | null> {
   const id = message.id ?? null
   const method = message.method ?? ''
@@ -147,6 +172,7 @@ async function dispatch(
     case 'initialize': {
       const asked = String((params as { protocolVersion?: unknown }).protocolVersion ?? '')
       const version = SUPPORTED_PROTOCOLS.includes(asked) ? asked : SUPPORTED_PROTOCOLS[0]
+      const { access } = await ctx.surface()
       return rpcResult(id, {
         protocolVersion: version,
         capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
@@ -155,7 +181,7 @@ async function dispatch(
           title: 'Christensen Rep Portal',
           version: SERVER_VERSION,
         },
-        instructions: INSTRUCTIONS,
+        instructions: withOrdering(INSTRUCTIONS, access.order_tools_listed),
       })
     }
 
@@ -165,7 +191,7 @@ async function dispatch(
     case 'tools/list':
       // No pagination: two dozen tools fit in one response, and a nextCursor
       // nobody needs is a round trip every client pays on every connect.
-      return rpcResult(id, { tools: TOOLS.map(describeTool) })
+      return rpcResult(id, { tools: (await ctx.surface()).tools.map(describeTool) })
 
     // Not offered, but clients probe them on connect and an empty list is a
     // friendlier answer than "method not found".
@@ -192,18 +218,19 @@ async function dispatch(
     case 'tools/call': {
       const name = String((params as { name?: unknown }).name ?? '')
       const args = ((params as { arguments?: unknown }).arguments ?? {}) as Record<string, unknown>
-      const tool = TOOLS_BY_NAME.get(name)
+      const { byName, access } = await ctx.surface()
+      const tool = byName.get(name)
 
       if (!tool) {
         return rpcError(
           id,
           RPC.INVALID_PARAMS,
-          `Unknown tool "${name}". Available: ${[...TOOLS_BY_NAME.keys()].join(', ')}.`,
+          `Unknown tool "${name}". Available: ${[...byName.keys()].join(', ')}.`,
         )
       }
 
       try {
-        const payload = await tool.handler(args, ctx)
+        const payload = await tool.handler(args, { db: ctx.db, caller: ctx.caller, orders: access })
         return rpcResult(id, {
           content: [{ type: 'text', text: JSON.stringify(payload) }],
           isError: false,
@@ -260,8 +287,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: 'Use POST.' }, 405, { Allow: 'POST, OPTIONS' })
   }
 
-  let caller: Awaited<ReturnType<typeof resolveCaller>>
-  let db: Awaited<ReturnType<typeof callerClient>>
+  let caller: Caller
+  let db: Db
   try {
     const token = extractToken(req)
     if (!token) {
@@ -273,7 +300,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
           'portal under your account menu → Connect Claude.',
       )
     }
-    caller = await resolveCaller(token)
+    // An order-drafting token in a URL is refused outright, and any other URL
+    // token resolves with no scopes (see extractToken).
+    caller = await resolveCaller(token.token, token.via)
     db = await callerClient(caller)
   } catch (error) {
     const err =
@@ -303,10 +332,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(rpcError(null, RPC.INVALID_REQUEST, 'Expected a JSON-RPC message.'), 400)
   }
 
+  // One app_settings read and one mcp_order_users read per HTTP request at
+  // most, shared by every message in a batch, and only when a method needs
+  // the tool set. Both fail closed.
+  let surfacePromise: Promise<Surface> | null = null
+  const surface = () => {
+    surfacePromise ??= Promise.all([
+      readMcpOrdersSetting(db),
+      readMcpOrderListed(db, caller.userId),
+    ]).then(([setting, onList]: [McpOrdersSetting | null, boolean]) => {
+      const tools = toolsFor(caller, setting, onList)
+      return {
+        tools,
+        byName: new Map(tools.map((tool) => [tool.name, tool])),
+        access: orderAccess(caller, setting, onList),
+      }
+    })
+    return surfacePromise
+  }
+
   const replies: unknown[] = []
   for (const message of messages) {
     try {
-      const reply = await dispatch(message, { db, caller })
+      const reply = await dispatch(message, { db, caller, surface })
       if (reply !== null) replies.push(reply)
     } catch (error) {
       console.error('mcp dispatch failed', error)

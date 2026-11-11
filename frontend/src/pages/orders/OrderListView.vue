@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import OrderStatusBadge from '@/components/orders/OrderStatusBadge.vue'
+import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 import { useMyOrders } from '@/composables/useOrders'
 import { money, shortDate } from '@/lib/format'
 import { ORDER_STATUS_LABELS, ORDER_STATUSES, type OrderStatus } from '@/types/domain'
@@ -14,6 +16,8 @@ import { ORDER_STATUS_LABELS, ORDER_STATUSES, type OrderStatus } from '@/types/d
  * having to call the office.
  */
 const ordersQuery = useMyOrders()
+/** Hand entry can be off while Claude drafting is on: no "New order" then. */
+const flags = useFeatureFlags()
 
 const statusFilter = ref<OrderStatus | 'all'>('all')
 
@@ -49,7 +53,7 @@ const filterOptions = computed(() => {
           </option>
         </select>
       </label>
-      <RouterLink :to="{ name: 'orders-new' }">
+      <RouterLink v-if="flags.orders.value" :to="{ name: 'orders-new' }">
         <AppButton variant="primary">New order</AppButton>
       </RouterLink>
     </div>
@@ -61,7 +65,11 @@ const filterOptions = computed(() => {
       :updated-at="ordersQuery.dataUpdatedAt.value"
       :empty="filtered.length === 0"
       empty-title="No orders yet"
-      empty-body="Write the first one — pick the account, pick the price list, add lines."
+      :empty-body="
+        flags.orders.value
+          ? 'Write the first one — pick the account, pick the price list, add lines.'
+          : 'Orders Claude drafts for you land here to review and submit.'
+      "
       :rows="3"
       @retry="ordersQuery.refetch()"
     >
@@ -84,7 +92,8 @@ const filterOptions = computed(() => {
                 · {{ shortDate(order.created_at) }}
               </p>
             </div>
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3">
+              <OrderSourceBadge :source="order.source" />
               <span v-if="order.total_amount != null" class="text-ink text-[15px] font-semibold">
                 {{ money(order.total_amount) }}
               </span>

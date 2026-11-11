@@ -4,6 +4,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import OrderStatusBadge from '@/components/orders/OrderStatusBadge.vue'
+import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
 import {
   useMarkOrderEntered,
   useOrderQueue,
@@ -168,7 +169,8 @@ async function recheck(order: OrderRow) {
               {{ order.notes }}
             </p>
           </RouterLink>
-          <div class="flex shrink-0 items-center gap-3">
+          <div class="flex shrink-0 flex-wrap items-center gap-3">
+            <OrderSourceBadge :source="order.source" />
             <span v-if="order.total_amount != null" class="text-ink text-[15px] font-semibold">
               {{ money(order.total_amount) }}
             </span>
