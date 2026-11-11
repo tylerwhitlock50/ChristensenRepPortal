@@ -833,7 +833,8 @@ const DRAFT_FIELDS = {
     default: false,
     description:
       'true only when the user says this is a test. A test draft is labelled TEST in the ' +
-      'portal and can never be submitted.',
+      'portal and can never be submitted, and stays a test when updated: a real order is ' +
+      'a new draft.',
   },
   requested_ship_date: {
     type: 'string',

@@ -653,7 +653,11 @@ begin
     v_allow := (p -> 'allow_duplicate')::boolean;
   end if;
 
-  v_test := coalesce((p -> 'is_test') = 'true'::jsonb, false);
+  -- Once a test, always a test: an update can mark a draft as a test but
+  -- never clear it (omitted or false keeps it), so a real order needs a new
+  -- draft, as the test_order refusal says.
+  v_test := coalesce(v_cur.is_test, false)
+            or coalesce((p -> 'is_test') = 'true'::jsonb, false);
 
   if p ? 'source_ref' and jsonb_typeof(p -> 'source_ref') <> 'null' then
     v_ref := p -> 'source_ref';

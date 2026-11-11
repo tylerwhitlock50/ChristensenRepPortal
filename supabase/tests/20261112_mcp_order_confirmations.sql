@@ -379,6 +379,18 @@ select pg_temp.assert(
   and (select is_test from public.orders where id = (select (j ->> 'order_id')::bigint from t_p where label = 'test')),
   'is_test: stored, flagged, and the dry run says it cannot be submitted');
 
+-- Codex review on PR #59: an update that leaves is_test out (or sends
+-- false) must not turn a test draft into a submittable one.
+select pg_temp.assert(
+  (select (public.mcp_update_order_draft((select (j ->> 'order_id')::bigint from t_p where label = 'test'),
+     '{"customer_key":"CF-B","ship_to_key":"CF-B|1","ship_to_confirmed":true,"po_number":"PO-cf-test-0001","lines":[{"part_id":"CF-ACC","qty":5,"part_confirmed":true}]}')
+     ->> 'is_test')::boolean)
+  and (select (public.mcp_update_order_draft((select (j ->> 'order_id')::bigint from t_p where label = 'test'),
+     '{"customer_key":"CF-B","ship_to_key":"CF-B|1","ship_to_confirmed":true,"po_number":"PO-cf-test-0001","is_test":false,"lines":[{"part_id":"CF-ACC","qty":6,"part_confirmed":true}]}')
+     ->> 'is_test')::boolean)
+  and (select is_test from public.orders where id = (select (j ->> 'order_id')::bigint from t_p where label = 'test')),
+  'an update keeps a test draft a test, whether is_test is left out or sent as false');
+
 select pg_temp.become('rep');
 select pg_temp.refusal(
   format('select public.submit_order(%s, true)', (select (j ->> 'order_id')::bigint from t_p where label = 'test')),
