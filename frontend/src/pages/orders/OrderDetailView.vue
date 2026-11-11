@@ -21,7 +21,14 @@ import {
 import { useSessionStore } from '@/stores/session'
 import { moneyCents, shortDate } from '@/lib/format'
 import { fflNumbersMatch } from '@/lib/orderShipTo'
-import { canSubmitWithAck, needsAcknowledgement, priceMismatch, rpcErrorText } from '@/lib/mcpOrders'
+import {
+  canSubmitWithAck,
+  handEntryAllows,
+  needsAcknowledgement,
+  priceMismatch,
+  rpcErrorText,
+} from '@/lib/mcpOrders'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 
 /**
  * One order, for all three audiences. Everyone sees the same facts — the
@@ -85,6 +92,17 @@ const isMcp = computed(() => needsAcknowledgement(order.value?.source))
 const acknowledged = ref(false)
 const canSubmit = computed(() =>
   canSubmitWithAck(order.value?.source, acknowledged.value, order.value?.is_test === true),
+)
+
+/**
+ * Hand entry (feature.orders) off: a hand-typed order can't be edited,
+ * submitted or recalled here (the server refuses to submit it, so a recall
+ * would strand it as a draft). Cancel stays. Flags load as false, so this
+ * fails closed while they load.
+ */
+const featureFlags = useFeatureFlags()
+const handEntryOk = computed(() =>
+  handEntryAllows(featureFlags.orders.value, order.value?.source),
 )
 
 async function onSubmit() {
@@ -263,7 +281,15 @@ const timeline = computed(() => {
 
       <!-- Actions, by role and status. -->
       <div class="flex flex-wrap gap-2">
-        <template v-if="order.status === 'draft' && isOwner">
+        <p
+          v-if="!handEntryOk && ['draft', 'submitted'].includes(order.status) && isOwner"
+          class="text-muted w-full text-[13px]"
+        >
+          Writing orders in the portal is turned off, so this hand-written order can't be
+          <template v-if="order.status === 'draft'">edited or submitted</template>
+          <template v-else>recalled to draft</template>.
+        </p>
+        <template v-if="order.status === 'draft' && isOwner && handEntryOk">
           <RouterLink :to="{ name: 'order-edit', params: { id: order.id } }">
             <AppButton :variant="isMcp ? 'secondary' : 'primary'">Edit draft</AppButton>
           </RouterLink>
@@ -286,7 +312,7 @@ const timeline = computed(() => {
             Mark entered in ERP
           </AppButton>
           <AppButton
-            v-if="isOwner"
+            v-if="isOwner && handEntryOk"
             variant="secondary"
             :loading="recallOrder.isPending.value"
             @click="act(() => recallOrder.mutateAsync(orderId))"

@@ -121,6 +121,17 @@ export function ordersSectionOpen(opts: {
  * hand-typed draft would put the whole writer back in reach by URL.
  */
 export function canEditDraftInWriter(ordersOn: boolean, source: string | null | undefined): boolean {
+  return handEntryAllows(ordersOn, source)
+}
+
+/**
+ * Whether hand entry (feature.orders) allows acting on this order: always for
+ * a Claude draft, otherwise only while hand entry is on. Same rule as the
+ * server's orders_hand_entry_guard() (20261111160000), which refuses to create
+ * or submit a hand-typed order while the flag is off. The order detail page
+ * gates Edit, Submit and Recall on it.
+ */
+export function handEntryAllows(ordersOn: boolean, source: string | null | undefined): boolean {
   return ordersOn || needsAcknowledgement(source)
 }
 
