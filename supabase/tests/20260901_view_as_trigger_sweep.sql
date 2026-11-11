@@ -21,8 +21,10 @@ begin
   from pg_tables p
   where p.schemaname = 'public'
     and p.rowsecurity
+    -- mcp_tool_calls (20261111100000) is an audit table like impersonation_events:
+    -- a call refused while an admin is viewing as a rep is still logged.
     and p.tablename not in ('impersonation', 'impersonation_events',
-                            'login_events', 'job_runs')
+                            'login_events', 'job_runs', 'mcp_tool_calls')
     and not exists (
       select 1
       from pg_trigger t

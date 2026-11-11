@@ -71,9 +71,16 @@ revoke execute on function public.refresh_territory_rollups()  from authenticate
 revoke all on public.mcp_tokens from authenticated, anon, public;
 grant select (
   id, user_id, name, token_prefix, created_at, created_by,
-  expires_at, last_used_at, revoked_at, revoked_by
+  expires_at, last_used_at, revoked_at, revoked_by, scopes
 ) on public.mcp_tokens to authenticated;
 
 -- …and token resolution is the MCP gateway's job alone (service_role):
 revoke execute on function public.mcp_token_resolve(text)
+  from authenticated, anon, public;
+
+-- mcp_order_users (20261111100000): select/insert/delete only; no UPDATE
+-- (an allow-list change is a delete + insert), nothing for anon.
+revoke all on public.mcp_order_users from authenticated, anon, public;
+grant select, insert, delete on public.mcp_order_users to authenticated;
+revoke execute on function public.mcp_order_users_not_from_mcp()
   from authenticated, anon, public;

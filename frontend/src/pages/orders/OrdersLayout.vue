@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSessionStore } from '@/stores/session'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 
 /**
  * The Orders shell — same tab-bar shape as AdminLayout/SalesIntelLayout.
@@ -8,11 +9,13 @@ import { useSessionStore } from '@/stores/session'
  * pair is My Orders + New Order.
  */
 const session = useSessionStore()
+/** /orders also opens for Claude drafting alone; New Order is hand entry. */
+const flags = useFeatureFlags()
 
 const tabs = computed(() => {
   const items: { to: { name: string }; label: string }[] = []
   items.push({ to: { name: 'orders' }, label: 'My Orders' })
-  if (!session.isOrderEntry) {
+  if (!session.isOrderEntry && flags.orders.value) {
     items.push({ to: { name: 'orders-new' }, label: 'New Order' })
   }
   if (session.isOrderEntry || session.isAdmin) {

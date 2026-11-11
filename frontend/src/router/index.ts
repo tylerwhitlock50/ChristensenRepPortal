@@ -10,6 +10,8 @@ import {
   isFeatureEnabled,
   type FeatureKey,
 } from '@/composables/useAppSettings'
+import { ensureOnMcpOrderList } from '@/composables/useMcpOrderUsers'
+import { isMcpOrdersUserAllowed, ordersSectionOpen } from '@/lib/mcpOrders'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -24,6 +26,13 @@ declare module 'vue-router' {
      * Tasks) come back with a toggle instead of a deploy.
      */
     feature?: FeatureKey
+    /**
+     * Route exists while ANY of these flags is enabled. /orders uses it: the
+     * draft review + submit screens serve hand entry (feature.orders) and
+     * Claude-drafted orders (feature.mcp_orders) alike. A child's own
+     * `feature` still applies on top (vue-router merges parent + child meta).
+     */
+    featureAny?: FeatureKey[]
     title?: string
   }
 }
@@ -154,8 +163,10 @@ const router = createRouter({
     {
       path: '/orders',
       component: () => import('@/pages/orders/OrdersLayout.vue'),
-      // feature on the parent covers every child, same as /admin's adminOnly.
-      meta: { feature: 'feature.orders' },
+      // The list, detail, queue and draft editor serve both hand entry and
+      // Claude-drafted orders, so either flag opens the section. Writing a new
+      // order by hand (orders-new) still needs feature.orders, below.
+      meta: { featureAny: ['feature.orders', 'feature.mcp_orders'] },
       children: [
         {
           path: '',
@@ -167,7 +178,7 @@ const router = createRouter({
           path: 'new',
           name: 'orders-new',
           component: () => import('@/pages/orders/OrderWriterView.vue'),
-          meta: { title: 'New Order' },
+          meta: { title: 'New Order', feature: 'feature.orders' },
         },
         {
           path: 'queue',
@@ -345,6 +356,30 @@ function settingsForGuard() {
   ])
 }
 
+/**
+ * A featureAny key is open when its flag is on, except Claude order drafting,
+ * which opens the Orders section only to a user it is for (a row in
+ * public.mcp_order_users, or order entry). Hand entry (feature.orders) is open
+ * to everyone it is on for. The own-row read is skipped when the flag is off
+ * and fails closed on error (ensureOnMcpOrderList).
+ */
+async function featureOpen(
+  settings: Awaited<ReturnType<typeof ensureSettings>>,
+  key: FeatureKey,
+): Promise<boolean> {
+  if (key !== 'feature.mcp_orders') return isFeatureEnabled(settings, key)
+  const session = useSessionStore()
+  const mcpOrdersOn = isFeatureEnabled(settings, 'feature.mcp_orders')
+  const userId = session.user?.id ?? null
+  const onList = mcpOrdersOn && !session.isOrderEntry ? await ensureOnMcpOrderList(userId) : false
+  return ordersSectionOpen({
+    ordersOn: false,
+    mcpOrdersOn,
+    mcpUserAllowed: isMcpOrdersUserAllowed(onList, userId),
+    isOrderEntry: session.isOrderEntry,
+  })
+}
+
 router.beforeEach(async (to) => {
   if (to.name !== 'reset-password' && carriesRecoveryCredential(to)) {
     return {
@@ -388,7 +423,11 @@ router.beforeEach(async (to) => {
   if (to.name === 'overview' && session.isOrderEntry) {
     try {
       const settings = await settingsForGuard()
-      if (isFeatureEnabled(settings, 'feature.orders')) {
+      // The same rule that opens the Orders section (featureAny below).
+      if (
+        (await featureOpen(settings, 'feature.orders')) ||
+        (await featureOpen(settings, 'feature.mcp_orders'))
+      ) {
         return { name: 'orders-queue' }
       }
     } catch {
@@ -397,14 +436,27 @@ router.beforeEach(async (to) => {
     }
   }
 
-  if (to.meta.feature) {
+  if (to.meta.feature || to.meta.featureAny?.length) {
     // One round trip per session (ensureQueryData caches); a disabled feature
     // lands on the Overview rather than a dead page. If the settings table
     // itself is unreachable, fail closed to the Overview too.
     try {
       const settings = await settingsForGuard()
-      if (!isFeatureEnabled(settings, to.meta.feature)) {
+      const any = to.meta.featureAny ?? []
+      let anyOpen = false
+      for (const key of any) {
+        if (await featureOpen(settings, key)) {
+          anyOpen = true
+          break
+        }
+      }
+      if (any.length && !anyOpen) {
         return { name: 'overview' }
+      }
+      if (to.meta.feature && !isFeatureEnabled(settings, to.meta.feature)) {
+        // Inside a section that is open (e.g. /orders/new with only Claude
+        // drafting on), land on the section rather than leaving it.
+        return to.name === 'orders-new' ? { name: 'orders' } : { name: 'overview' }
       }
     } catch {
       return { name: 'overview' }

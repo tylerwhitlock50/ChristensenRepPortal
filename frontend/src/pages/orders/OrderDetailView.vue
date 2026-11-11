@@ -6,6 +6,8 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import OrderStatusBadge from '@/components/orders/OrderStatusBadge.vue'
 import QcResultsCard from '@/components/orders/QcResultsCard.vue'
+import McpDraftReview from '@/components/orders/McpDraftReview.vue'
+import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
 import {
   useCancelOrder,
   useMarkOrderEntered,
@@ -19,6 +21,7 @@ import {
 import { useSessionStore } from '@/stores/session'
 import { moneyCents, shortDate } from '@/lib/format'
 import { fflNumbersMatch } from '@/lib/orderShipTo'
+import { canSubmitWithAck, needsAcknowledgement, rpcErrorText } from '@/lib/mcpOrders'
 
 /**
  * One order, for all three audiences. Everyone sees the same facts — the
@@ -72,9 +75,32 @@ async function act(action: () => Promise<unknown>) {
   try {
     await action()
   } catch (err) {
-    actionError.value = (err as { message?: string }).message || 'That failed.'
+    actionError.value = rpcErrorText((err as { message?: string }).message) || 'That failed.'
   }
 }
+
+// ------------------------------------------- Claude-drafted orders (MCP)
+/** Not written by hand here: show the review block, require the tick. */
+const isMcp = computed(() => needsAcknowledgement(order.value?.source))
+const acknowledged = ref(false)
+const canSubmit = computed(() => canSubmitWithAck(order.value?.source, acknowledged.value))
+
+async function onSubmit() {
+  if (!canSubmit.value) {
+    actionError.value = "Tick \"I've reviewed this order and it is correct\" first."
+    return
+  }
+  await act(() =>
+    submitOrder.mutateAsync({ id: orderId.value, acknowledged: isMcp.value && acknowledged.value }),
+  )
+}
+
+/** Who acknowledged it, in words: "you" or the stamp's id. */
+const acknowledgedByLabel = computed(() => {
+  const by = order.value?.acknowledged_by
+  if (!by) return ''
+  return by === session.user?.id ? 'you' : `user ${by.slice(0, 8)}`
+})
 
 // -------------------------------------------------------- mark entered modal
 const enterOpen = ref(false)
@@ -118,6 +144,13 @@ const timeline = computed(() => {
   const steps: { label: string; at: string | null; detail?: string }[] = [
     { label: 'Created', at: o.created_at },
   ]
+  if (o.acknowledged_at) {
+    steps.push({
+      label: 'Reviewed and confirmed',
+      at: o.acknowledged_at,
+      detail: acknowledgedByLabel.value ? `by ${acknowledgedByLabel.value}` : undefined,
+    })
+  }
   if (o.submitted_at) steps.push({ label: 'Submitted', at: o.submitted_at })
   if (o.entered_at) {
     steps.push({
@@ -165,7 +198,10 @@ const timeline = computed(() => {
             <template v-if="order.customer_type"> · {{ order.customer_type }}</template>
           </p>
         </div>
-        <OrderStatusBadge :status="order.status" />
+        <div class="flex flex-wrap items-center gap-2">
+          <OrderSourceBadge :source="order.source" />
+          <OrderStatusBadge :status="order.status" />
+        </div>
       </header>
 
       <!-- Where it ships and under which licence (submit_order snapshots both). -->
@@ -194,6 +230,22 @@ const timeline = computed(() => {
         </p>
       </div>
 
+      <!-- Claude-drafted: warnings, the source email, and the acknowledgement
+           that gates Submit (right above the button, phone-first). -->
+      <McpDraftReview
+        v-if="isMcp"
+        v-model:acknowledged="acknowledged"
+        :source="order.source"
+        :warnings="order.mcp_warnings"
+        :source-ref="order.source_ref"
+        :show-ack="order.status === 'draft' && isOwner"
+      />
+      <p v-if="order.acknowledged_at" class="text-ink-2 text-[14px]">
+        <span class="u-label text-muted mr-2">Confirmed</span>
+        {{ shortDate(order.acknowledged_at) }}<template v-if="acknowledgedByLabel">
+          by {{ acknowledgedByLabel }}</template>
+      </p>
+
       <p v-if="actionError" role="alert" class="text-danger text-sm font-medium">
         {{ actionError }}
       </p>
@@ -202,12 +254,13 @@ const timeline = computed(() => {
       <div class="flex flex-wrap gap-2">
         <template v-if="order.status === 'draft' && isOwner">
           <RouterLink :to="{ name: 'order-edit', params: { id: order.id } }">
-            <AppButton variant="primary">Edit draft</AppButton>
+            <AppButton :variant="isMcp ? 'secondary' : 'primary'">Edit draft</AppButton>
           </RouterLink>
           <AppButton
-            variant="secondary"
+            :variant="isMcp ? 'primary' : 'secondary'"
             :loading="submitOrder.isPending.value"
-            @click="act(() => submitOrder.mutateAsync(orderId))"
+            :disabled="!canSubmit"
+            @click="onSubmit"
           >
             Submit
           </AppButton>
@@ -291,7 +344,29 @@ const timeline = computed(() => {
 
       <!-- Lines -->
       <AppCard title="Lines" :hint="`${lines.length} lines`">
-        <div class="-mx-4 overflow-x-auto px-4">
+        <!-- Phone: one stacked row per line (the review link opens here). -->
+        <ul class="divide-line divide-y sm:hidden">
+          <li v-for="line in lines" :key="line.id" class="py-2.5">
+            <div class="flex items-baseline justify-between gap-3">
+              <span class="text-ink min-w-0 font-medium break-words">{{ line.part_id }}</span>
+              <span class="text-ink shrink-0 font-semibold">{{ moneyCents(line.line_total) }}</span>
+            </div>
+            <p v-if="line.description" class="text-muted text-[13px] break-words">
+              {{ line.description }}
+            </p>
+            <p class="text-ink-2 text-[13px]">
+              {{ line.qty }} × {{ moneyCents(line.effective_unit_price) }}
+              <template v-if="line.discount_pct > 0">
+                ({{ moneyCents(line.unit_price) }} less {{ line.discount_pct }}%)</template
+              >
+            </p>
+          </li>
+          <li v-if="order.total_amount != null" class="flex justify-between py-3">
+            <span class="text-ink font-semibold">Order total</span>
+            <span class="text-ink text-[16px] font-bold">{{ moneyCents(order.total_amount) }}</span>
+          </li>
+        </ul>
+        <div class="-mx-4 hidden overflow-x-auto px-4 sm:block">
           <table class="w-full min-w-[480px] text-[14px]">
             <thead>
               <tr class="text-muted border-line border-b text-left">

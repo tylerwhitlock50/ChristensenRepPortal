@@ -5,7 +5,9 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AccountPicker from '@/components/AccountPicker.vue'
+import McpDraftReview from '@/components/orders/McpDraftReview.vue'
 import { useTerritoryAccounts } from '@/composables/useOverview'
+import { useFeatureFlags } from '@/composables/useAppSettings'
 import {
   promoLabel,
   useEffectivePriceLists,
@@ -34,6 +36,13 @@ import {
 } from '@/lib/orderShipTo'
 import { moneyCents } from '@/lib/format'
 import { newPhotoId } from '@/lib/photos'
+import {
+  canSubmitWithAck,
+  canEditDraftInWriter,
+  needsAcknowledgement,
+  rpcErrorText,
+  type OrderSource,
+} from '@/lib/mcpOrders'
 
 /**
  * The order writer. Flow: pick the account → its customer_type resolves the
@@ -94,6 +103,22 @@ const lines = ref<LocalLine[]>([])
 const dirty = ref(false)
 const formError = ref('')
 const hydrated = ref(!props.id)
+
+/**
+ * Provenance of the draft being edited. Read here, NEVER written back: the
+ * header patch in persistDraft() names only the hand-editable columns, so a
+ * Claude draft edited here stays source='mcp' (the server's trigger refuses
+ * a client write to source and the other provenance columns anyway).
+ */
+const source = ref<OrderSource>('portal')
+const sourceRef = ref<unknown>(null)
+const mcpWarnings = ref<unknown>(null)
+const isMcp = computed(() => needsAcknowledgement(source.value))
+/** The reviewer's tick; required by submit_order() for a non-portal order. */
+const acknowledged = ref(false)
+const canSubmit = computed(() => canSubmitWithAck(source.value, acknowledged.value))
+/** Edited in the portal since Claude drafted it: its warnings may be stale. */
+const editedHere = ref(false)
 
 watch([customerKey, poNumber, shipDate, notes, shipToKey, fflNumber, fflExpiresOn, useDifferentFfl, lines], () => (dirty.value = true), {
   deep: true,
@@ -158,15 +183,24 @@ const shipToCheck = computed(() =>
 )
 
 // ------------------------------------------------- editing an existing draft
+// The route guard has already loaded the flags, so this is a cache read.
+const featureFlags = useFeatureFlags()
 const existing = props.id ? useOrderDetail(Number(props.id)) : null
 watch(
   () => existing?.data.value,
   (detail) => {
     if (!detail || hydrated.value) return
-    if (detail.order.status !== 'draft') {
+    // Not a draft, or (hand entry off) a hand-typed draft: read-only detail.
+    if (
+      detail.order.status !== 'draft' ||
+      !canEditDraftInWriter(featureFlags.orders.value, detail.order.source)
+    ) {
       void router.replace({ name: 'order-detail', params: { id: detail.order.id } })
       return
     }
+    source.value = detail.order.source ?? 'portal'
+    sourceRef.value = detail.order.source_ref
+    mcpWarnings.value = detail.order.mcp_warnings
     customerKey.value = detail.order.customer_key
     poNumber.value = detail.order.po_number ?? ''
     shipDate.value = detail.order.requested_ship_date ?? ''
@@ -494,6 +528,7 @@ async function persistDraft(): Promise<number> {
   })
   await saveLines.mutateAsync({ orderId: id, lines: draftLines })
   dirty.value = false
+  editedHere.value = true
   return id
 }
 
@@ -508,7 +543,7 @@ async function onSaveDraft() {
   try {
     await persistDraft()
   } catch (err) {
-    formError.value = (err as { message?: string }).message || 'Saving failed.'
+    formError.value = rpcErrorText((err as { message?: string }).message) || 'Saving failed.'
   }
 }
 
@@ -530,12 +565,16 @@ async function onSubmit() {
   }
   formError.value = shipToCheck.value.errors[0] ?? qtyError()
   if (formError.value) return
+  if (!canSubmit.value) {
+    formError.value = "Tick \"I've reviewed this order and it is correct\" before submitting."
+    return
+  }
   try {
     const id = await persistDraft()
-    await submitOrder.mutateAsync(id)
+    await submitOrder.mutateAsync({ id, acknowledged: isMcp.value && acknowledged.value })
     void router.push({ name: 'order-detail', params: { id } })
   } catch (err) {
-    formError.value = (err as { message?: string }).message || 'Submitting failed.'
+    formError.value = rpcErrorText((err as { message?: string }).message) || 'Submitting failed.'
   }
 }
 
@@ -556,6 +595,16 @@ onBeforeRouteLeave(() => {
 
 <template>
   <div class="space-y-5">
+    <!-- A Claude draft: what the server flagged and the email it came from.
+         The acknowledgement itself sits next to Submit, in step 5. -->
+    <McpDraftReview
+      v-if="isMcp"
+      :source="source"
+      :warnings="mcpWarnings"
+      :source-ref="sourceRef"
+      :edited="editedHere || dirty"
+    />
+
     <!-- 1 · Account -->
     <AppCard title="1 · Account">
       <AccountPicker
@@ -829,7 +878,56 @@ onBeforeRouteLeave(() => {
           <span class="text-ink-2 text-[14px]">{{ status.text }}</span>
         </div>
 
-        <div class="-mx-4 overflow-x-auto px-4">
+        <!-- Phone: stacked lines with the qty input (the review link opens on a phone). -->
+        <ul class="divide-line border-line divide-y border-y sm:hidden">
+          <li v-for="line in lines" :key="line.key" class="space-y-1.5 py-3">
+            <div class="flex items-baseline justify-between gap-3">
+              <span class="text-ink min-w-0 font-medium break-words">{{ line.partId }}</span>
+              <span class="text-ink shrink-0 font-semibold">
+                {{ moneyCents(pricedByKey.get(line.key)?.lineTotal ?? 0) }}
+              </span>
+            </div>
+            <p v-if="line.description" class="text-muted text-[13px] break-words">
+              {{ line.description }}
+            </p>
+            <p class="text-ink-2 text-[13px]">
+              {{ listName(line.priceListId) }} ·
+              {{ moneyCents(pricedByKey.get(line.key)?.effectiveUnitPrice ?? line.listUnitPrice) }} each
+              <template v-if="(pricedByKey.get(line.key)?.discountPct ?? 0) > 0">
+                ({{ pricedByKey.get(line.key)!.discountPct }}% off)</template
+              >
+            </p>
+            <div class="flex items-center justify-between gap-3">
+              <label class="flex items-center gap-2">
+                <span class="u-label text-muted">Qty</span>
+                <input
+                  v-model.number="line.qty"
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputmode="numeric"
+                  class="text-ink min-h-11 w-24 border px-2 text-right text-[15px]"
+                  :class="qtyValid(line) ? 'border-line' : 'border-danger'"
+                  :aria-invalid="!qtyValid(line)"
+                  :aria-label="`Quantity for ${line.partId}`"
+                />
+              </label>
+              <button
+                type="button"
+                class="text-muted hover:text-danger tap-target px-2 text-[13px] font-semibold uppercase"
+                @click="removeLine(line.key)"
+              >
+                Remove
+              </button>
+            </div>
+          </li>
+          <li class="flex justify-between py-3">
+            <span class="text-ink font-semibold">Order total</span>
+            <span class="text-ink text-[16px] font-bold">{{ moneyCents(total) }}</span>
+          </li>
+        </ul>
+
+        <div class="-mx-4 hidden overflow-x-auto px-4 sm:block">
           <table class="w-full min-w-[560px] text-[14px]">
             <thead>
               <tr class="text-muted border-line border-b text-left">
@@ -934,6 +1032,16 @@ onBeforeRouteLeave(() => {
         </label>
       </div>
 
+      <label
+        v-if="isMcp"
+        class="border-line bg-canvas mt-4 flex min-h-12 cursor-pointer items-start gap-3 border px-3 py-3"
+      >
+        <input v-model="acknowledged" type="checkbox" class="mt-0.5 size-6 shrink-0" />
+        <span class="text-ink text-[15px] font-semibold">
+          I've reviewed this order and it is correct
+        </span>
+      </label>
+
       <p v-if="formError" role="alert" class="text-danger mt-3 text-sm font-medium">
         {{ formError }}
       </p>
@@ -942,7 +1050,7 @@ onBeforeRouteLeave(() => {
         <AppButton
           variant="primary"
           :loading="submitOrder.isPending.value || saving"
-          :disabled="lines.length === 0"
+          :disabled="lines.length === 0 || !canSubmit"
           @click="onSubmit"
         >
           Submit order

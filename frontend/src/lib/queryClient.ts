@@ -37,6 +37,16 @@ export const qk = {
   },
   /** Feature flags (public.app_settings). One list, long staleTime. */
   settings: () => ['app-settings'] as const,
+  /**
+   * Claude order drafting allow-list (public.mcp_order_users). `mine` is the
+   * signed-in user's own-row read; `list` the admin view. Both sit under
+   * `root` so one invalidation after an add/remove refreshes both.
+   */
+  mcpOrderUsers: {
+    root: () => ['mcp-order-users'] as const,
+    mine: (userId: string) => ['mcp-order-users', 'mine', userId] as const,
+    list: () => ['mcp-order-users', 'list'] as const,
+  },
   /** "As of / Data through" stamp (public.v_data_freshness). */
   freshness: () => ['data-freshness'] as const,
   /**
