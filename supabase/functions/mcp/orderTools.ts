@@ -183,17 +183,35 @@ export function toolsFor(
 
 export const ORDERING_INSTRUCTIONS = `
 Ordering (drafts only). You can draft portal orders; you cannot submit them.
-Path: \`get_order_context\` (ship-tos, price lists, blockers, contacts) →
-\`search_order_products\` for each item the user names →
-\`create_order_draft\` with a fresh \`idempotency_key\` (reuse a key only to
-retry the same request) → \`update_order_draft\` for corrections. Always show
-the user the returned preview and its portal link: a person must open the
-portal, confirm the order is correct, and submit it.
-  • If a product or ship-to is ambiguous, ask one short question rather than
-    guess.
+Path: \`get_order_context\` → \`search_order_products\` for each item →
+confirm with the user → \`create_order_draft\` with a fresh
+\`idempotency_key\` (reuse a key only to retry the same request) →
+\`update_order_draft\` for corrections (it replaces the whole order: send
+every confirmation again). Always show the user the returned preview, its
+\`alerts\` and its portal link: a person must open the portal, confirm the
+order is correct, and submit it.
+
+Before calling create_order_draft, complete this checklist WITH THE USER. The
+server refuses a draft that skips a step and returns the choices to show:
+  1. Account: if \`same_name_accounts\` (get_order_context) lists more than
+     one, ask which, then send \`customer_confirmed: true\`.
+  2. Ship-to: when there is more than one orderable ship-to, show them with
+     the FFL number and expiry and ask which; send \`ship_to_key\` and
+     \`ship_to_confirmed: true\`. An expired FFL is allowed but flagged.
+  3. Each SKU: when the search has ties or the request is ambiguous, show the
+     top 2-3 options by their \`label\` and ask; send \`part_confirmed: true\`
+     on every line only after the user has said which part.
+  4. Customer PO number: always ask the user for it. Never invent one.
+  5. Expected price: if the user named a price, pass it as
+     \`expected_unit_price\` on that line. You never set the price; a
+     difference comes back as a \`price_mismatch\` alert to show the user.
+A refusal named \`*_confirmation_required\` means: show the choices it lists
+and ask. Never set a confirmation flag the user did not give.
   • Never invent or pass a price or an FFL. Prices come from the customer's
     price lists; the FFL is the one on file, or a person enters it in the
     portal.
+  • \`is_test: true\` only when the user says it is a test: a test draft is
+    labelled TEST and can never be submitted.
   • Stock (\`ats_qty\`) is information only. It never blocks a draft.
   • A \`possible_duplicate\` refusal means a similar order already exists: ask
     the user before retrying with \`allow_duplicate: true\`.
@@ -222,6 +240,7 @@ export class OrderToolError extends ToolError {
     readonly outcome: 'refused' | 'error',
     readonly code: string | null,
     readonly raw: string,
+    readonly structured: Row | null = null,
   ) {
     super(message)
   }
@@ -301,6 +320,25 @@ const GUIDANCE: Record<string, (detail: string | null) => string> = {
   acknowledge_required: () =>
     'Only a person can submit this order: they open it in the portal, tick the ' +
     'acknowledgement and submit. Give the user the portal link.',
+  customer_confirmation_required: () =>
+    'Several active accounts share this name. Nothing was saved. Show the user the ' +
+    'accounts below (key, city, type, whether it has a price list) and ask which one; then ' +
+    'retry with that customer_key and customer_confirmed: true.',
+  ship_to_confirmation_required: () =>
+    'This account has more than one orderable ship-to and the user has not picked one. ' +
+    'Nothing was saved. Show the user the ship-tos below with their FFL number, expiry and ' +
+    'whether it is current, ask which one, then retry with ship_to_key and ' +
+    'ship_to_confirmed: true.',
+  part_confirmation_required: () =>
+    'A line was not confirmed by the user. Nothing was saved. For each line below, show the ' +
+    'user the top 2-3 choices by their label and ask which part they mean; then retry with ' +
+    'the chosen part_id and part_confirmed: true on every line.',
+  po_required: () =>
+    'The customer PO number is required. Nothing was saved. Ask the user for it; never ' +
+    'invent one.',
+  test_order: () =>
+    'This is a test draft and can never be submitted. Tell the user; to place the real ' +
+    'order, draft it again without is_test.',
   ffl_required: () =>
     'A current FFL is needed before this order can be submitted. The person submitting ' +
     'enters it in the portal. Do not ask for one or pass one here.',
@@ -314,12 +352,102 @@ function guidanceFor(code: string, detail: string | null): string | null {
   return null
 }
 
+/*----------------------------------------------------------------------------
+  Short human labels for parts ("RH · Ridgeline FFT · Carbon/Gray · 300 PRC ·
+  22 in · $1,566.67"), so a choice can be shown to the user as it is.
+----------------------------------------------------------------------------*/
+
+const FAMILY_SHORT: [RegExp, string][] = [
+  [/\bFLASH FORGED TECHNOLOGY\b/g, 'FFT'],
+  [/\bMODERN PRECISION RIFLE\b/g, 'MPR'],
+  [/\bTITANIUM\b/g, 'TI'],
+]
+
+function titleWord(w: string): string {
+  if (w === 'TI') return 'Ti'
+  if (/^(FFT|MPR|LH|RH|FDE|OD|PRC|CA-\d+)$/.test(w) || /\d/.test(w)) return w
+  return w.charAt(0) + w.slice(1).toLowerCase()
+}
+
+function titleCase(text: string): string {
+  return text
+    .split(/(\s+|\/)/)
+    .map((w) => (/^(\s+|\/)$/.test(w) || w === '' ? w : titleWord(w)))
+    .join('')
+}
+
+const USD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
+
+/** One line a person can read: handedness · family · colour · chambering · length · price. */
+export function partLabel(part: Row, unitPrice?: unknown): string {
+  const real = (v: unknown) => {
+    const s = str(v)
+    return s && !/^n\/?a$/i.test(s) ? s : null
+  }
+  const hand = real(part.handedness)?.toUpperCase()
+  const handed = hand === 'LEFT' ? 'LH' : hand === 'RIGHT' ? 'RH' : null
+  let family = real(part.family) ?? real(part.product_family)
+  if (family) {
+    family = family.toUpperCase().replace(/\s+/g, ' ').trim()
+    for (const [re, short] of FAMILY_SHORT) family = family.replace(re, short)
+    family = titleCase(family)
+  }
+  const colourRaw = real(part.stock_color) ?? real(part.finish)
+  const colour = colourRaw ? titleCase(colourRaw.toUpperCase().replace(/\s*\/\s*/g, '/')) : null
+  const chambering = real(part.chambering)
+  const length = real(part.barrel_length)
+  const priceValue = num(unitPrice ?? part.unit_price)
+  const bits = [
+    handed,
+    family,
+    colour,
+    chambering,
+    length ? (/^\d+(\.\d+)?$/.test(length) ? `${length} in` : length) : null,
+    priceValue !== null ? USD.format(priceValue) : null,
+  ].filter((b): b is string => !!b)
+  return bits.length ? bits.join(' · ') : (str(part.part_id) ?? '(unknown part)')
+}
+
+/** The general-list price of a search item (its options list the general list first). */
+function itemPrice(item: Row): unknown {
+  const options = Array.isArray(item.options) ? (item.options as Row[]) : []
+  const general = options.find((o) => o.is_special !== true) ?? options[0]
+  return general?.unit_price
+}
+
+/**
+ * The JSON a confirmation refusal carries in its DETAIL (PostgREST
+ * `details`), with a label on every part choice. Null when there is none.
+ */
+export function structuredDetail(details: unknown): Row | null {
+  if (typeof details !== 'string' || !details.trim().startsWith('{')) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(details)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const out = { ...(parsed as Row) }
+  if (Array.isArray(out.lines)) {
+    out.lines = (out.lines as Row[]).map((line) => ({
+      ...line,
+      choices: Array.isArray(line.choices)
+        ? (line.choices as Row[]).map((c) => compact({ label: partLabel(c), ...c }))
+        : line.choices,
+    }))
+  }
+  if (Array.isArray(out.choices)) out.choices = (out.choices as Row[]).map((c) => compact(c))
+  return out
+}
+
 /** A failed RPC (or thrown exception) as the error the model sees. */
 export function orderToolError(error: unknown): OrderToolError {
   const raw =
     error instanceof Error
       ? error.message
       : String((error as { message?: unknown } | null)?.message ?? error ?? 'unknown error')
+  const structured = structuredDetail((error as { details?: unknown } | null)?.details)
   const parsed = parseRpcError(raw)
   if (!parsed.code) {
     return new OrderToolError(
@@ -334,7 +462,8 @@ export function orderToolError(error: unknown): OrderToolError {
   const guidance =
     guidanceFor(parsed.code, parsed.detail) ??
     'The order service refused this. Fix the arguments if the message says how; otherwise tell the user.'
-  return new OrderToolError(`${guidance} ${tag}`, 'refused', parsed.code, raw)
+  const body = structured ? `\n${JSON.stringify(structured)}` : ''
+  return new OrderToolError(`${guidance} ${tag}${body}`, 'refused', parsed.code, raw, structured)
 }
 
 /*----------------------------------------------------------------------------
@@ -364,6 +493,9 @@ const HEADER_STRINGS = [
   'customer_contact_key',
   'notes',
 ] as const
+
+/** Booleans forwarded as sent: the confirmations the user gave, and is_test. */
+const HEADER_FLAGS = ['customer_confirmed', 'ship_to_confirmed', 'is_test'] as const
 
 const SOURCE_REF_STRINGS = ['kind', 'sender', 'subject', 'received_at', 'message_id', 'excerpt'] as const
 
@@ -417,6 +549,9 @@ export function draftPayload(args: Record<string, unknown>, withIdempotencyKey: 
     if (value !== null) p[field] = value
   }
   if (args.allow_duplicate === true) p.allow_duplicate = true
+  for (const flag of HEADER_FLAGS) {
+    if (typeof args[flag] === 'boolean') p[flag] = args[flag]
+  }
 
   const ref = args.source_ref
   if (ref && typeof ref === 'object' && !Array.isArray(ref)) {
@@ -431,18 +566,21 @@ export function draftPayload(args: Record<string, unknown>, withIdempotencyKey: 
   if (!Array.isArray(args.lines) || args.lines.length === 0) {
     refuse(
       'invalid_input',
-      '`lines` is required: a non-empty list of {part_id, qty, price_list_id?}. Find part ' +
-        'ids with search_order_products.',
+      '`lines` is required: a non-empty list of {part_id, qty, part_confirmed, ' +
+        'price_list_id?, expected_unit_price?}. Find part ids with search_order_products.',
     )
   }
   p.lines = (args.lines as unknown[]).map((line, i) => {
     if (!line || typeof line !== 'object' || Array.isArray(line)) {
-      refuse('invalid_input', `lines[${i}] must be an object {part_id, qty, price_list_id?}.`)
+      refuse('invalid_input', `lines[${i}] must be an object {part_id, qty, part_confirmed}.`)
     }
     const l = line as Row
     const out: Row = { part_id: str(l.part_id), qty: num(l.qty) }
     const listId = num(l.price_list_id)
     if (listId !== null) out.price_list_id = listId
+    if (typeof l.part_confirmed === 'boolean') out.part_confirmed = l.part_confirmed
+    const expected = num(l.expected_unit_price)
+    if (expected !== null) out.expected_unit_price = expected
     return out
   })
   return p
@@ -456,7 +594,13 @@ function auditArgs(args: Record<string, unknown>): Row {
     if (key === 'lines' && Array.isArray(value)) {
       out.lines = value.map((line) =>
         line && typeof line === 'object' && !Array.isArray(line)
-          ? { part_id: (line as Row).part_id, qty: (line as Row).qty, price_list_id: (line as Row).price_list_id }
+          ? {
+              part_id: (line as Row).part_id,
+              qty: (line as Row).qty,
+              price_list_id: (line as Row).price_list_id,
+              part_confirmed: (line as Row).part_confirmed,
+              expected_unit_price: (line as Row).expected_unit_price,
+            }
           : line,
       )
       continue
@@ -626,7 +770,8 @@ const LINES = {
   description:
     'Every line of the order. Part ids from search_order_products. No price: the server ' +
     'prices each line from the customer\'s general price list, or from price_list_id when ' +
-    'given and in effect.',
+    'given and in effect. Every line needs part_confirmed: true, set only after the user ' +
+    'picked that exact part.',
   items: {
     type: 'object',
     properties: {
@@ -636,21 +781,61 @@ const LINES = {
         type: 'integer',
         description: 'Optional: a specific list from the part\'s `options` (e.g. a promo). Ask the user before choosing a special list.',
       },
+      part_confirmed: {
+        type: 'boolean',
+        description:
+          'true only after the user confirmed this exact part (show the choices by `label` ' +
+          'when the search had ties or the request was ambiguous). Required: the server ' +
+          'refuses a line without it.',
+      },
+      expected_unit_price: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        description:
+          'Optional: the unit price the USER said to expect (e.g. "pricing should be 1485"). ' +
+          'It never sets the price; a difference from the list price comes back as a ' +
+          'price_mismatch alert.',
+      },
     },
-    required: ['part_id', 'qty'],
+    required: ['part_id', 'qty', 'part_confirmed'],
     additionalProperties: false,
   },
 } as const
 
 const DRAFT_FIELDS = {
   customer_key: CUSTOMER_KEY,
+  customer_confirmed: {
+    type: 'boolean',
+    description:
+      'true once the user picked this account. Required when get_order_context lists more ' +
+      'than one same_name_accounts.',
+  },
   ship_to_key: {
     type: 'string',
     description:
       'ship_to_key from get_order_context (an orderable one). May be left out only when ' +
       'the customer has exactly one orderable ship-to.',
   },
-  po_number: { type: 'string', maxLength: 40, description: 'The dealer\'s PO number, if they gave one.' },
+  ship_to_confirmed: {
+    type: 'boolean',
+    description:
+      'true once the user picked ship_to_key from the ship-tos shown with their FFL number ' +
+      'and expiry. Required when the account has more than one orderable ship-to.',
+  },
+  po_number: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 40,
+    description: 'The customer\'s PO number. Required: ask the user for it; never invent one.',
+  },
+  is_test: {
+    type: 'boolean',
+    default: false,
+    description:
+      'true only when the user says this is a test. A test draft is labelled TEST in the ' +
+      'portal and can never be submitted, and stays a test when updated: a real order is ' +
+      'a new draft.',
+  },
   requested_ship_date: {
     type: 'string',
     format: 'date',
@@ -744,10 +929,15 @@ const getOrderContext: ToolDef = {
         ),
       },
       note:
+        (Array.isArray(row.same_name_accounts) && row.same_name_accounts.length > 1
+          ? `${row.same_name_accounts.length} active accounts share this name (same_name_accounts): ` +
+            'ask the user which one, then send customer_confirmed: true. '
+          : '') +
         (orderableCount === 0
           ? 'No orderable ship-to: an address has to be added in the ERP before this account can be ordered for. '
           : orderableCount > 1 && !row.default_ship_to_key
-            ? 'Several orderable ship-tos: ask the user which one unless they already said. '
+            ? 'Several orderable ship-tos: show them with FFL number and expiry, ask which one, ' +
+              'then send ship_to_confirmed: true. '
             : '') +
         'Only contacts with a customer_contact_key can be set on an order. Prices and the FFL are never yours to supply.',
     }
@@ -808,8 +998,8 @@ const searchOrderProducts: ToolDef = {
         : items.length > 1 && num(items[0].match_score) === num(items[1].match_score)
     ) {
       guidance.push(
-        'The top matches fit equally well. Ask the user one short question (finish, ' +
-          'barrel length or handedness) instead of guessing.',
+        'The top matches fit equally well. Show the user the tied options by their `label` ' +
+          'and ask which one; never pick for them. Only then send part_confirmed: true.',
       )
     }
     if (items.some((i) => Array.isArray(i.options) && (i.options as unknown[]).length > 1)) {
@@ -824,7 +1014,7 @@ const searchOrderProducts: ToolDef = {
 
     return {
       ...row,
-      items: items.map((i) => compact(i)),
+      items: items.map((i) => compact({ label: partLabel(i, itemPrice(i)), ...i })),
       ...(guidance.length ? { guidance } : {}),
     }
   },
@@ -835,9 +1025,11 @@ const createOrderDraft: ToolDef = {
   title: 'Create an order draft',
   description:
     'Saves a DRAFT order in the portal and returns a preview: server-side prices, line ' +
-    'totals, stock, whether it would pass submission today (`would_submit`), warnings and ' +
-    'a portal link. It never submits — a person opens the link, confirms and submits. ' +
-    'No price or FFL can be passed. Retrying with the same idempotency_key and the same ' +
+    'totals, stock, whether it would pass submission today (`would_submit`), `alerts` ' +
+    '(price_mismatch, ffl_not_current, test_order), warnings and a portal link. It never ' +
+    'submits — a person opens the link, confirms and submits. Refused until the user has ' +
+    'confirmed the account (when several share its name), the ship-to (when there are ' +
+    'several) and every part, and given the PO. No price or FFL can be passed. Retrying with the same idempotency_key and the same ' +
     'arguments returns the same draft (`replayed: true`).',
   inputSchema: {
     type: 'object',
@@ -853,7 +1045,7 @@ const createOrderDraft: ToolDef = {
       },
       ...DRAFT_FIELDS,
     },
-    required: ['idempotency_key', 'customer_key', 'lines'],
+    required: ['idempotency_key', 'customer_key', 'po_number', 'lines'],
     additionalProperties: false,
   },
   annotations: { ...WRITE, idempotentHint: true },
@@ -875,7 +1067,7 @@ const updateOrderDraft: ToolDef = {
   inputSchema: {
     type: 'object',
     properties: { order_id: ORDER_ID, ...DRAFT_FIELDS },
-    required: ['order_id', 'customer_key', 'lines'],
+    required: ['order_id', 'customer_key', 'po_number', 'lines'],
     additionalProperties: false,
   },
   annotations: { ...WRITE, idempotentHint: false },
@@ -914,7 +1106,7 @@ const cancelOrderDraft: ToolDef = {
 const STATUS_COLUMNS =
   'id, status, source, customer_key, customer_name, po_number, requested_ship_date, ' +
   'ship_to_key, ship_to_name, total_amount, requires_ffl, created_at, updated_at, ' +
-  'submitted_at, entered_at, erp_order_number, acknowledged_at, mcp_warnings'
+  'submitted_at, entered_at, erp_order_number, acknowledged_at, mcp_warnings, is_test'
 
 const getOrderStatus: ToolDef = {
   name: 'get_order_status',
@@ -955,7 +1147,10 @@ const getOrderStatus: ToolDef = {
     const [lines, qc] = await Promise.all([
       db
         .from('order_lines')
-        .select('part_id, description, qty, unit_price, discount_pct, effective_unit_price, line_total, price_list_id')
+        .select(
+          'part_id, description, qty, unit_price, discount_pct, effective_unit_price, line_total, ' +
+            'price_list_id, mcp_expected_unit_price',
+        )
         .eq('order_id', id)
         .order('id', { ascending: true }),
       db
@@ -1010,7 +1205,10 @@ const listMyOrderDrafts: ToolDef = {
 
     let q = db
       .from('orders')
-      .select('id, status, source, customer_key, customer_name, po_number, total_amount, created_at, updated_at, submitted_at')
+      .select(
+        'id, status, source, customer_key, customer_name, po_number, total_amount, created_at, ' +
+          'updated_at, submitted_at, is_test',
+      )
       .eq('user_id', caller.userId)
     if (status !== 'any') q = q.eq('status', status)
     if (source !== 'any') q = q.eq('source', source)

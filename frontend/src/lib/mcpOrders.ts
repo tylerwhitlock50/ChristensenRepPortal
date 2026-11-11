@@ -146,12 +146,29 @@ export function sourceBadgeLabel(source: string | null | undefined): string {
   return source === 'inbox' ? 'From email (Claude)' : 'Drafted by Claude'
 }
 
-/** The submit button is live only once a non-portal order is acknowledged. */
+/** The submit button is live only once a non-portal order is acknowledged. A test draft never submits. */
 export function canSubmitWithAck(
   source: string | null | undefined,
   acknowledged: boolean,
+  isTest = false,
 ): boolean {
+  if (isTest) return false
   return !needsAcknowledgement(source) || acknowledged
+}
+
+/**
+ * A line where the user told Claude a different price than the list gives:
+ * the expected and the list price, or null when there is nothing to show.
+ */
+export function priceMismatch(line: {
+  effective_unit_price: number | null
+  mcp_expected_unit_price?: number | null
+}): { expected: number; list: number; difference: number } | null {
+  const expected = line.mcp_expected_unit_price
+  const list = line.effective_unit_price
+  if (expected == null || list == null) return null
+  const difference = Math.round((Number(list) - Number(expected)) * 100) / 100
+  return difference === 0 ? null : { expected: Number(expected), list: Number(list), difference }
 }
 
 /** The submit_order() arguments the portal sends (contract item 6). */

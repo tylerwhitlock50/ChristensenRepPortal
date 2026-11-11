@@ -47,6 +47,8 @@ export interface OrderRow {
   ffl_on_file_expiration_raw: string | null
   /** Stamped by submit_order() (20261030140000): a line is a firearm. */
   requires_ffl: boolean | null
+  /** A Claude test draft (20261112090000): labelled TEST, can never be submitted. Server-set. */
+  is_test: boolean
   total_amount: number | null
   submitted_at: string | null
   entered_at: string | null
@@ -92,6 +94,8 @@ export interface OrderLineRow {
   discount_pct: number
   effective_unit_price: number
   line_total: number
+  /** The unit price the user told Claude to expect; display only. */
+  mcp_expected_unit_price: number | null
 }
 
 export interface QcResultRow {
