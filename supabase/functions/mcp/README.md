@@ -230,13 +230,29 @@ here touches the ERP; Tyler's middleware reads submitted orders from
 |---|---|---|
 | `get_order_context` | `order_context(p_customer_key)` + contact ranking from `_shared/contacts.ts` (same as `list_contacts`) | read-only |
 | `search_order_products` | `order_product_search(p_customer_key, p_query, p_limit)` | read-only |
+| `resolve_order_parts` | `order_resolve_parts(p_customer_key, p_items)` — PO item numbers / descriptions → parts, whole catalog | read-only |
 | `create_order_draft` | `mcp_create_order_draft(p)` | write, idempotent (keyed) |
 | `update_order_draft` | `mcp_update_order_draft(p_order_id, p)` | write |
 | `cancel_order_draft` | `mcp_cancel_order_draft(p_order_id)` | write, destructive |
 | `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS | read-only |
 | `list_my_order_drafts` | `orders` where `user_id` = caller | read-only |
 
-**Who sees them.** All seven are listed and callable only when both hold;
+**Admin pricing (20261111170000).** For an admin caller (`caller.role ===
+'admin'`) the create/update schemas also take a per-line `unit_price` and an
+order-level `price_override_reason`, so a distributor PO (ATS, SMUs, special
+pricing, parts on no price list) can be staged as it was sent. The database
+decides: `mcp_order_apply` refuses a price from anyone but an admin, puts every
+line whose price is not the published one on the reserved "Admin price (off
+list)" list with `price_source = 'admin'`, stages an item number that matches
+no part as `part_unresolved`, and records the PO's item number/description,
+the customer's last paid price and a description check per line. The preview
+leads with UNMATCHED PARTS / DESCRIPTION CHECK / ADMIN PRICING warnings.
+`submit_order` refuses unmatched lines, and admin-priced ones unless an admin
+submits with the acknowledgement. In the portal an admin can set or reset a
+line's price (`admin_set_order_line_price`) or remove it; the order writer
+does not open such drafts (it would reprice them).
+
+**Who sees them.** All eight are listed and callable only when both hold;
 otherwise they are absent from `tools/list` and `tools/call` calls them
 unknown:
 

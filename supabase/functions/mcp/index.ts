@@ -35,6 +35,7 @@ import { HttpError } from '../_shared/supabase.ts'
 import { callerClient, extractToken, resolveCaller } from '../_shared/mcpAuth.ts'
 import { describeTool, type OrderAccess, ToolError, type ToolDef } from './tools.ts'
 import {
+  isAdminCaller,
   type McpOrdersSetting,
   orderAccess,
   readMcpOrderListed,
@@ -181,7 +182,7 @@ async function dispatch(
           title: 'Christensen Rep Portal',
           version: SERVER_VERSION,
         },
-        instructions: withOrdering(INSTRUCTIONS, access.order_tools_listed),
+        instructions: withOrdering(INSTRUCTIONS, access.order_tools_listed, isAdminCaller(ctx.caller)),
       })
     }
 

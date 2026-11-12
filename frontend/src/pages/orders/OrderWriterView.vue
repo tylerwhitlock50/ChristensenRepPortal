@@ -43,6 +43,7 @@ import {
   rpcErrorText,
   type OrderSource,
 } from '@/lib/mcpOrders'
+import { blocksWriterEdit } from '@/lib/adminPricing'
 
 /**
  * The order writer. Flow: pick the account → its customer_type resolves the
@@ -192,10 +193,14 @@ watch(
   () => existing?.data.value,
   (detail) => {
     if (!detail || hydrated.value) return
-    // Not a draft, or (hand entry off) a hand-typed draft: read-only detail.
+    // Not a draft, (hand entry off) a hand-typed draft, or a PO staged with
+    // admin prices / unmatched items — this writer reprices every line from
+    // the lists, so it would drop them: read-only detail, which has the
+    // admin price controls.
     if (
       detail.order.status !== 'draft' ||
-      !canEditDraftInWriter(featureFlags.orders.value, detail.order.source)
+      !canEditDraftInWriter(featureFlags.orders.value, detail.order.source) ||
+      blocksWriterEdit(detail.lines)
     ) {
       void router.replace({ name: 'order-detail', params: { id: detail.order.id } })
       return

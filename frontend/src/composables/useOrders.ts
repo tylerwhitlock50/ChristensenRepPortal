@@ -80,6 +80,8 @@ export interface OrderRow {
   /** Stamped by submit_order(p_acknowledged => true). */
   acknowledged_at: string | null
   acknowledged_by: string | null
+  /** Why lines are admin-priced (20261111170000); null when none are. */
+  price_override_reason?: string | null
 }
 
 export interface OrderLineRow {
@@ -96,6 +98,21 @@ export interface OrderLineRow {
   line_total: number
   /** The unit price the user told Claude to expect; display only. */
   mcp_expected_unit_price: number | null
+  /**
+   * Admin pricing (20261112120000), read-only here: a trigger refuses a
+   * client write to any of them. Optional until the migration is live.
+   * 'admin' = priced by an admin (lib/adminPricing.ts has the rules).
+   */
+  price_source?: 'list' | 'admin'
+  /** The published price when drafted; null = on no list for the account. */
+  list_unit_price?: number | null
+  customer_part_ref?: string | null
+  customer_description?: string | null
+  /** The PO item matched no ERP part; part_id is the item number as sent. */
+  part_unresolved?: boolean
+  last_paid_price?: number | null
+  last_paid_date?: string | null
+  description_mismatch?: boolean | null
 }
 
 export interface QcResultRow {
@@ -424,6 +441,38 @@ export function useResolveDiscrepancy() {
     }),
     'resolve_discrepancy',
   )
+}
+
+/**
+ * Admin only: set a Claude-drafted line's price, or reset it to the
+ * published price (unitPrice null). The database decides whether the line
+ * stays admin-priced; a reason is required when the order has none yet.
+ */
+export function useSetLinePrice() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: { lineId: number; unitPrice: number | null; reason?: string | null }) => {
+      const { error } = await db.rpc('admin_set_order_line_price', {
+        p_line_id: input.lineId,
+        p_unit_price: input.unitPrice,
+        p_reason: input.reason ?? null,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => invalidateOrders(qc),
+  })
+}
+
+/** Remove one line from a draft (RLS: the owner, or an admin). */
+export function useRemoveOrderLine() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (lineId: number) => {
+      const { error } = await db.from('order_lines').delete().eq('id', lineId)
+      if (error) throw error
+    },
+    onSuccess: () => invalidateOrders(qc),
+  })
 }
 
 /** "Re-check now" — run the QC for one order without waiting for tonight. */

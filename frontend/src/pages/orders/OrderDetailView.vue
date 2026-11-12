@@ -7,7 +7,16 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import OrderStatusBadge from '@/components/orders/OrderStatusBadge.vue'
 import QcResultsCard from '@/components/orders/QcResultsCard.vue'
 import McpDraftReview from '@/components/orders/McpDraftReview.vue'
+import AdminPricingReview from '@/components/orders/AdminPricingReview.vue'
 import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
+import AppBadge from '@/components/ui/AppBadge.vue'
+import {
+  blocksWriterEdit,
+  FLAG_LABEL,
+  lineFlags,
+  needsPricingReview,
+  pricingSubmitBlock,
+} from '@/lib/adminPricing'
 import {
   useCancelOrder,
   useMarkOrderEntered,
@@ -90,8 +99,19 @@ async function act(action: () => Promise<unknown>) {
 /** Not written by hand here: show the review block, require the tick. */
 const isMcp = computed(() => needsAcknowledgement(order.value?.source))
 const acknowledged = ref(false)
-const canSubmit = computed(() =>
-  canSubmitWithAck(order.value?.source, acknowledged.value, order.value?.is_test === true),
+
+// ------------------------------------------ admin pricing (20261112120000)
+/** Lines staged from a PO as sent: admin prices, unmatched items, checks. */
+const pricingReview = computed(() => needsPricingReview(lines.value))
+/** The writer reprices every line from the lists; it must not open these. */
+const writerBlocked = computed(() => blocksWriterEdit(lines.value))
+/** Why submit_order() would refuse on pricing grounds, or ''. */
+const pricingBlock = computed(() => pricingSubmitBlock(lines.value, session.isAdmin))
+
+const canSubmit = computed(
+  () =>
+    canSubmitWithAck(order.value?.source, acknowledged.value, order.value?.is_test === true) &&
+    !pricingBlock.value,
 )
 
 /**
@@ -106,6 +126,10 @@ const handEntryOk = computed(() =>
 )
 
 async function onSubmit() {
+  if (pricingBlock.value) {
+    actionError.value = pricingBlock.value
+    return
+  }
   if (!canSubmit.value) {
     actionError.value = order.value?.is_test
       ? 'This is a test order. It cannot be submitted; cancel it instead.'
@@ -252,6 +276,15 @@ const timeline = computed(() => {
         </p>
       </div>
 
+      <!-- A PO staged as sent: admin prices and unmatched items, line by line,
+           with the overrides for an admin while it is a draft. -->
+      <AdminPricingReview
+        v-if="pricingReview"
+        :lines="lines"
+        :reason="order.price_override_reason"
+        :editable="order.status === 'draft' && session.isAdmin && order.source !== 'portal'"
+      />
+
       <!-- Claude-drafted: warnings, the source email, and the acknowledgement
            that gates Submit (right above the button, phone-first). -->
       <p
@@ -289,10 +322,23 @@ const timeline = computed(() => {
           <template v-if="order.status === 'draft'">edited or submitted</template>
           <template v-else>recalled to draft</template>.
         </p>
+        <p
+          v-if="order.status === 'draft' && pricingBlock"
+          class="text-danger w-full text-[14px] font-medium"
+        >
+          {{ pricingBlock }}
+        </p>
         <template v-if="order.status === 'draft' && isOwner && handEntryOk">
-          <RouterLink :to="{ name: 'order-edit', params: { id: order.id } }">
+          <RouterLink
+            v-if="!writerBlocked"
+            :to="{ name: 'order-edit', params: { id: order.id } }"
+          >
             <AppButton :variant="isMcp ? 'secondary' : 'primary'">Edit draft</AppButton>
           </RouterLink>
+          <p v-else class="text-muted w-full text-[13px]">
+            This draft has admin-priced or unmatched lines, which the order writer would
+            reprice: change them above, or ask Claude to update the draft.
+          </p>
           <AppButton
             :variant="isMcp ? 'primary' : 'secondary'"
             :loading="submitOrder.isPending.value"
@@ -388,6 +434,15 @@ const timeline = computed(() => {
               <span class="text-ink min-w-0 font-medium break-words">{{ line.part_id }}</span>
               <span class="text-ink shrink-0 font-semibold">{{ moneyCents(line.line_total) }}</span>
             </div>
+            <div v-if="lineFlags(line).length" class="flex flex-wrap gap-1 py-1">
+              <AppBadge
+                v-for="f in lineFlags(line)"
+                :key="f"
+                :tone="f === 'unmatched' || f === 'check_description' ? 'late' : 'high'"
+              >
+                {{ FLAG_LABEL[f] }}
+              </AppBadge>
+            </div>
             <p v-if="line.description" class="text-muted text-[13px] break-words">
               {{ line.description }}
             </p>
@@ -412,7 +467,7 @@ const timeline = computed(() => {
               <tr class="text-muted border-line border-b text-left">
                 <th class="py-2 pr-3 font-semibold">Part</th>
                 <th class="py-2 pr-3 text-right font-semibold">Qty</th>
-                <th class="py-2 pr-3 text-right font-semibold">List</th>
+                <th class="py-2 pr-3 text-right font-semibold">Price</th>
                 <th class="py-2 pr-3 text-right font-semibold">Disc.</th>
                 <th class="py-2 pr-3 text-right font-semibold">Net</th>
                 <th class="py-2 text-right font-semibold">Total</th>
@@ -428,9 +483,26 @@ const timeline = computed(() => {
                   <span v-if="priceMismatch(line)" class="text-danger block text-[12px] font-medium">
                     Customer expected {{ moneyCents(priceMismatch(line)!.expected) }}
                   </span>
+                  <span v-if="lineFlags(line).length" class="flex flex-wrap gap-1 pt-1">
+                    <AppBadge
+                      v-for="f in lineFlags(line)"
+                      :key="f"
+                      :tone="f === 'unmatched' || f === 'check_description' ? 'late' : 'high'"
+                    >
+                      {{ FLAG_LABEL[f] }}
+                    </AppBadge>
+                  </span>
                 </td>
                 <td class="text-ink py-2 pr-3 text-right">{{ line.qty }}</td>
-                <td class="text-ink py-2 pr-3 text-right">{{ moneyCents(line.unit_price) }}</td>
+                <td class="text-ink py-2 pr-3 text-right">
+                  {{ moneyCents(line.unit_price) }}
+                  <span
+                    v-if="line.price_source === 'admin' && line.list_unit_price != null"
+                    class="text-muted block text-[12px]"
+                  >
+                    list {{ moneyCents(line.list_unit_price) }}
+                  </span>
+                </td>
                 <td class="text-ink-2 py-2 pr-3 text-right">
                   {{ line.discount_pct > 0 ? `${line.discount_pct}%` : '—' }}
                 </td>
