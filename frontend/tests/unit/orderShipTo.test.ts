@@ -9,7 +9,9 @@
  * order loader also copies — the three must call the same pair a match.
  */
 import {
+  checkEnteredFfl,
   checkShipToAndFfl,
+  shipDateError,
   fflNumbersMatch,
   normalizeFfl,
   orderableShipTos,
@@ -115,6 +117,33 @@ const renewed = checkShipToAndFfl({ shipTo: row({}), ...gun, fflNumber: '1-23-45
 t('a different licence warns but does not block', [renewed.errors.length, renewed.warnings.length], [0, 1])
 const noneOnFile = checkShipToAndFfl({ shipTo: row({ ffl_license_number: null }), ...gun })
 t('no licence on file warns but does not block', [noneOnFile.errors.length, noneOnFile.warnings.length], [0, 1])
+t('the warnings say inside sales acts', [renewed.warnings[0].includes('Inside sales will update the ERP'), noneOnFile.warnings[0].includes('Inside sales will add this one')], [true, true])
+
+// ---- the order page's details editor: only what was typed is checked
+t('nothing typed: nothing wrong yet, but submit will want one',
+  checkEnteredFfl({ shipTo: row({}), ...gun, ...none }),
+  { errors: [], warnings: [], needsEntry: true })
+t('an expiry with no number: the number is asked for',
+  checkEnteredFfl({ shipTo: row({}), ...gun, fflNumber: '', fflExpiresOn: '2027-01-31' }).errors,
+  ['Enter the full 15-character FFL number, e.g. 1-23-456-78-9A-12345.'])
+t('a number with no expiry: the expiry is asked for',
+  checkEnteredFfl({ shipTo: row({}), ...gun, fflExpiresOn: '' }).errors,
+  ['Enter the FFL expiration date.'])
+t('a complete licence passes, as in the writer',
+  checkEnteredFfl({ shipTo: row({}), ...gun }),
+  checkShipToAndFfl({ shipTo: row({}), ...gun }))
+t('no firearms: nothing is checked',
+  checkEnteredFfl({ shipTo: row({}), ...gun, requiresFfl: false, fflNumber: 'junk' }),
+  { errors: [], warnings: [], needsEntry: false })
+t('an inactive ship-to is not the details editor\'s problem',
+  checkEnteredFfl({ shipTo: row({ active_flag: 'N' }), ...gun }).errors,
+  [])
+
+// ---- requested ship date (submit_order: ship_date_past), Denver calendar
+t('ship date: blank is fine', shipDateError('', today), '')
+t('ship date: today is fine, yesterday has passed',
+  [shipDateError('2026-10-30', today), shipDateError('2026-10-29', today) !== ''],
+  ['', true])
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

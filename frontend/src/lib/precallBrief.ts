@@ -9,6 +9,7 @@
  */
 import { format, parseISO } from 'date-fns'
 import { count, dayMonth, humanize, money, shortDate } from '@/lib/format'
+import { dealerPo } from '@/lib/portalPo'
 
 /** The v_account_summary fields the owed line reads. */
 export interface OwedSummary {
@@ -90,7 +91,9 @@ export function lastOrderLine(o: LastOrderRow | null | undefined, shownDate?: st
     `${count(o.line_count)} line${o.line_count === 1 ? '' : 's'}`,
   ]
   if (o.order_date && o.order_date !== shownDate) parts.unshift(shortDate(o.order_date))
-  if (o.customer_po_number) parts.push(`their PO ${o.customer_po_number}`)
+  // Not a PORTAL- reference: the portal gave that to an order with no PO.
+  const po = dealerPo(o.customer_po_number)
+  if (po) parts.push(`their PO ${po}`)
   parts.push(
     o.open_line_count > 0
       ? `${count(o.backlog_qty)} unit${o.backlog_qty === 1 ? '' : 's'} still open`

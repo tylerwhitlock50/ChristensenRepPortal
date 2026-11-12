@@ -8,6 +8,13 @@ import { useSessionStore } from '@/stores/session'
 import type { OrderStatus, QcResult } from '@/types/domain'
 import type { FflContext, ShipToRow } from '@/lib/orderShipTo'
 import { submitOrderArgs, type OrderSource } from '@/lib/mcpOrders'
+import {
+  ORDER_DOCUMENTS_BUCKET,
+  isBucketMissing,
+  orderDocumentFolder,
+  toOrderDocuments,
+} from '@/lib/orderDocuments'
+import { uniqueUserIds, type OrderOwnerName } from '@/lib/orderOwners'
 
 /**
  * Portal-written orders (public.orders / order_lines / order_qc_results,
@@ -31,6 +38,10 @@ export interface OrderRow {
   customer_name: string
   customer_type: string | null
   status: OrderStatus
+  /**
+   * The customer's PO. Optional (20261113090000): submit_order() sets a blank
+   * one to PORTAL-<id>, so it is only ever null on a draft.
+   */
   po_number: string | null
   requested_ship_date: string | null
   notes: string | null
@@ -38,7 +49,7 @@ export interface OrderRow {
   ship_to_key: string | null
   ffl_license_number: string | null
   ffl_expires_on: string | null
-  /** Stamped by submit_order() — what order entry, which cannot read the ERP, works from. */
+  /** Stamped by submit_order() — the address as it was when the order was submitted, which is what inside sales keys. */
   ship_to_id: string | null
   ship_to_addr_no: number | null
   ship_to_name: string | null
@@ -82,6 +93,14 @@ export interface OrderRow {
   acknowledged_by: string | null
   /** Why lines are admin-priced (20261111170000); null when none are. */
   price_override_reason?: string | null
+  /**
+   * The buyer, snapshotted by submit_order() from the account's active
+   * contact (20261113090000) for the order loader to key. Null on a draft
+   * and when the order names no contact; optional until the migration is live.
+   */
+  contact_name?: string | null
+  contact_phone?: string | null
+  contact_email?: string | null
 }
 
 export interface OrderLineRow {
@@ -99,9 +118,11 @@ export interface OrderLineRow {
   /** The unit price the user told Claude to expect; display only. */
   mcp_expected_unit_price: number | null
   /**
-   * Admin pricing (20261112120000), read-only here: a trigger refuses a
+   * Hand pricing (20261112120000), read-only here: a trigger refuses a
    * client write to any of them. Optional until the migration is live.
-   * 'admin' = priced by an admin (lib/adminPricing.ts has the rules).
+   * 'admin' = priced by hand, by an admin or inside sales
+   * (lib/adminPricing.ts has the rules). Such lines may repeat a part_id at
+   * different prices: identify a line by `id`.
    */
   price_source?: 'list' | 'admin'
   /** The published price when drafted; null = on no list for the account. */
@@ -137,14 +158,15 @@ export interface OrderDetail {
 // ---------------------------------------------------------------- reads
 
 /** Everything RLS lets the caller read — their own orders, plus the book's
- *  for a principal. Admin sees all; the views split by status client-side. */
+ *  for a principal. An admin sees all, and so does inside sales (every
+ *  account is on their book); the views split by status client-side. */
 export function useMyOrders() {
   const session = useSessionStore()
   return useQuery({
     queryKey: computed(() => qk.orders.list(session.user?.id ?? '')),
     enabled: computed(() => !!session.user),
     queryFn: async (): Promise<OrderRow[]> => {
-      // An admin's read is every order ever written, which outgrows
+      // An admin's (or inside sales') read is every order ever written, which outgrows
       // PostgREST's 1,000-row cap within a season — and the views split by
       // status client-side, so a silently truncated list loses old drafts
       // first. id breaks created_at ties so pages never overlap.
@@ -189,6 +211,58 @@ export function useOrderDetail(orderId: MaybeRef<number>) {
       }
     },
   })
+}
+
+/**
+ * Who drafted these orders, by user id: order_owner_names() (20261113090000)
+ * gives a display name and a role, never an email, for the users the caller
+ * may name (themselves; anyone for an admin or inside sales; otherwise the
+ * owners of orders they can read). One call per page for every id on it,
+ * the viewer's own left out.
+ *
+ * Names barely change, so each viewer's answers are kept for the session
+ * and only ids not asked about yet go to the server: the list, the queue
+ * and the order page share them. An id the caller may not name is
+ * remembered as unknown (no row) and the screen says less. On a database
+ * without the function the page simply shows no names.
+ */
+const ownerNameCache = new Map<string, Map<string, OrderOwnerName | null>>()
+
+export function useOrderOwnerNames(userIds: MaybeRef<readonly (string | null | undefined)[]>) {
+  const session = useSessionStore()
+  const viewer = computed(() => session.user?.id ?? '')
+  // The viewer is "you" (lib/orderOwners.ts ownerLabel): no need to ask.
+  const ids = computed(() => uniqueUserIds(unref(userIds)).filter((id) => id !== viewer.value))
+  const query = useQuery({
+    queryKey: computed(() => [...qk.orders.root(), 'owner-names', viewer.value, ids.value] as const),
+    enabled: computed(() => !!viewer.value && ids.value.length > 0),
+    staleTime: 10 * 60_000,
+    // A status filter changes the id set: keep the names on screen meanwhile.
+    placeholderData: keepPreviousData,
+    queryFn: async (): Promise<Record<string, OrderOwnerName>> => {
+      const want = ids.value
+      let known = ownerNameCache.get(viewer.value)
+      if (!known) {
+        known = new Map()
+        ownerNameCache.set(viewer.value, known)
+      }
+      const missing = want.filter((id) => !known.has(id))
+      if (missing.length > 0) {
+        const { data, error } = await db.rpc('order_owner_names', { p_user_ids: missing })
+        if (error && !isMissingDbObject(error)) throw error
+        for (const id of missing) known.set(id, null)
+        for (const row of (data ?? []) as OrderOwnerName[]) known.set(row.user_id, row)
+      }
+      const out: Record<string, OrderOwnerName> = {}
+      for (const id of want) {
+        const row = known.get(id)
+        if (row) out[id] = row
+      }
+      return out
+    },
+  })
+  const names = computed<Record<string, OrderOwnerName>>(() => query.data.value ?? {})
+  return { names, query }
 }
 
 /** The entry queue: everything post-draft that isn't closed out, oldest
@@ -334,15 +408,96 @@ export function useUpdateDraftOrder() {
   })
 }
 
+type DocumentsBucket = ReturnType<typeof supabase.storage.from>
+
+/**
+ * Delete a draft, documents first. Storage keeps no link to the orders row,
+ * so a draft deleted with its customer's PO still in `<id>/` would leave the
+ * file in the bucket for good, readable by no screen. Every document is
+ * removed first; the bucket lets the person who added one, an admin or
+ * inside sales remove it, so a rep deleting a draft inside sales attached a
+ * PO to is stopped before the draft is deleted (their own files are gone by
+ * then; the others stay with the draft) and told what to do instead.
+ *
+ * The row is read fresh before anything is touched: the screen asking may
+ * be showing a cached copy (orders stay fresh for a minute), and the bucket
+ * lets the uploader, inside sales or an admin remove a SUBMITTED order's
+ * files just as well, the PO inside sales keys from included. Anything but
+ * a draft is refused before a file goes. The delete itself is pinned to
+ * status = 'draft' too: RLS lets an admin delete an order in any status.
+ *
+ * A delete RLS filters out is not an error, it just deletes nothing (the
+ * caller does not own the draft, or it is no longer a draft): hence the check.
+ * Apart from useMutation so it can be tested against stubs.
+ */
+export async function deleteDraftOrder(
+  client: Pick<SupabaseClient, 'from'>,
+  bucket: Pick<DocumentsBucket, 'list' | 'remove'>,
+  id: number,
+): Promise<void> {
+  const fresh = await client.from('orders').select('id, status').eq('id', id).maybeSingle()
+  if (fresh.error) throw fresh.error
+  if (!fresh.data) throw new Error("That draft wasn't found: it may have been deleted already.")
+  if (fresh.data.status !== 'draft') throw new Error('This order is no longer a draft; open its page.')
+
+  const listed = await bucket.list(orderDocumentFolder(id), { limit: 1000 })
+  // No bucket yet (a database before 20261113090000): nothing to remove.
+  if (listed.error && !isBucketMissing(listed.error)) throw listed.error
+  const paths = toOrderDocuments(id, listed.data ?? []).map((d) => d.path)
+  if (paths.length > 0) {
+    const removed = await bucket.remove(paths)
+    if (removed.error) throw removed.error
+    const left = paths.length - (removed.data?.length ?? 0)
+    if (left > 0) {
+      throw new Error(
+        `This draft wasn't deleted: ${left} of its documents ${left === 1 ? 'was' : 'were'} added by ` +
+          'someone else, and only they, inside sales or an admin can remove ' +
+          `${left === 1 ? 'it' : 'them'}. Cancel the draft instead, or ask inside sales or an ` +
+          'admin to remove its documents.',
+      )
+    }
+  }
+  const { data, error } = await client
+    .from('orders')
+    .delete()
+    .eq('id', id)
+    .eq('status', 'draft')
+    .select('id')
+  if (error) throw error
+  if (!data?.length) {
+    throw new Error(
+      "That draft wasn't deleted. Only its owner or an admin can delete a draft, and only while it is a draft.",
+    )
+  }
+}
+
 export function useDeleteDraftOrder() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (id: number) => {
-      const { error } = await db.from('orders').delete().eq('id', id)
-      if (error) throw error
+    mutationFn: (id: number) =>
+      deleteDraftOrder(db, supabase.storage.from(ORDER_DOCUMENTS_BUCKET), id),
+    // Settled, not success: documents may have gone even when the row stayed.
+    onSettled: (_data, _error, id) => {
+      invalidateOrders(qc)
+      void qc.invalidateQueries({ queryKey: qk.orders.documents(id) })
     },
-    onSuccess: () => invalidateOrders(qc),
   })
+}
+
+/**
+ * What the database holds for a draft's lines right now, the columns the
+ * writer's save guard reads (lib/adminPricing.ts writerSaveRefusal). Read
+ * fresh, never from the cache: it is the check before a delete-then-insert.
+ */
+export async function fetchDraftLineState(
+  orderId: number,
+): Promise<Pick<OrderLineRow, 'id' | 'price_source' | 'part_unresolved'>[]> {
+  const { data, error } = await db
+    .from('order_lines')
+    .select('id, price_source, part_unresolved')
+    .eq('order_id', orderId)
+  if (error) throw error
+  return (data ?? []) as Pick<OrderLineRow, 'id' | 'price_source' | 'part_unresolved'>[]
 }
 
 /**
@@ -353,18 +508,20 @@ export function useDeleteDraftOrder() {
 export function useSaveDraftLines() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (input: { orderId: number; lines: DraftLineInput[] }) => {
+    /** Resolves to the new lines' ids: what the next save checks against. */
+    mutationFn: async (input: { orderId: number; lines: DraftLineInput[] }): Promise<number[]> => {
       const { error: deleteError } = await db
         .from('order_lines')
         .delete()
         .eq('order_id', input.orderId)
       if (deleteError) throw deleteError
-      if (input.lines.length > 0) {
-        const { error } = await db
-          .from('order_lines')
-          .insert(input.lines.map((l) => ({ ...l, order_id: input.orderId })))
-        if (error) throw error
-      }
+      if (input.lines.length === 0) return []
+      const { data, error } = await db
+        .from('order_lines')
+        .insert(input.lines.map((l) => ({ ...l, order_id: input.orderId })))
+        .select('id')
+      if (error) throw error
+      return ((data ?? []) as { id: number }[]).map((r) => r.id)
     },
     onSuccess: () => invalidateOrders(qc),
   })
@@ -444,9 +601,12 @@ export function useResolveDiscrepancy() {
 }
 
 /**
- * Admin only: set a Claude-drafted line's price, or reset it to the
- * published price (unitPrice null). The database decides whether the line
- * stays admin-priced; a reason is required when the order has none yet.
+ * Set a Claude-drafted line's price, or reset it to the published price
+ * (unitPrice null): an admin on any draft, inside sales (can_price_orders())
+ * on a draft they own; anyone else is refused with not_owner. The database
+ * decides whether the line stays hand-priced; a reason is required when the
+ * order has none yet. The line is named by its id — the same part can be on
+ * two lines.
  */
 export function useSetLinePrice() {
   const qc = useQueryClient()
@@ -463,13 +623,26 @@ export function useSetLinePrice() {
   })
 }
 
-/** Remove one line from a draft (RLS: the owner, or an admin). */
+/**
+ * Remove one line from a draft, by line id. RLS lets the draft's owner
+ * (whatever their role) or an admin do it, and a delete RLS filters out is
+ * not an error, it just removes nothing: hence the check.
+ */
 export function useRemoveOrderLine() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (lineId: number) => {
-      const { error } = await db.from('order_lines').delete().eq('id', lineId)
+      const { data, error } = await db
+        .from('order_lines')
+        .delete()
+        .eq('id', lineId)
+        .select('id')
       if (error) throw error
+      if (!data?.length) {
+        throw new Error(
+          "That line wasn't removed. Only the order's owner or an admin can remove a line from a draft.",
+        )
+      }
     },
     onSuccess: () => invalidateOrders(qc),
   })

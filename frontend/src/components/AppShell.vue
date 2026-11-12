@@ -16,7 +16,7 @@ import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
 import GlobalSearch from '@/components/GlobalSearch.vue'
 import { daysUntilDue } from '@/lib/format'
-import { ordersSectionOpen } from '@/lib/mcpOrders'
+import { ordersSectionOpen } from '@/lib/ordersGate'
 
 const session = useSessionStore()
 const router = useRouter()
@@ -60,12 +60,17 @@ const offlineSavedAt = computed(() => {
 /* Open-mission count on the Today tab. Shares the Today page's query key, so
    when Today has loaded this costs nothing extra. Gated off for admins: their
    unscoped needs-attention select is the whole company's list, and the shell
-   must not fire that on every page. Also gated on the recommendations flag —
-   while the feature is hidden there is no Today tab to badge, so the shell
-   must not poll for it. */
+   must not fire that on every page. Off for inside sales for the same
+   reason (they read every account) and because they have no Today tab. Also
+   gated on the recommendations flag — while the feature is hidden there is
+   no Today tab to badge, so the shell must not poll for it. */
 const needsAttention = useNeedsAttention({
   enabled: computed(
-    () => session.isSignedIn && !session.isAdmin && flags.recommendations.value,
+    () =>
+      session.isSignedIn &&
+      !session.isAdmin &&
+      !session.isReadOnlyRole &&
+      flags.recommendations.value,
   ),
 })
 const missionCount = computed(
@@ -84,8 +89,10 @@ const missionsLate = computed(() =>
    always sends `.eq('user_id', …)`, so an admin sees their own list, not the
    company's. Gating it would hide an admin's own overdue follow-ups. It IS
    gated on the tasks flag, like the mission badge: no tab, no badge, no
-   request. */
-const dueTasks = useMyDueTasks({ enabled: flags.tasks })
+   request — which also covers inside sales, who have no Tasks tab. */
+const dueTasks = useMyDueTasks({
+  enabled: computed(() => flags.tasks.value && !session.isReadOnlyRole),
+})
 const tasksDue = computed(() => dueTasks.data.value?.due ?? 0)
 const tasksOverdue = computed(() => dueTasks.data.value?.overdue ?? 0)
 
@@ -112,12 +119,10 @@ type NavItem = {
    the two render sites. Flags load as false, so the bar renders the lean
    set first and never flashes a hidden feature. */
 const nav = computed<NavItem[]>(() => {
-  // The order-entry role has an empty book by design: Overview, Intel,
-  // Accounts and Find would all render blank for them, so their bar is just
-  // the entry queue (plus Admin below if they somehow hold both roles).
-  if (session.isOrderEntry) {
-    return [{ to: '/orders', label: 'Orders', icon: 'orders' }]
-  }
+  // Inside sales (order_entry) reads every account (20261113090000), so it
+  // gets the same data tabs as a rep, and Orders, where it works. Not the
+  // capture tabs below: Today and Tasks are a rep's own missions and
+  // follow-ups, and inside sales can write neither.
   const items: NavItem[] = [
     { to: { name: 'overview' }, label: 'Overview', icon: 'overview' },
     // Path, not name, for section parents: keeps the item active on every
@@ -145,7 +150,7 @@ const nav = computed<NavItem[]>(() => {
     // Path, like Intel: stays lit on the writer, the detail, the queue.
     items.push({ to: '/orders', label: 'Orders', icon: 'orders' })
   }
-  if (flags.recommendations.value) {
+  if (flags.recommendations.value && !session.isReadOnlyRole) {
     items.splice(0, 0, {
       to: { name: 'today' },
       label: 'Today',
@@ -157,7 +162,7 @@ const nav = computed<NavItem[]>(() => {
       },
     })
   }
-  if (flags.tasks.value) {
+  if (flags.tasks.value && !session.isReadOnlyRole) {
     items.push({
       to: { name: 'tasks' },
       label: 'Tasks',
@@ -193,6 +198,14 @@ const wide = computed(
     route.path.startsWith('/admin') ||
     route.path.startsWith('/intel') ||
     route.path.startsWith('/agency'),
+)
+
+/* The account menu's role line. The stored 'order_entry' is called inside
+   sales everywhere a person reads it. (Spelled out here rather than imported
+   from types/domain: that module's label maps would ride into the entry
+   chunk with it.) */
+const roleLabel = computed(() =>
+  session.isOrderEntry ? 'inside sales' : (session.role ?? ''),
 )
 
 const initials = computed(() => {
@@ -329,7 +342,7 @@ async function signOut() {
                   {{ session.user?.email }}
                 </p>
                 <p class="text-muted mt-1 text-xs capitalize">
-                  {{ session.role }}
+                  {{ roleLabel }}
                   <template v-if="session.profile?.sales_rep_key">
                     · {{ session.profile.sales_rep_key }}
                   </template>

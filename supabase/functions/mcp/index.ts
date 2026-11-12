@@ -60,8 +60,10 @@ const INSTRUCTIONS = `
 Sales data for a Christensen Arms rep territory. Read-only, except for the
 order drafts described under "Ordering" when that section is present.
 
-Scope is automatic: every tool returns only the accounts assigned to the
-connected rep. There is no way to widen it and no need to filter for it.
+Scope is automatic: every tool returns only the accounts the connected user
+may see: a rep's own book, or every account for an admin or inside sales
+(\`whoami\` says which). There is no way to widen it and no need to filter
+for it.
 
 Start with \`whoami\` — it reports \`data_through\`, the newest invoice date in
 the warehouse, and when the data was last loaded. Orders, shipments and

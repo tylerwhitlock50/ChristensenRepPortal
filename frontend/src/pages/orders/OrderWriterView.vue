@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { useEventListener } from '@vueuse/core'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AccountPicker from '@/components/AccountPicker.vue'
 import McpDraftReview from '@/components/orders/McpDraftReview.vue'
+import OrderDocumentsCard from '@/components/orders/OrderDocumentsCard.vue'
 import { useTerritoryAccounts } from '@/composables/useOverview'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 import {
@@ -16,6 +18,7 @@ import {
   type PriceListRow,
 } from '@/composables/usePriceLists'
 import {
+  fetchDraftLineState,
   useCreateDraftOrder,
   useDeleteDraftOrder,
   useOrderCustomer,
@@ -26,12 +29,14 @@ import {
   useSubmitOrder,
   useUpdateDraftOrder,
   type DraftLineInput,
+  type OrderDetail,
 } from '@/composables/useOrders'
 import { orderTotal, priceOrder, type PricingLineInput } from '@/lib/orderPricing'
 import {
   checkShipToAndFfl,
   isActiveShipTo,
   orderableShipTos,
+  shipDateError,
   shipToLabel,
 } from '@/lib/orderShipTo'
 import { moneyCents } from '@/lib/format'
@@ -39,11 +44,17 @@ import { newPhotoId } from '@/lib/photos'
 import {
   canSubmitWithAck,
   canEditDraftInWriter,
+  customerPoOf,
   needsAcknowledgement,
+  noPoHint,
+  PO_MAX_LENGTH,
+  poForSave,
+  poInputError,
   rpcErrorText,
   type OrderSource,
 } from '@/lib/mcpOrders'
-import { blocksWriterEdit } from '@/lib/adminPricing'
+import { blocksWriterEdit, writerSaveRefusal } from '@/lib/adminPricing'
+import { useSessionStore } from '@/stores/session'
 
 /**
  * The order writer. Flow: pick the account → its customer_type resolves the
@@ -57,11 +68,19 @@ import { blocksWriterEdit } from '@/lib/adminPricing'
  * nothing here is authoritative: submit_order() re-validates the lines
  * against today's effective lists and recomputes every discount
  * server-side. A stale tab cannot submit stale prices.
+ *
+ * Saving replaces every line of the draft (useSaveDraftLines), so the
+ * writer never opens a draft it would damage — hand-priced or unmatched
+ * lines, or one it may not change (not its owner's, unless an admin) — and
+ * checks the database again right before each save, since what it was
+ * filled from may be a cached read that Claude or a hand price has since
+ * overtaken.
  */
 const props = defineProps<{ id?: string }>()
 
 const router = useRouter()
 const route = useRoute()
+const session = useSessionStore()
 
 /**
  * ?customer=<key> — "New order" on an account page lands here with the
@@ -92,6 +111,7 @@ const orderId = ref<number | null>(props.id ? Number(props.id) : null)
 // prefilled account as an edit, so backing out of an untouched order does
 // not ask "Leave without saving this draft?".
 const customerKey = ref(routeCustomer)
+/** Optional (20261113090000): a blank PO is submitted as PORTAL-<order id>. */
 const poNumber = ref('')
 const shipDate = ref('')
 const notes = ref('')
@@ -104,6 +124,22 @@ const lines = ref<LocalLine[]>([])
 const dirty = ref(false)
 const formError = ref('')
 const hydrated = ref(!props.id)
+/**
+ * The ids of the draft's lines as the database had them when this screen
+ * was filled (or last saved): a save first checks they are still the ones
+ * there (writerSaveRefusal), then replaces them.
+ */
+let lineIdsOnServer: number[] = []
+/**
+ * Set when the draft changed elsewhere into one this writer must not save
+ * (hand-priced or unmatched lines, or out of draft) while there were
+ * unsaved edits here: Save and Submit stop, and the screen says why.
+ */
+const staleNote = ref('')
+/** What a blank PO becomes on submit, said under the field. */
+const poHint = computed(() => noPoHint(poNumber.value, orderId.value))
+/** The order has a customer PO: a stored "No customer PO" warning is stale. */
+const hasPo = computed(() => !!customerPoOf(poNumber.value, orderId.value))
 
 /**
  * Provenance of the draft being edited. Read here, NEVER written back: the
@@ -189,28 +225,47 @@ const shipToCheck = computed(() =>
 // The route guard has already loaded the flags, so this is a cache read.
 const featureFlags = useFeatureFlags()
 const existing = props.id ? useOrderDetail(Number(props.id)) : null
+/**
+ * Not a draft; (hand entry off) a hand-typed draft; a PO staged with hand
+ * prices / unmatched items — this writer reprices every line from the
+ * lists, so it would drop them; or a draft this user may not change (the
+ * update would match no row): the order page instead, which has the price
+ * controls and the details editor. (It is also why this screen never sees
+ * the same part on two lines: only hand-priced lines may repeat one.)
+ */
+function writerRefuses(detail: OrderDetail): boolean {
+  return (
+    detail.order.status !== 'draft' ||
+    !canEditDraftInWriter(featureFlags.orders.value, detail.order.source) ||
+    blocksWriterEdit(detail.lines) ||
+    (detail.order.user_id !== session.user?.id && !session.isAdmin)
+  )
+}
 watch(
   () => existing?.data.value,
   (detail) => {
-    if (!detail || hydrated.value) return
-    // Not a draft, (hand entry off) a hand-typed draft, or a PO staged with
-    // admin prices / unmatched items — this writer reprices every line from
-    // the lists, so it would drop them: read-only detail, which has the
-    // admin price controls.
-    if (
-      detail.order.status !== 'draft' ||
-      !canEditDraftInWriter(featureFlags.orders.value, detail.order.source) ||
-      blocksWriterEdit(detail.lines)
-    ) {
-      void router.replace({ name: 'order-detail', params: { id: detail.order.id } })
+    if (!detail) return
+    // Every time the order data changes, not only before filling the form:
+    // a refetch can show Claude or a hand price has changed the draft.
+    if (writerRefuses(detail)) {
+      if (!dirty.value) {
+        void router.replace({ name: 'order-detail', params: { id: detail.order.id } })
+      } else {
+        staleNote.value =
+          'This draft was changed somewhere else and can no longer be edited here (it has ' +
+          "hand-priced or unmatched lines, or it isn't a draft any more). Your changes here " +
+          "can't be saved: open the order page to see it as it is now."
+      }
       return
     }
+    if (hydrated.value) return
     source.value = detail.order.source ?? 'portal'
     sourceRef.value = detail.order.source_ref
     mcpWarnings.value = detail.order.mcp_warnings
     isTest.value = detail.order.is_test === true
     customerKey.value = detail.order.customer_key
-    poNumber.value = detail.order.po_number ?? ''
+    // A draft still on its own PORTAL-<id> has no customer PO: a blank field.
+    poNumber.value = customerPoOf(detail.order.po_number, detail.order.id)
     shipDate.value = detail.order.requested_ship_date ?? ''
     notes.value = detail.order.notes ?? ''
     // A saved draft keeps the FFL the rep entered.
@@ -229,6 +284,7 @@ watch(
       qty: l.qty,
       listUnitPrice: l.unit_price,
     }))
+    lineIdsOnServer = detail.lines.map((l) => l.id)
     hydrated.value = true
     // Hydration is not a user edit.
     void Promise.resolve().then(() => (dirty.value = false))
@@ -500,9 +556,16 @@ const saving = computed(
 )
 
 async function persistDraft(): Promise<number> {
+  if (staleNote.value) throw new Error(staleNote.value)
+  // The destructive save checks the database first, never the cached copy
+  // this screen was filled from (see lineIdsOnServer).
+  if (orderId.value != null) {
+    const refusal = writerSaveRefusal(await fetchDraftLineState(orderId.value), lineIdsOnServer)
+    if (refusal) throw new Error(refusal)
+  }
   const header = {
     customer_key: customerKey.value,
-    po_number: poNumber.value.trim() || null,
+    po_number: poForSave(poNumber.value, orderId.value),
     requested_ship_date: shipDate.value || null,
     notes: notes.value.trim() || null,
     ship_to_key: shipToKey.value || null,
@@ -534,7 +597,15 @@ async function persistDraft(): Promise<number> {
       effective_unit_price: p?.effectiveUnitPrice ?? l.listUnitPrice,
     }
   })
-  await saveLines.mutateAsync({ orderId: id, lines: draftLines })
+  try {
+    lineIdsOnServer = await saveLines.mutateAsync({ orderId: id, lines: draftLines })
+  } catch (err) {
+    // The delete may have gone through before the insert failed: what is
+    // there now is what the next save checks against.
+    const now = await fetchDraftLineState(id).catch(() => null)
+    if (now) lineIdsOnServer = now.map((l) => l.id)
+    throw err
+  }
   dirty.value = false
   editedHere.value = true
   return id
@@ -546,7 +617,7 @@ async function onSaveDraft() {
     formError.value = 'Pick an account first.'
     return
   }
-  formError.value = qtyError()
+  formError.value = poInputError(poNumber.value, orderId.value) || qtyError()
   if (formError.value) return
   try {
     await persistDraft()
@@ -571,7 +642,9 @@ async function onSubmit() {
       : 'Still checking whether this order needs an FFL — try again in a moment.'
     return
   }
-  formError.value = shipToCheck.value.errors[0] ?? qtyError()
+  formError.value =
+    shipToCheck.value.errors[0] ??
+    (poInputError(poNumber.value, orderId.value) || shipDateError(shipDate.value) || qtyError())
   if (formError.value) return
   if (!canSubmit.value) {
     formError.value = "Tick \"I've reviewed this order and it is correct\" before submitting."
@@ -587,9 +660,19 @@ async function onSubmit() {
 }
 
 async function onDiscard() {
+  formError.value = ''
+  // Changed somewhere else, perhaps submitted: the order page shows what it
+  // is now and what can be done with it. Deleting from here could take the
+  // documents off an order in the entry queue.
+  if (staleNote.value) return
   if (orderId.value != null) {
-    if (!window.confirm('Delete this draft order?')) return
-    await deleteOrder.mutateAsync(orderId.value)
+    if (!window.confirm('Delete this draft order and the documents filed with it?')) return
+    try {
+      await deleteOrder.mutateAsync(orderId.value)
+    } catch (err) {
+      formError.value = rpcErrorText((err as { message?: string }).message) || "The draft wasn't deleted."
+      return
+    }
   }
   dirty.value = false
   void router.push({ name: 'orders' })
@@ -598,6 +681,13 @@ async function onDiscard() {
 onBeforeRouteLeave(() => {
   if (!dirty.value) return true
   return window.confirm('Leave without saving this draft?')
+})
+// A reload, a closed tab, or a document opening in this tab is not a route
+// change: the browser's own prompt covers those.
+useEventListener(window, 'beforeunload', (e: BeforeUnloadEvent) => {
+  if (!dirty.value) return
+  e.preventDefault()
+  e.returnValue = ''
 })
 </script>
 
@@ -612,12 +702,26 @@ onBeforeRouteLeave(() => {
     >
       Test order — Claude drafted this as a test. It cannot be submitted.
     </p>
+    <p
+      v-if="staleNote"
+      role="alert"
+      class="border-danger text-ink bg-surface border-l-[3px] px-3 py-2 text-[14px] font-semibold"
+    >
+      {{ staleNote }}
+      <RouterLink
+        v-if="orderId != null"
+        :to="{ name: 'order-detail', params: { id: orderId } }"
+        class="underline"
+      >Open the order page</RouterLink>
+    </p>
+    <!-- The no-PO hint sits under the PO field (step 5), once. -->
     <McpDraftReview
       v-if="isMcp"
       :source="source"
       :warnings="mcpWarnings"
       :source-ref="sourceRef"
       :edited="editedHere || dirty"
+      :has-po="hasPo"
     />
 
     <!-- 1 · Account -->
@@ -652,7 +756,7 @@ onBeforeRouteLeave(() => {
           class="border-line border-l-danger text-ink-2 border border-l-[3px] p-3 text-[14px]"
         >
           <strong class="text-ink">This account has no ship-to address in the ERP.</strong>
-          An order can't be submitted until order entry adds one.
+          An order can't be submitted until inside sales adds one in the ERP.
         </p>
         <fieldset v-else>
           <legend class="u-label text-ink pb-2">Ship to</legend>
@@ -1027,8 +1131,10 @@ onBeforeRouteLeave(() => {
           <span class="u-label text-ink block pb-2">Customer PO #</span>
           <input
             v-model="poNumber"
+            :maxlength="PO_MAX_LENGTH"
             class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
           />
+          <span v-if="poHint" class="text-muted block pt-1 text-[13px]">{{ poHint }}</span>
         </label>
         <label class="block">
           <span class="u-label text-ink block pb-2">Requested ship date</span>
@@ -1039,7 +1145,9 @@ onBeforeRouteLeave(() => {
           />
         </label>
         <label class="block">
-          <span class="u-label text-ink block pb-2">Notes for order entry</span>
+          <span class="u-label text-ink block pb-2">
+            {{ session.isOrderEntry ? 'Notes' : 'Notes for inside sales' }}
+          </span>
           <input
             v-model="notes"
             class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
@@ -1065,18 +1173,29 @@ onBeforeRouteLeave(() => {
         <AppButton
           variant="primary"
           :loading="submitOrder.isPending.value || saving"
-          :disabled="lines.length === 0 || !canSubmit"
+          :disabled="lines.length === 0 || !canSubmit || !!staleNote"
           @click="onSubmit"
         >
           Submit order
         </AppButton>
-        <AppButton variant="secondary" :loading="saving" @click="onSaveDraft">
+        <AppButton variant="secondary" :loading="saving" :disabled="!!staleNote" @click="onSaveDraft">
           Save draft
         </AppButton>
-        <AppButton variant="ghost" @click="onDiscard">
+        <AppButton
+          variant="ghost"
+          :loading="deleteOrder.isPending.value"
+          :disabled="!!staleNote"
+          @click="onDiscard"
+        >
           {{ orderId == null ? 'Discard' : 'Delete draft' }}
         </AppButton>
       </div>
     </AppCard>
+
+    <!-- A saved draft's documents: the PO a Claude draft was written from, to
+         check the lines against, and the place to add one. Last on purpose:
+         a new order has no id to file them under until its first save, and a
+         card arriving then must not push Submit out from under a thumb. -->
+    <OrderDocumentsCard v-if="orderId != null && hydrated" :key="orderId" :order-id="orderId" />
   </div>
 </template>

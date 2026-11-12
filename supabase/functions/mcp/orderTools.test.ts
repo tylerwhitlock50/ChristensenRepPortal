@@ -9,7 +9,7 @@
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 import * as mcpAuth from '../_shared/mcpAuth.ts'
 import { extractToken, jwtClaims, knownScopes, type McpCaller } from '../_shared/mcpAuth.ts'
-import { describeTool, TOOLS, type ToolDef } from './tools.ts'
+import { describeTool, ToolError, TOOLS, type ToolDef } from './tools.ts'
 import {
   ADMIN_ORDERING_INSTRUCTIONS,
   decoratePreview,
@@ -17,6 +17,8 @@ import {
   forbiddenKeysIn,
   type McpOrdersSetting,
   NEXT_STEP,
+  hasCustomerPo,
+  isAdminCaller,
   ORDER_TOOLS,
   ORDERING_INSTRUCTIONS,
   orderAccess,
@@ -30,6 +32,7 @@ import {
   toolsFor,
   withOrdering,
 } from './orderTools.ts'
+import { documentDisplayName, orderDocumentPath, sanitizeDocumentName } from './orderDocuments.ts'
 
 type Row = Record<string, unknown>
 
@@ -92,17 +95,18 @@ function fakeDb(
   tables: Record<string, unknown> = {},
 ) {
   const rpcCalls: { name: string; params: Record<string, unknown> }[] = []
-  const tableCalls: { table: string; filters: [string, unknown][] }[] = []
+  const tableCalls: { table: string; filters: [string, unknown][]; columns: string[] }[] = []
 
   function builder(table: string) {
     const filters: [string, unknown][] = []
-    tableCalls.push({ table, filters })
+    const columns: string[] = []
+    tableCalls.push({ table, filters, columns })
     const result = () => {
       const data = tables[table]
       return { data: data ?? null, error: null }
     }
     const b: Record<string, unknown> = {
-      select: () => b,
+      select: (cols?: string) => (columns.push(...String(cols ?? '').split(',').map((c) => c.trim())), b),
       eq: (col: string, v: unknown) => (filters.push([col, v]), b),
       is: () => b,
       in: () => b,
@@ -682,14 +686,16 @@ Deno.test('status and list: scoped to the caller where "mine" matters', async ()
   Confirmations (20261112090000): enforced in SQL, surfaced here
 ============================================================================*/
 
-Deno.test('confirmations: schemas require the PO and part_confirmed', () => {
+Deno.test('confirmations: schemas ask for the PO (optional) and require part_confirmed', () => {
   for (const name of ['create_order_draft', 'update_order_draft']) {
     const schema = tool(name).inputSchema as {
       required: string[]
       properties: Record<string, { items?: { required: string[]; properties: Record<string, unknown> } }>
     }
-    assert(schema.required.includes('po_number'), `${name}: po_number required`)
-    for (const f of ['customer_confirmed', 'ship_to_confirmed', 'is_test']) {
+    // 20261113090000: the PO is asked for, not required (no_po_confirmed).
+    assert(!schema.required.includes('po_number'), `${name}: po_number not required`)
+    assert('po_number' in schema.properties, `${name}: po_number accepted`)
+    for (const f of ['customer_confirmed', 'ship_to_confirmed', 'is_test', 'no_po_confirmed']) {
       assert(f in schema.properties, `${name}: ${f} accepted`)
     }
     const line = schema.properties.lines.items!
@@ -743,6 +749,11 @@ Deno.test('confirmations: a refusal carries its choices, part choices labelled',
 
   const po = orderToolError({ message: "po_required: the customer's PO number is required" })
   assert(/never\s+invent one/.test(po.message), 'po_required → ask, never invent')
+  const noPo = orderToolError({ message: 'po_confirmation_required: no customer PO number was given' })
+  assert(
+    /no_po_confirmed: true/.test(noPo.message) && /Never invent/.test(noPo.message),
+    'po_confirmation_required → ask; no_po_confirmed only on the user\'s word',
+  )
   const acct = orderToolError({ message: 'customer_confirmation_required:ALS SPORT: 4 active accounts' })
   assert(/customer_confirmed: true/.test(acct.message), 'account guidance')
 })
@@ -758,4 +769,412 @@ Deno.test('confirmations: search items carry a label from the general list price
   }
   eq(res.items[0].label, 'LH · Ridgeline FFT · Carbon/Gray · 300 PRC · 22 in · $1,566.67', 'label')
   eq(partLabel({ part_id: 'X' }), 'X', 'nothing to say → the part id')
+})
+
+/*============================================================================
+  Inside sales, the optional PO and order documents (20261113090000)
+============================================================================*/
+
+const INSIDE = () => caller({ role: 'rep', realRole: 'order_entry', fullName: 'Inside Sales' })
+
+Deno.test('inside sales: priced like an admin, a rep is not', () => {
+  assert(isAdminCaller(INSIDE()), 'order_entry takes the pricing schemas')
+  assert(isAdminCaller(caller()), 'so does an admin')
+  assert(!isAdminCaller(REP()), 'a rep does not')
+  const create = toolsFor(INSIDE(), setting(true), true).find((t) => t.name === 'create_order_draft')!
+  const line = (create.inputSchema as { properties: { lines: { items: { properties: Record<string, unknown> } } } })
+    .properties.lines.items.properties
+  assert('unit_price' in line && 'customer_part_ref' in line, 'inside sales may send the PO price and item number')
+  const repCreate = toolsFor(REP(), setting(true), true).find((t) => t.name === 'create_order_draft')!
+  const repLine = (repCreate.inputSchema as { properties: { lines: { items: { properties: Record<string, unknown> } } } })
+    .properties.lines.items.properties
+  assert(!('unit_price' in repLine), 'a rep\'s schema has no unit_price')
+  assert(/Free goods/.test(ADMIN_ORDERING_INSTRUCTIONS), 'the pricing paragraph explains free goods lines')
+})
+
+Deno.test('optional PO: no_po_confirmed is forwarded, and only as a boolean', () => {
+  const base = {
+    idempotency_key: 'k-12345678',
+    customer_key: 'C100',
+    lines: [{ part_id: 'P1', qty: 1, part_confirmed: true }],
+  }
+  const p = draftPayload({ ...base, no_po_confirmed: true }, true)
+  eq(p.no_po_confirmed, true, 'forwarded')
+  assert(!('po_number' in p), 'no PO is sent')
+  assert(!('no_po_confirmed' in draftPayload({ ...base, no_po_confirmed: 'yes' }, true)), 'a non-boolean is dropped')
+  assert(/no_po_confirmed/.test(ORDERING_INSTRUCTIONS) && /PORTAL-/.test(ORDERING_INSTRUCTIONS),
+    'instructions explain the no-PO path')
+})
+
+
+Deno.test('optional PO: a PO or item number sent as a number is kept, as its digits', () => {
+  const base = {
+    idempotency_key: 'k-12345678',
+    customer_key: 'C100',
+    lines: [{ part_id: 'P1', qty: 1, part_confirmed: true, customer_part_ref: 801150250 }],
+  }
+  const p = draftPayload({ ...base, po_number: 197065, no_po_confirmed: true }, true)
+  eq(p.po_number, '197065', 'a numeric PO is forwarded, not dropped')
+  eq((p.lines as Row[])[0].customer_part_ref, '801150250', 'a numeric PO item number is forwarded')
+  eq(draftPayload({ ...base, po_number: '  4471-A ' }, true).po_number, '4471-A', 'a string is trimmed as before')
+  const big = (() => {
+    try {
+      draftPayload({ ...base, po_number: 12345678901234567890 }, true)
+    } catch (e) {
+      return e as OrderToolError
+    }
+    return null
+  })()
+  assert(big instanceof OrderToolError && big.code === 'invalid_input' && /as a string/.test(big.message),
+    'an integer too large to be exact is refused, not rounded')
+})
+
+Deno.test('optional PO: the update path says to resend the PO; a removed PO is refused with that advice', () => {
+  assert(/On update_order_draft, send the PO already on the draft again as po_number/.test(ORDERING_INSTRUCTIONS.replace(/\s+/g, ' ')),
+    'instructions: resend the PO on update')
+  const noPo = orderToolError({ message: 'po_confirmation_required: no customer PO number was given' })
+  assert(/On update_order_draft, send the PO already on the draft again/.test(noPo.message), 'po_confirmation_required says so')
+  const removed = orderToolError({
+    message: 'po_would_be_removed: this draft has the customer PO 197065; send it again as po_number',
+  })
+  eq(removed.outcome, 'refused', 'refused')
+  assert(/as po_number/.test(removed.message) && /only a person removes a PO/.test(removed.message) && /portal/.test(removed.message),
+    'resend it; only a person removes it, in the portal')
+  assert(/197065/.test(removed.message), 'the stored PO the SQL named is in the text')
+  const withDetail = orderToolError({ message: 'po_would_be_removed:197065: send it again' })
+  assert(/customer PO \(197065\)/.test(withDetail.message), 'a PO in the detail is named')
+  const schema = tool('update_order_draft').inputSchema as { properties: Record<string, { description: string }> }
+  assert(/resend that PO as po_number/.test(schema.properties.no_po_confirmed.description), 'no_po_confirmed never removes a PO')
+  assert(/written to the sales order in the ERP/.test(schema.properties.notes.description) &&
+    /internal remarks/.test(schema.properties.notes.description), 'notes: written to the ERP, no internal remarks')
+  eq(hasCustomerPo('PORTAL-41', 41), false, 'PORTAL-<own id> is no customer PO')
+  eq(hasCustomerPo('portal-41', 41), false, 'in any letter case, as the SQL compares upper(po)')
+  eq(hasCustomerPo(' Portal-41 ', 41), false, 'trimmed, then any case')
+  eq(hasCustomerPo('  \t', 41), false, 'blank after trimming no-break spaces')
+  eq(hasCustomerPo('PORTAL-42', 41), true, 'another order\'s reference is just text here (SQL refuses it on write)')
+  eq(hasCustomerPo('197065', 41), true, 'a real PO')
+})
+
+Deno.test('errors: new SQL codes read as instructions (not_owner, ship_date_past, order_not_found)', () => {
+  const owner = orderToolError({ message: "not_owner: only the order's owner or an admin can set prices on it" })
+  assert(owner.outcome === 'refused' && /inside sales prices and submits only/.test(owner.message) &&
+    /an admin submits anyone's/.test(owner.message), 'not_owner explains D1')
+  const past = decoratePreview({
+    ...PREVIEW,
+    would_submit: { ok: false, error: 'ship_date_past: the requested ship date 2026-11-01 has passed; change it before submitting' },
+  })
+  const hint = String((past.would_submit as Row).hint)
+  assert(/Ask the user\s+for a new date/.test(hint) && /update_order_draft/.test(hint), `ship_date_past hint: ${hint}`)
+  const missing = orderToolError({ message: 'order_not_found: order 9 not found' })
+  assert(/list_my_order_drafts/.test(missing.message) && /owner/.test(missing.message), 'order_not_found: whose drafts can change')
+  const hand = orderToolError({ message: 'admin_price_requires_admin: order 9 has 1 line(s) priced by hand' })
+  assert(/only an admin, or inside sales on their own order/.test(hand.message), 'hand-priced submit: D1 wording')
+})
+
+Deno.test('errors: a pricing caller is never told that prices are never accepted', () => {
+  for (const [message, own] of [
+    ['invalid_input:unit_price: line P1 has 1.234; use 0-1,000,000 with at most 2 decimals', /at most 2 decimals/],
+    ['invalid_input:price_override_reason: 2 line(s) are admin-priced or unmatched; say why', /say why in\s+price_override_reason/],
+    ['invalid_input:duplicate_line:P1: the part appears twice at the same price', /one line with the\s+total qty/],
+    ['invalid_input:qty: must be a whole number', /Fix it and retry/],
+  ] as const) {
+    const priced = orderToolError({ message }, true)
+    assert(!/prices?[^.]*never\s+accepted/i.test(priced.message), `pricing caller, ${message}: no "prices are never accepted"`)
+    assert(own.test(priced.message), `pricing caller, ${message}: its own sentence`)
+  }
+  // A rep is still told, for the generic case.
+  assert(/never accepted/.test(orderToolError({ message: 'invalid_input:qty: must be a whole number' }).message), 'rep: generic')
+})
+
+Deno.test('errors: a rep is never told to send unit_price 0 for a duplicate line', () => {
+  // A rep earns duplicate_line from one part on two list-priced lines, and
+  // draftPayload refuses a rep's unit_price, so the advice is one line.
+  const rep = orderToolError(
+    { message: 'invalid_input:duplicate_line:P1: the part appears twice at the same price; send one line with the total qty' },
+    false,
+  )
+  eq(rep.outcome, 'refused', 'refused')
+  assert(/one line with the total qty/.test(rep.message), `rep: one line (${rep.message})`)
+  assert(!/unit_price/.test(rep.message.split(' [')[0]), `rep: never told to send a unit_price (${rep.message})`)
+  assert(/an admin prices them in the\s+portal/.test(rep.message), 'rep: free goods are an admin\'s, in the portal')
+})
+
+Deno.test('errors: through the handler, inside sales gets the pricing wording', async () => {
+  const { db } = fakeDb({
+    mcp_create_order_draft: raise('invalid_input:duplicate_line:P1: the part appears twice at the same price; send one line with the total qty'),
+    mcp_log_call: ok(null),
+  })
+  const err = await rejects(tool('create_order_draft').handler(GOOD_ARGS, ctxFor(db, INSIDE())))
+  assert(!/never accepted/.test(err.message) && /free goods/.test(err.message), `duplicate line: ${err.message}`)
+
+  // A key a pricing caller may not send either is refused locally, without
+  // claiming prices are never accepted.
+  const local = fakeDb({ mcp_log_call: ok(null) })
+  const top = await rejects(tool('create_order_draft').handler({ ...GOOD_ARGS, unit_price: 5 }, ctxFor(local.db, INSIDE())))
+  assert(/unit_price cannot be sent/.test(top.message) && /only as a line's unit_price/.test(top.message) &&
+    !/never accepted: the server prices/.test(top.message), `top-level price: ${top.message}`)
+})
+
+Deno.test('wording: the pricing schemas served to inside sales say admin or inside sales', () => {
+  const inside = toolsFor(INSIDE(), setting(true), true)
+  const served = JSON.stringify(inside.filter((t) => ['create_order_draft', 'update_order_draft', 'resolve_order_parts'].includes(t.name)).map(describeTool))
+  assert(!/Admin only|As an admin you|only an admin can submit/.test(served), 'no admin-only wording left')
+  const create = inside.find((t) => t.name === 'create_order_draft')!
+  assert(/As an admin or inside sales you may/.test(create.description), 'create: admin or inside sales')
+  assert(/inside sales prices and submits only their own drafts/.test(create.description) &&
+    /an admin\s+submits anyone's/.test(create.description), 'create: D1')
+  assert(/no_customer_po/.test(create.description) && /no_po_confirmed/.test(create.description), 'create: the no-PO path')
+  const lines = (create.inputSchema as { properties: { lines: Row; price_override_reason: Row } }).properties
+  assert(/admin or inside sales/.test(String(lines.lines.description)), 'lines: admin or inside sales')
+  assert(/Admin or inside sales/.test(String(((lines.lines.items as Row).properties as Record<string, Row>).unit_price.description)), 'unit_price')
+  assert(/Admin or inside sales/.test(String(lines.price_override_reason.description)), 'price_override_reason')
+  assert(/admin or inside sales/.test(ADMIN_ORDERING_INSTRUCTIONS) &&
+    /inside\s+sales prices and submits only their own drafts/.test(ADMIN_ORDERING_INSTRUCTIONS), 'admin paragraph: D1')
+  // A rep's create tool still says no price can be passed.
+  const repCreate = toolsFor(REP(), setting(true), true).find((t) => t.name === 'create_order_draft')!
+  assert(/No price or FFL can be passed/.test(repCreate.description), 'rep wording unchanged')
+})
+
+Deno.test('wording: unmatched items in resolve_order_parts name inside sales too', async () => {
+  const { db } = fakeDb({ order_resolve_parts: ok({ items: [{ index: 0, ref: 'NOPE', status: 'unmatched', candidates: [] }] }) })
+  const res = (await tool('resolve_order_parts').handler({ customer_key: 'C1', items: [{ ref: 'NOPE' }] }, ctxFor(db))) as Row
+  assert((res.guidance as string[]).some((g) => /an admin or inside sales/.test(g)), 'guidance')
+})
+
+/*----------------------------------------------------------------------------
+  get_order_status and list_my_order_drafts
+----------------------------------------------------------------------------*/
+
+Deno.test('status: the header an update must send back is returned', async () => {
+  const { db, tableCalls } = fakeDb({}, {
+    orders: { id: 41, status: 'submitted', source: 'mcp', po_number: 'PORTAL-41', notes: 'Back door', customer_contact_key: '78' },
+    order_lines: [],
+    order_qc_results: [],
+  })
+  const res = (await tool('get_order_status').handler({ order_id: 41 }, ctxFor(db))) as Row
+  const cols = tableCalls[0].columns
+  for (const c of ['notes', 'customer_contact_key', 'po_number', 'requested_ship_date', 'erp_order_number']) {
+    assert(cols.includes(c), `get_order_status selects ${c}`)
+  }
+  eq([res.notes, res.customer_contact_key], ['Back door', '78'], 'returned')
+  eq(res.no_customer_po, true, 'PORTAL-<id> is flagged as no customer PO')
+  assert(/exact: true/.test(tool('get_order_status').description), 'the description says to use the exact lookup row')
+})
+
+Deno.test('list: scope "mine" is the default and filters by owner; erp_order_number comes back', async () => {
+  const { db, tableCalls, rpcCalls } = fakeDb({}, {
+    orders: [{ id: 5, user_id: TYLER, status: 'entered', source: 'mcp', erp_order_number: 'CO-77120', po_number: 'PO-1' }],
+  })
+  const res = (await tool('list_my_order_drafts').handler({ status: 'entered' }, ctxFor(db, REP()))) as { scope: string; orders: Row[] }
+  eq(res.scope, 'mine', 'default scope')
+  eq(tableCalls[0].filters, [['user_id', TYLER], ['status', 'entered'], ['source', 'mcp']], 'own orders')
+  assert(tableCalls[0].columns.includes('erp_order_number'), 'erp_order_number selected')
+  eq(res.orders[0].erp_order_number, 'CO-77120', 'erp_order_number returned')
+  assert(!('owner_user_id' in res.orders[0]) && !('user_id' in res.orders[0]), 'no owner columns on "mine"')
+  eq(rpcCalls.length, 0, 'no owner-name lookup for "mine"')
+})
+
+Deno.test('list: scope "everyone" is for an admin or inside sales, and names each owner', async () => {
+  const refused = fakeDb({}, { orders: [] })
+  const err = await rejects(tool('list_my_order_drafts').handler({ scope: 'everyone' }, ctxFor(refused.db, REP())))
+  assert(err instanceof ToolError && /only for an admin or inside sales/.test(err.message), `rep refused: ${err.message}`)
+  eq(refused.tableCalls.length, 0, 'nothing read for a refused scope')
+  const bad = await rejects(tool('list_my_order_drafts').handler({ scope: 'all' }, ctxFor(refused.db, INSIDE())))
+  assert(/"mine".*"everyone"/.test(bad.message), 'an unknown scope is named')
+
+  const { db, tableCalls, rpcCalls } = fakeDb({
+    order_owner_names: ok([{ user_id: OTHER, display_name: 'Field Rep', role: 'rep' }]),
+  }, {
+    orders: [
+      { id: 7, user_id: OTHER, status: 'submitted', source: 'portal', po_number: null, customer_key: 'C100' },
+      { id: 6, user_id: TYLER, status: 'submitted', source: 'mcp', po_number: 'PO-9', customer_key: 'C100' },
+    ],
+  })
+  const res = (await tool('list_my_order_drafts').handler(
+    { scope: 'everyone', status: 'submitted', source: 'any', customer_key: 'C100' },
+    ctxFor(db, INSIDE()),
+  )) as { scope: string; orders: Row[] }
+  eq(tableCalls[0].filters, [['status', 'submitted'], ['customer_key', 'C100']], 'no owner filter; RLS decides')
+  eq(rpcCalls[0], { name: 'order_owner_names', params: { p_user_ids: [OTHER, TYLER] } }, 'one owner-name lookup')
+  eq([res.orders[0].owner_user_id, res.orders[0].owner_name, res.orders[0].owner_role, res.orders[0].no_customer_po],
+    [OTHER, 'Field Rep', 'rep', true], 'the owner, by name')
+  eq([res.orders[1].owner_user_id, res.orders[1].mine, res.orders[1].owner_name], [TYLER, true, undefined],
+    'own row marked; an id with no name keeps the id')
+
+  // Without order_owner_names the rows still come back, by owner id.
+  const old = fakeDb({ order_owner_names: raise('function order_owner_names does not exist') }, {
+    orders: [{ id: 7, user_id: OTHER, status: 'draft', source: 'mcp' }],
+  })
+  const fallback = (await tool('list_my_order_drafts').handler({ scope: 'everyone' }, ctxFor(old.db))) as { orders: Row[] }
+  eq([fallback.orders[0].owner_user_id, fallback.orders[0].owner_name], [OTHER, undefined], 'owner id only')
+})
+
+/*----------------------------------------------------------------------------
+  Order documents
+----------------------------------------------------------------------------*/
+
+Deno.test('order documents: object names follow the portal rule', () => {
+  eq(sanitizeDocumentName('PO 197065 (signed).pdf'), 'PO_197065_signed.pdf', 'spaces and brackets become one _')
+  eq(sanitizeDocumentName('注文書.pdf'), 'file.pdf', 'a non-Latin name keeps its extension')
+  eq(sanitizeDocumentName('.pdf.pdf'), 'pdf.pdf', 'a dot-leading name keeps its extension')
+  eq(orderDocumentPath(4321, 'PO 1.pdf', 1700000000000), '4321/1700000000000-PO_1.pdf', 'order folder, timestamp, name')
+  eq(documentDisplayName('1700000000000-PO_1.pdf'), 'PO_1.pdf', 'the timestamp prefix is not shown')
+  eq(documentDisplayName('2024-report.pdf'), '2024-report.pdf', 'a short number is part of the name')
+})
+
+function withStorage(db: SupabaseClient, storage: Record<string, unknown>): SupabaseClient {
+  ;(db as unknown as { storage: unknown }).storage = { from: () => storage }
+  return db
+}
+
+Deno.test('attach_order_document: a signed upload URL, the exact content type, audited with the object name', async () => {
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 4321, status: 'submitted' }] })
+  const signed: string[] = []
+  const db = withStorage(fake.db, {
+    createSignedUploadUrl: (name: string) => {
+      signed.push(name)
+      return Promise.resolve({ data: { signedUrl: 'https://x.test/upload?token=t', path: name }, error: null })
+    },
+  })
+  const out = (await tool('attach_order_document').handler(
+    { order_id: 4321, file_name: 'RE: PO 197065.msg' },
+    { db, caller: REP() },
+  )) as Record<string, unknown>
+  eq(out.upload_url, 'https://x.test/upload?token=t', 'the URL is returned')
+  assert(/^4321\/\d{13}-RE_PO_197065\.msg$/.test(signed[0]), `object name (portal rule): ${signed[0]}`)
+  eq(out.object_name, signed[0], 'and reported')
+  eq(out.content_type, 'application/vnd.ms-outlook', 'the exact content type for .msg')
+  const how = String(out.how)
+  assert(how.includes('-H "Content-Type: application/vnd.ms-outlook"'), `curl line carries it: ${how}`)
+  assert(/required/.test(how) && /415/.test(how), 'the header is required; 415 means a wrong type')
+  const log = fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  eq([log.params.p_tool, log.params.p_outcome, log.params.p_order_id], ['attach_order_document', 'ok', 4321], 'audited')
+  eq((log.params.p_args as Row).object_name, signed[0], 'the audit row names the stored object')
+  assert(!JSON.stringify(log.params).includes('token=t'), 'the upload URL is never logged')
+})
+
+Deno.test('attach_order_document: an order the caller cannot see is a refusal, logged against no order', async () => {
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [] })
+  let asked = false
+  const db = withStorage(fake.db, {
+    createSignedUploadUrl: () => {
+      asked = true
+      return Promise.resolve({ data: null, error: null })
+    },
+  })
+  const err = await rejects(tool('attach_order_document').handler({ order_id: 9, file_name: 'x.pdf' }, { db, caller: REP() }))
+  assert(err instanceof OrderToolError && err.outcome === 'refused' && err.code === 'order_not_found', 'refused, coded')
+  assert(/^No order 9 that you can see/.test(err.message) && !/service failed/.test(err.message), `plain sentence: ${err.message}`)
+  assert(!asked, 'storage was never asked')
+  const log = fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  eq([log.params.p_outcome, log.params.p_order_id], ['refused', null], 'refused, against no order')
+})
+
+Deno.test('attach_order_document: a file type the bucket refuses gets no URL', async () => {
+  for (const name of ['scan.tif', 'po.xlsm', 'Scan', 'po.gif']) {
+    const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 4321, status: 'draft' }] })
+    let asked = false
+    const db = withStorage(fake.db, {
+      createSignedUploadUrl: () => {
+        asked = true
+        return Promise.resolve({ data: { signedUrl: 'x' }, error: null })
+      },
+    })
+    const err = await rejects(tool('attach_order_document').handler({ order_id: 4321, file_name: name }, { db, caller: REP() }))
+    assert(err instanceof OrderToolError && err.outcome === 'refused', `${name}: refused`)
+    assert(/\.pdf, \.xlsx/.test(err.message) && /\.msg/.test(err.message), `${name}: lists the accepted kinds`)
+    assert(!asked, `${name}: no URL minted`)
+    eq(fake.tableCalls.length, 0, `${name}: refused before any read`)
+  }
+  const bad = fakeDb({ mcp_log_call: ok(null) }, { orders: [] })
+  const err = await rejects(tool('attach_order_document').handler({ order_id: 1.5, file_name: 'x.pdf' }, { db: withStorage(bad.db, {}), caller: REP() }))
+  assert(err instanceof OrderToolError && /positive whole number/.test(err.message), 'a fractional order id is refused')
+})
+
+Deno.test('attach_order_document: the description says to use it only with a real HTTP PUT', () => {
+  const d = tool('attach_order_document').description
+  assert(/ONLY when you can make an HTTP PUT/.test(d) && /portal link/.test(d), 'only with a PUT, else the portal link')
+  assert(/Only if you can make an HTTP PUT/.test(ORDERING_INSTRUCTIONS) && /do not call it/.test(ORDERING_INSTRUCTIONS),
+    'instructions agree')
+})
+
+Deno.test('list_order_documents: one signing request, per-document link errors, has_more', async () => {
+  const fake = fakeDb({}, { orders: [{ id: 4321, status: 'draft' }] })
+  const listCalls: [string, Row][] = []
+  const signCalls: [string[], number][] = []
+  const db = withStorage(fake.db, {
+    list: (prefix: string, opts: Row) => {
+      listCalls.push([prefix, opts])
+      return Promise.resolve({
+        data: [
+          { id: 'o2', name: '1700000000001-PO_2.pdf', created_at: '2026-11-13T16:00:00Z',
+            metadata: { size: 99, mimetype: 'application/pdf' } },
+          { id: 'o1', name: '1700000000000-PO_1.pdf', created_at: '2026-11-13T15:00:00Z',
+            metadata: { size: 1234, mimetype: 'application/pdf' } },
+          { id: null, name: 'sub' },
+          { id: 'p', name: '.emptyFolderPlaceholder' },
+        ],
+        error: null,
+      })
+    },
+    createSignedUrls: (paths: string[], seconds: number) => {
+      signCalls.push([paths, seconds])
+      return Promise.resolve({
+        data: [
+          { path: paths[0], signedUrl: null, error: 'Either the object does not exist or you do not have access to it' },
+          { path: paths[1], signedUrl: `https://x.test/get/${paths[1]}`, error: null },
+        ],
+        error: null,
+      })
+    },
+    createSignedUrl: () => {
+      throw new Error('one request per file is not used any more')
+    },
+  })
+  const out = (await tool('list_order_documents').handler({ order_id: 4321 }, { db, caller: REP() })) as {
+    documents: Row[]
+    has_more: boolean
+    note: string
+  }
+  eq(listCalls[0][0], '4321', 'the order folder (Storage reads it as 4321/)')
+  eq(listCalls[0][1].limit, 101, 'one more than shown, to know about the rest')
+  eq(signCalls, [[['4321/1700000000001-PO_2.pdf', '4321/1700000000000-PO_1.pdf'], 600]], 'one signing call, 10 minutes')
+  eq(out.documents.length, 2, 'folders and placeholders are not documents')
+  eq([out.documents[0].name, out.documents[0].url, typeof out.documents[0].link_error], ['PO_2.pdf', undefined, 'string'],
+    'a failed link says why')
+  eq(
+    [out.documents[1].name, out.documents[1].size_bytes, out.documents[1].content_type, out.documents[1].url],
+    ['PO_1.pdf', 1234, 'application/pdf', 'https://x.test/get/4321/1700000000000-PO_1.pdf'],
+    'display name, size, type and link',
+  )
+  eq(out.has_more, false, 'all listed')
+  assert(/link_error/.test(out.note), 'the note mentions the missing link')
+
+  // 101 documents: 100 shown, has_more.
+  const many = Array.from({ length: 101 }, (_, i) => ({ id: `o${i}`, name: `${1700000000000 + i}-PO_${i}.pdf` }))
+  const big = withStorage(fakeDb({}, { orders: [{ id: 4321 }] }).db, {
+    list: () => Promise.resolve({ data: many, error: null }),
+    createSignedUrls: (paths: string[]) =>
+      Promise.resolve({ data: paths.map((p) => ({ path: p, signedUrl: `https://x.test/${p}`, error: null })), error: null }),
+  })
+  const res = (await tool('list_order_documents').handler({ order_id: 4321 }, { db: big, caller: REP() })) as {
+    documents: Row[]
+    has_more: boolean
+    note: string
+  }
+  eq([res.documents.length, res.has_more], [100, true], '100 shown, more exist')
+  assert(/newest 100/.test(res.note), 'and the note says so')
+
+  // The whole signing call failing: every document says why.
+  const down = withStorage(fakeDb({}, { orders: [{ id: 4321 }] }).db, {
+    list: () => Promise.resolve({ data: many.slice(0, 2), error: null }),
+    createSignedUrls: () => Promise.resolve({ data: null, error: { message: 'storage unavailable' } }),
+  })
+  const none = (await tool('list_order_documents').handler({ order_id: 4321 }, { db: down, caller: REP() })) as { documents: Row[] }
+  eq(none.documents.map((d) => d.link_error), ['storage unavailable', 'storage unavailable'], 'per document')
+
+  // An order the caller cannot see: the same refusal as attach.
+  const hidden = withStorage(fakeDb({}, { orders: [] }).db, {})
+  const err = await rejects(tool('list_order_documents').handler({ order_id: 9 }, { db: hidden, caller: REP() }))
+  assert(err instanceof OrderToolError && err.code === 'order_not_found', 'order_not_found')
 })

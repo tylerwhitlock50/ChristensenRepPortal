@@ -1,5 +1,6 @@
 import { createClient, isAuthRetryableFetchError, type Session } from '@supabase/supabase-js'
 import type { Database } from '@/types/database.types'
+import { READ_ONLY_ROLE_MESSAGE, isReadOnlyRoleError } from '@/lib/readOnlyRole'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
@@ -228,5 +229,7 @@ export function describeError(error: unknown): string {
   if (isAuthExpired(e)) {
     return 'Your sign-in expired. Sign out and back in from the menu up top to keep going.'
   }
+  // Inside sales changed something outside orders (lib/readOnlyRole.ts).
+  if (isReadOnlyRoleError(e)) return READ_ONLY_ROLE_MESSAGE
   return e.message || 'Something went wrong.'
 }

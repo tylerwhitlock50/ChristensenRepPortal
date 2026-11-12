@@ -1,5 +1,6 @@
 import { format, isBefore, isSameYear, parseISO, startOfDay } from 'date-fns'
 import { trackingList, upsTrackUrl } from '@/lib/tracking'
+import { dealerPo } from '@/lib/portalPo'
 
 /**
  * "Where's my order?" — the answer, in words a dealer can read.
@@ -98,13 +99,16 @@ function partLabel(l: StatusLine): string {
   return desc || id || `Line ${l.line_num}`
 }
 
-/** "your PO 44182 (our order SO-88412, placed Oct 3)" */
+/**
+ * "your PO 44182 (our order SO-88412, placed Oct 3)". An order the dealer
+ * sent no PO for carries the portal's PORTAL-<id> as its PO in the ERP;
+ * the dealer has never seen that number, so it is said as no PO.
+ */
 function orderPhrase(o: StatusOrder, today: Date): string {
   const placed = day(o.order_date, today)
   const ours = `our order ${o.order_id}${placed ? `, placed ${placed}` : ''}`
-  return o.customer_po_number
-    ? `your PO ${o.customer_po_number} (${ours})`
-    : `${ours.charAt(0).toUpperCase()}${ours.slice(1)}`
+  const po = dealerPo(o.customer_po_number)
+  return po ? `your PO ${po} (${ours})` : `${ours.charAt(0).toUpperCase()}${ours.slice(1)}`
 }
 
 /**
@@ -237,8 +241,9 @@ export function shipmentMessage(
   opts: { from?: string | null; today?: Date } = {},
 ): string {
   const today = opts.today ?? new Date()
-  const what = s.customer_po_number
-    ? `your PO ${s.customer_po_number}${s.order_id ? ` (our order ${s.order_id})` : ''}`
+  const po = dealerPo(s.customer_po_number)
+  const what = po
+    ? `your PO ${po}${s.order_id ? ` (our order ${s.order_id})` : ''}`
     : s.order_id
       ? `your order ${s.order_id}`
       : 'your order'

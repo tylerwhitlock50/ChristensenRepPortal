@@ -207,3 +207,61 @@ Deno.test('whoami: capabilities report the order-drafting gate', async () => {
   })) as { capabilities: Record<string, unknown> }
   eq(url.capabilities.order_drafting_off_because, 'not on the list', 'reason passed through')
 })
+
+Deno.test('whoami: inside sales is told they may price and submit their own drafts', async () => {
+  const who = TOOLS_BY_NAME.get('whoami')!
+  const inside = { fullName: 'Inside', role: 'rep', realRole: 'order_entry' } as unknown as McpCaller
+  const res = (await who.handler({}, { db: whoamiDb(), caller: inside })) as { user: { role: string }; access_note: string }
+  eq(res.user.role, 'inside_sales', 'role label')
+  assert(/every account/.test(res.access_note) && /read-only/.test(res.access_note), 'reads everything, changes nothing')
+  assert(/prices/.test(res.access_note) && /your own drafts/.test(res.access_note), 'may set PO prices on own drafts')
+  assert(/an admin submits anyone's/.test(res.access_note), 'D1')
+})
+
+/* --- lookup_order: exact hits first ------------------------------------- */
+
+function lookupDb(rows: Record<string, unknown>[]) {
+  const calls: Record<string, unknown>[] = []
+  const db = {
+    rpc: (_name: string, params: Record<string, unknown>) => {
+      calls.push(params)
+      return Promise.resolve({ data: rows, error: null })
+    },
+  } as unknown as SupabaseClient
+  return { db, calls }
+}
+
+Deno.test('lookup_order: the exact order or PO comes first, marked, from the full page', async () => {
+  const lookup = TOOLS_BY_NAME.get('lookup_order')!
+  // Newest first, as lookup_orders returns them: two newer orders merely
+  // contain "PORTAL-12"; the exact one is older.
+  const rows = [
+    { order_id: 'CO-9001', customer_po_number: 'PORTAL-1245', order_date: '2026-11-10', matched_on: 'po' },
+    { order_id: 'CO-9000', customer_po_number: 'PORTAL-123', order_date: '2026-11-09', matched_on: 'po' },
+    { order_id: 'CO-8000', customer_po_number: 'PO-77, portal-12', order_date: '2026-10-01', matched_on: 'po' },
+  ]
+  const { db, calls } = lookupDb(rows)
+  const res = (await lookup.handler({ term: 'PORTAL-12', limit: 2 }, { db, caller })) as {
+    orders: Record<string, unknown>[]
+    exact_matches: number
+    has_more: boolean
+    note?: string
+  }
+  eq(calls[0], { p_term: 'PORTAL-12', p_limit: 100 }, 'read at the RPC cap, not at limit')
+  eq(res.orders.map((o) => o.order_id), ['CO-8000', 'CO-9001'], 'exact first, then newest; cut to limit')
+  eq([res.orders[0].exact, res.orders[1].exact], [true, undefined], 'only the exact row is marked')
+  eq([res.exact_matches, res.has_more], [1, true], 'counts')
+  assert(/exact: true/.test(String(res.note)), 'the note says which row is the number itself')
+
+  const byOrder = lookupDb([
+    { order_id: 'CO-77120', customer_po_number: 'X', matched_on: 'order' },
+    { order_id: 'co-7712', customer_po_number: 'Y', matched_on: 'order' },
+  ])
+  const r2 = (await lookup.handler({ term: ' CO-7712 ' }, { db: byOrder.db, caller })) as { orders: Record<string, unknown>[] }
+  eq(r2.orders.map((o) => [o.order_id, o.exact ?? false]), [['co-7712', true], ['CO-77120', false]], 'order id, any case')
+
+  const none = lookupDb([])
+  const r3 = (await lookup.handler({ term: 'nope' }, { db: none.db, caller })) as { matched: number; note: string }
+  eq(r3.matched, 0, 'nothing')
+  assert(/No order in your book matches/.test(r3.note), 'says so')
+})

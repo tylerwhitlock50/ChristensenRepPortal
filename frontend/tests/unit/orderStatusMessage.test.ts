@@ -192,6 +192,10 @@ t('no PO: our order number leads, capitalised',
   orderStatusMessage({ ...order, customer_po_number: null }, { today }).split('\n')[0],
   'Christensen Arms order update: Our order SO-88412, placed Oct 8.')
 
+t('a PORTAL- reference is not the dealer\'s PO: said as no PO (20261113090000)',
+  orderStatusMessage({ ...order, customer_po_number: 'PORTAL-8124' }, { today }).split('\n')[0],
+  'Christensen Arms order update: Our order SO-88412, placed Oct 8.')
+
 t('cancelled says so and nothing about open lines or dates',
   orderStatusMessage({ ...order, order_status_desc: 'Canceled', tracking_numbers: null }, { today }).split('\n'),
   [
@@ -220,6 +224,10 @@ t('shipmentMessage with PO and order',
   ])
 t('shipmentMessage with no tracking and no PO',
   shipmentMessage({ order_id: 'SO-1', ship_date: null, tracking_numbers: null }, { today }),
+  'Christensen Arms shipping update: your order SO-1 shipped.')
+
+t('shipmentMessage: a PORTAL- reference is not their PO',
+  shipmentMessage({ order_id: 'SO-1', customer_po_number: 'PORTAL-8124', ship_date: null, tracking_numbers: null }, { today }),
   'Christensen Arms shipping update: your order SO-1 shipped.')
 
 t('senderName: first name only', senderName('Riley Rep'), 'Riley')

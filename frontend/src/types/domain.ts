@@ -8,6 +8,10 @@
  * are shared with the Edge Functions.
  */
 
+/**
+ * 'order_entry' is inside sales (20261113090000): every account to read,
+ * orders to write, nothing else to change. The stored value keeps its name.
+ */
 export const ROLES = ['admin', 'rep', 'order_entry'] as const
 export type Role = (typeof ROLES)[number]
 

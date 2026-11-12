@@ -308,12 +308,13 @@ select pg_temp.refusal(pg_temp.create_sql(pg_temp.req('cf-part-0001',
   'part_confirmation_required:%', 'part_confirmed false: refused');
 
 --------------------------------------------------------------------------
--- 6. PO required
+-- 6. PO asked for (optional since 20261113090000: no_po_confirmed, tested
+--    in 20261113_inside_sales.sql)
 --------------------------------------------------------------------------
 select pg_temp.refusal(pg_temp.create_sql(pg_temp.req('cf-po-0001') - 'po_number'),
-  'po_required:%', 'no PO: refused');
+  'po_confirmation_required:%', 'no PO: refused until the user says there is none');
 select pg_temp.refusal(pg_temp.create_sql(pg_temp.req('cf-po-0001', '{"po_number":"   "}')),
-  'po_required:%', 'a blank PO: refused');
+  'po_confirmation_required:%', 'a blank PO: the same');
 
 --------------------------------------------------------------------------
 -- 7. Expected price, description, contact, expired FFL

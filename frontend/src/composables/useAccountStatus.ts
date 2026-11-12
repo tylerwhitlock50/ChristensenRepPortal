@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
+import { isReadOnlyRoleError } from '@/lib/readOnlyRole'
 import { useSessionStore } from '@/stores/session'
 import type { DeactivationReason } from '@/types/domain'
 
@@ -99,8 +100,10 @@ export function useDeactivateAccount() {
         if (error.code === '23505') {
           throw new Error('This account is already deactivated.')
         }
-        // RLS with check: the account is outside the caller's book.
-        if (error.code === '42501') {
+        // RLS with check: the account is outside the caller's book. The
+        // read-only-role trigger raises 42501 too, and is not that: it keeps
+        // its own sentence (lib/readOnlyRole.ts).
+        if (error.code === '42501' && !isReadOnlyRoleError(error)) {
           throw new Error(
             "This account isn't in your book, so you can't deactivate it.",
           )

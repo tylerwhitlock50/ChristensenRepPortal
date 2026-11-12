@@ -264,7 +264,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
       <!-- A visit-required mission routes to the survey; the DB would reject
            a surveyless close anyway, so don't offer it. -->
       <div
-        v-else-if="needsSurvey && session.canWrite"
+        v-else-if="needsSurvey && session.canEditBook"
         class="border-line flex gap-2 border-t p-3"
       >
         <RouterLink :to="surveyTo" class="btn-primary text-[15px]">
@@ -275,7 +275,7 @@ async function submitClose(status: 'closed' | 'dismissed') {
         </AppButton>
       </div>
 
-      <div v-else-if="session.canWrite" class="border-line flex gap-2 border-t p-3">
+      <div v-else-if="session.canEditBook" class="border-line flex gap-2 border-t p-3">
         <AppButton variant="secondary" @click="panel = 'act'">
           Log action
         </AppButton>

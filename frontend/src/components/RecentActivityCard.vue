@@ -13,6 +13,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import { count, dayMonth, daysAgo, money } from '@/lib/format'
+import { dealerPo } from '@/lib/portalPo'
 import {
   senderName,
   shareOrCopy,
@@ -253,7 +254,7 @@ function shown<T>(rows: T[], group: keyof typeof showAll.value): T[] {
                 </span>
                 <span class="text-muted block text-xs">
                   Order {{ o.order_id }} · {{ daysAgo(o.occurred_on) }}
-                  <template v-if="o.customer_po_number"> · their PO {{ o.customer_po_number }}</template>
+                  <template v-if="dealerPo(o.customer_po_number)"> · their PO {{ dealerPo(o.customer_po_number) }}</template>
                   <template v-if="o.has_backlog"> · has backorder lines</template>
                 </span>
               </span>

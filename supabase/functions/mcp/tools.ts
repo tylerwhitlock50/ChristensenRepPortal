@@ -285,7 +285,7 @@ const whoami: ToolDef = {
     return {
       user: compact({
         name: caller.fullName,
-        role: caller.role,
+        role: caller.realRole === 'order_entry' ? 'inside_sales' : caller.role,
         sales_rep_key: caller.salesRepKey,
         rep_group_vendor_id: caller.repGroupVendorId,
       }),
@@ -298,7 +298,12 @@ const whoami: ToolDef = {
       access_note:
         caller.role === 'admin'
           ? 'Admin: every account in the ERP is visible.'
-          : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
+          : caller.realRole === 'order_entry'
+            ? 'Inside sales: every account in the ERP is visible, read-only. When order ' +
+              'drafting is on, orders can be drafted for any customer, with the PO\'s prices ' +
+              '(unit_price) on your own drafts; you submit your own drafts in the portal, and ' +
+              'an admin submits anyone\'s.'
+            : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
       capabilities: compact({
         mcp_orders: orders?.mcp_orders ?? false,
         order_drafting: orders?.order_tools_listed
@@ -1365,9 +1370,11 @@ const lookupOrder: ToolDef = {
   description:
     'Cross-account order lookup by OUR order number, the dealer\'s PO ' +
     'number, or a tracking number — for "where is PO 44182?" when you do ' +
-    'not know which account it belongs to. Substring match, newest first; ' +
-    '`matched_on` says which field hit. Drill into lines with ' +
-    'list_orders(customer_key, order_id).',
+    'not know which account it belongs to. Substring match: rows whose ' +
+    'order_id or PO number IS the term come first, marked `exact: true`; ' +
+    'the rest, newest first, only contain it (PORTAL-12 also matches ' +
+    'PORTAL-123), so for a known number use the exact row. `matched_on` ' +
+    'says which field hit. Drill into lines with list_orders(customer_key, order_id).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1390,23 +1397,63 @@ const lookupOrder: ToolDef = {
     const limit = clampInt(args.limit, 25, 1, 100)
 
     // SECURITY INVOKER RPC (035): RLS on the erp facts scopes the search to
-    // the caller's book, same as every view here.
-    const result = await db.rpc('lookup_orders', { p_term: term, p_limit: limit })
+    // the caller's book, same as every view here. It returns newest first, so
+    // the page is read at the RPC's own cap and the exact hits ranked first
+    // here: an exact older order must not fall off a page of newer orders
+    // that merely contain the term (PORTAL-12 in PORTAL-1245).
+    const result = await db.rpc('lookup_orders', { p_term: term, p_limit: LOOKUP_ORDERS_CAP })
     const rows = rowsOf(result, 'the order lookup')
+    const ranked = rankOrderLookup(rows, term)
+    const shown = ranked.slice(0, limit)
+    const exact = ranked.filter((r) => r.exact === true).length
 
     return {
       term,
-      matched: rows.length,
-      orders: rows.map(compact),
+      matched: shown.length,
+      exact_matches: exact,
+      orders: shown.map(compact),
+      has_more: rows.length > limit,
       ...(rows.length === 0
         ? {
             note:
               'No order in your book matches. The number may be mistyped, or the ' +
               'order may belong to an account outside your territory.',
           }
-        : {}),
+        : exact && rows.length > exact
+          ? {
+              note:
+                `The ${exact} row(s) marked exact: true are this order or PO number itself; ` +
+                'the others only contain it.',
+            }
+          : {}),
     }
   },
+}
+
+/** lookup_orders() returns 100 rows at most (035). */
+const LOOKUP_ORDERS_CAP = 100
+
+/** Equal ignoring case and surrounding space. */
+function sameNumber(a: unknown, term: string): boolean {
+  return typeof a === 'string' && a.trim().toUpperCase() === term.trim().toUpperCase()
+}
+
+/**
+ * Exact hits first, marked `exact: true` — the order id, or one of the
+ * order's PO numbers (lookup_orders joins several with ', '), equal to the
+ * term ignoring case — then the substring hits, each group in the RPC's
+ * newest-first order.
+ */
+export function rankOrderLookup(rows: Row[], term: string): Row[] {
+  const isExact = (r: Row) =>
+    sameNumber(r.order_id, term) ||
+    sameNumber(r.customer_po_number, term) ||
+    (typeof r.customer_po_number === 'string' &&
+      r.customer_po_number.split(', ').some((po) => sameNumber(po, term)))
+  const exact: Row[] = []
+  const rest: Row[] = []
+  for (const r of rows) (isExact(r) ? exact : rest).push(r)
+  return [...exact.map((r) => ({ ...r, exact: true })), ...rest]
 }
 
 const getAccountRevenueTrend: ToolDef = {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
-import { emailSourceRef, warningList } from '@/lib/mcpOrders'
+import { emailSourceRef, isNoPoWarning, warningList } from '@/lib/mcpOrders'
 import { shortDate } from '@/lib/format'
 
 /**
@@ -23,14 +23,34 @@ const props = withDefaults(
     showAck?: boolean
     /** The warnings were computed before a portal edit and may be stale. */
     edited?: boolean
+    /**
+     * A draft with no customer PO right now: "No customer PO: it will be
+     * submitted as PORTAL-<id>." (lib/mcpOrders noPoHint), or '' when there
+     * is one. A PO is optional since 20261113090000.
+     */
+    poHint?: string
+    /**
+     * The order has a customer PO now. The server's "No customer PO" warning
+     * was stored when Claude drafted it; once a PO is added it is not true.
+     */
+    hasPo?: boolean
   }>(),
-  { showAck: false, edited: false },
+  { showAck: false, edited: false, poHint: '', hasPo: false },
 )
 
 const acknowledged = defineModel<boolean>('acknowledged', { default: false })
 
-const warningsList = computed(() => warningList(props.warnings))
+const warningsList = computed(() =>
+  warningList(props.warnings).filter((w) => !(props.hasPo && isNoPoWarning(w))),
+)
 const email = computed(() => emailSourceRef(props.sourceRef))
+/**
+ * The server flags a blank PO in the same words when Claude drafts the order
+ * (mcp_order_preview), so the line is only added when that warning is not
+ * already listed: a draft from before the PO became optional, or a PO
+ * cleared in the portal since.
+ */
+const showPoHint = computed(() => !!props.poHint && !warningsList.value.some(isNoPoWarning))
 </script>
 
 <template>
@@ -46,6 +66,8 @@ const email = computed(() => emailSourceRef(props.sourceRef))
       </p>
     </div>
 
+    <p v-if="showPoHint" class="text-muted text-[13px]">{{ poHint }}</p>
+
     <div v-if="warningsList.length">
       <p class="u-label text-ink pb-1">
         Flagged when drafted<span v-if="edited" class="text-muted normal-case tracking-normal">
@@ -53,7 +75,8 @@ const email = computed(() => emailSourceRef(props.sourceRef))
         >
       </p>
       <ul class="text-ink-2 list-disc space-y-1 pl-5 text-[14px]">
-        <li v-for="w in warningsList" :key="w" class="break-words">{{ w }}</li>
+        <!-- By position: two lines of one part can give the same sentence. -->
+        <li v-for="(w, i) in warningsList" :key="i" class="break-words">{{ w }}</li>
       </ul>
     </div>
 

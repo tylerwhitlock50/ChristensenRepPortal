@@ -107,8 +107,12 @@ export interface ExtractedToken {
   URL): if its user is on mcp_order_users and feature.mcp_orders is on, the
   order-DRAFTING tools are listed for it too. So a leaked connector URL lets
   whoever holds it read that user's book and create drafts as them — never
-  submit (only a person in the portal can). The remedy is revoking the token
-  on the Connect page. Per-connection consent comes back with OAuth.
+  submit (only a person in the portal can). For an admin or inside sales
+  (20261113090000) "that user's book" is every account, and the drafts may be
+  hand-priced, with upload URLs and document links for any order: they
+  should use the header transport wherever their client allows (mcp/README
+  "On putting a secret in a URL"). The remedy is revoking the token on the
+  Connect page. Per-connection consent comes back with OAuth.
 ----------------------------------------------------------------------------*/
 export function extractToken(req: Request): ExtractedToken | null {
   const auth = req.headers.get('Authorization') ?? ''

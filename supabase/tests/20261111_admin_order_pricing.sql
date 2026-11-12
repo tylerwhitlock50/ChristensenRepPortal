@@ -379,10 +379,10 @@ select pg_temp.assert(
   'the reason is on the order');
 select pg_temp.assert(
   pg_temp.prev('adm') -> 'warnings' ->> 0 like 'UNMATCHED PARTS:%CHR-NOPE-1%'
-  and pg_temp.prev('adm') -> 'warnings' ->> 1 like 'ADMIN PRICING%3 of 4 lines%'
+  and pg_temp.prev('adm') -> 'warnings' ->> 1 like 'HAND PRICING%3 of 4 lines%'
   and (pg_temp.prev('adm') -> 'admin_pricing' ->> 'lines')::int = 3
   and (pg_temp.prev('adm') -> 'admin_pricing' ->> 'below_list')::numeric = 600,
-  'the preview leads with UNMATCHED PARTS and ADMIN PRICING');
+  'the preview leads with UNMATCHED PARTS and HAND PRICING (20261113090000 wording)');
 select pg_temp.assert(
   (pg_temp.prev('adm') -> 'would_submit' ->> 'ok')::boolean = false
   and pg_temp.prev('adm') -> 'would_submit' ->> 'error' like 'unmatched_parts:%',

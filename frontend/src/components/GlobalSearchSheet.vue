@@ -13,6 +13,7 @@ import {
 } from '@/composables/useRecentAccounts'
 import { MIN_LOOKUP_LENGTH, statusSentence } from '@/composables/useOrderLookup'
 import { count, daysAgo } from '@/lib/format'
+import { dealerPo } from '@/lib/portalPo'
 
 /**
  * The header search's sheet (GlobalSearch.vue owns the button and loads
@@ -118,7 +119,8 @@ const orderHits = computed<Hit[]>(() =>
     },
     title: `${o.order_id} · ${o.customer_name || o.customer_key}`,
     detail: [
-      o.customer_po_number ? `Their PO ${o.customer_po_number}` : '',
+      // A PORTAL- reference is not a PO the dealer holds (lib/portalPo.ts).
+      dealerPo(o.customer_po_number) ? `Their PO ${dealerPo(o.customer_po_number)}` : '',
       statusSentence(o),
       o.order_date ? `ordered ${daysAgo(o.order_date)}` : '',
     ]

@@ -7,23 +7,31 @@ import OrderStatusBadge from '@/components/orders/OrderStatusBadge.vue'
 import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
 import {
   useMarkOrderEntered,
+  useOrderOwnerNames,
   useOrderQueue,
   useRunOrderQc,
   type OrderRow,
 } from '@/composables/useOrders'
 import { useSessionStore } from '@/stores/session'
 import { money, shortDate } from '@/lib/format'
+import { isPortalReference, rpcErrorText } from '@/lib/mcpOrders'
+import { ownerLabel } from '@/lib/orderOwners'
 
 /**
- * The order-entry workbench: every submitted order waiting to be keyed into
- * the ERP, everything entered and awaiting QC, and the discrepancies. The
- * router lets any signed-in user reach /orders when the flag is on, so this
- * page additionally gates itself to order_entry + admin — a rep deep-linking
- * here gets the notice, not the queue (RLS would show them only their own
- * orders anyway; defense in depth, same as the DB).
+ * The inside-sales (order_entry) workbench: every submitted order waiting to
+ * be keyed into the ERP, everything entered and awaiting QC, and the
+ * discrepancies. The router lets any signed-in user reach /orders when the
+ * flag is on, so this page additionally gates itself to order_entry + admin
+ * — a rep deep-linking here gets the notice, not the queue (RLS would show
+ * them only their own orders anyway; defense in depth, same as the DB).
+ * Each row opens the order's detail page, which is where its documents (the
+ * customer's PO) are. Rows say who drafted the order. The buttons are
+ * writes, so none is offered while viewing as someone or offline: the
+ * database would refuse them with a misleading reason.
  */
 const session = useSessionStore()
 const allowed = computed(() => session.isOrderEntry || session.isAdmin)
+const canAct = computed(() => allowed.value && session.canWrite)
 
 const queueQuery = useOrderQueue()
 const markEntered = useMarkOrderEntered()
@@ -55,6 +63,11 @@ const filtered = computed(() => {
   return rows.filter((o) => o.status === filter.value)
 })
 
+const owners = useOrderOwnerNames(computed(() => filtered.value.map((o) => o.user_id)))
+function ownerOf(userId: string): string {
+  return ownerLabel(owners.names.value[userId], { isViewer: userId === session.user?.id })
+}
+
 // -------------------------------------------------------- mark entered modal
 const target = ref<OrderRow | null>(null)
 const erpNumber = ref('')
@@ -76,7 +89,7 @@ async function confirmEntered() {
     })
     target.value = null
   } catch (err) {
-    actionError.value = (err as { message?: string }).message || 'That failed.'
+    actionError.value = rpcErrorText((err as { message?: string }).message) || 'That failed.'
   }
 }
 
@@ -85,16 +98,16 @@ async function recheck(order: OrderRow) {
   try {
     await runQc.mutateAsync(order.id)
   } catch (err) {
-    actionError.value = (err as { message?: string }).message || 'That failed.'
+    actionError.value = rpcErrorText((err as { message?: string }).message) || 'That failed.'
   }
 }
 </script>
 
 <template>
   <div v-if="!allowed" class="px-4 py-10 text-center">
-    <p class="u-display text-ink text-2xl">Order entry only</p>
+    <p class="u-display text-ink text-2xl">Inside sales only</p>
     <p class="text-muted mx-auto mt-2 max-w-xs text-[15px]">
-      The entry queue is for the order entry role and admins.
+      The entry queue is for inside sales and admins.
     </p>
   </div>
 
@@ -152,7 +165,10 @@ async function recheck(order: OrderRow) {
             </p>
             <p class="text-muted text-[13px]">
               #{{ order.id }}
-              <template v-if="order.po_number"> · PO {{ order.po_number }}</template>
+              <!-- A PORTAL- reference is the portal's, not the customer's PO. -->
+              <template v-if="order.po_number">
+                · {{ isPortalReference(order.po_number) ? '' : 'PO ' }}{{ order.po_number }}</template
+              >
               <template v-if="order.ship_to_id"> · ship to {{ order.ship_to_id }}</template>
               <template v-if="order.ffl_license_number"> · FFL {{ order.ffl_license_number }}</template>
               <template v-if="order.erp_order_number">
@@ -164,26 +180,29 @@ async function recheck(order: OrderRow) {
               <template v-if="order.requested_ship_date">
                 · ship {{ shortDate(order.requested_ship_date) }}</template
               >
+              <template v-if="ownerOf(order.user_id)"> · by {{ ownerOf(order.user_id) }}</template>
             </p>
             <p v-if="order.notes" class="text-ink-2 mt-0.5 truncate text-[13px]">
               {{ order.notes }}
             </p>
           </RouterLink>
-          <div class="flex shrink-0 flex-wrap items-center gap-3">
+          <!-- Phone: free to wrap under the order (shrink only from sm up), so
+               Mark entered is never pushed off a narrow screen. -->
+          <div class="flex max-w-full min-w-0 flex-wrap items-center gap-3 sm:shrink-0">
             <OrderSourceBadge :source="order.source" :is-test="order.is_test" />
             <span v-if="order.total_amount != null" class="text-ink text-[15px] font-semibold">
               {{ money(order.total_amount) }}
             </span>
             <OrderStatusBadge :status="order.status" />
             <AppButton
-              v-if="order.status === 'submitted'"
+              v-if="canAct && order.status === 'submitted'"
               variant="primary"
               @click="openEnter(order)"
             >
               Mark entered
             </AppButton>
             <AppButton
-              v-else
+              v-else-if="canAct"
               variant="ghost"
               :loading="runQc.isPending.value"
               @click="recheck(order)"

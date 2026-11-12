@@ -1,6 +1,7 @@
 import {
   createRouter,
   createWebHistory,
+  START_LOCATION,
   type RouteLocationNormalized,
 } from 'vue-router'
 import { until } from '@vueuse/core'
@@ -11,7 +12,8 @@ import {
   type FeatureKey,
 } from '@/composables/useAppSettings'
 import { ensureOnMcpOrderList } from '@/composables/useMcpOrderUsers'
-import { isMcpOrdersUserAllowed, ordersSectionOpen } from '@/lib/mcpOrders'
+import { isMcpOrdersUserAllowed, ordersSectionOpen } from '@/lib/ordersGate'
+import { landedOnQueueThisTab, rememberQueueLanding } from '@/lib/queueLanding'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -33,6 +35,13 @@ declare module 'vue-router' {
      * `feature` still applies on top (vue-router merges parent + child meta).
      */
     featureAny?: FeatureKey[]
+    /**
+     * A rep's own working page that the read-only role (inside sales,
+     * session.isReadOnlyRole) can do nothing on: Today's recommendations and
+     * the Tasks list. Not in their nav; a bookmark or typed URL lands on the
+     * Overview instead of a page of buttons the database refuses.
+     */
+    notForReadOnlyRole?: boolean
     title?: string
   }
 }
@@ -77,13 +86,13 @@ const router = createRouter({
       path: '/today',
       name: 'today',
       component: () => import('@/pages/TodayView.vue'),
-      meta: { title: 'Today', feature: 'feature.recommendations' },
+      meta: { title: 'Today', feature: 'feature.recommendations', notForReadOnlyRole: true },
     },
     {
       path: '/tasks',
       name: 'tasks',
       component: () => import('@/pages/TasksView.vue'),
-      meta: { title: 'Tasks', feature: 'feature.tasks' },
+      meta: { title: 'Tasks', feature: 'feature.tasks', notForReadOnlyRole: true },
     },
     {
       // "Where's my order?" — searchable by the dealer's PO, our order
@@ -359,9 +368,12 @@ function settingsForGuard() {
 /**
  * A featureAny key is open when its flag is on, except Claude order drafting,
  * which opens the Orders section only to a user it is for (a row in
- * public.mcp_order_users, or order entry). Hand entry (feature.orders) is open
- * to everyone it is on for. The own-row read is skipped when the flag is off
- * and fails closed on error (ensureOnMcpOrderList).
+ * public.mcp_order_users, or inside sales, who work the queue either way).
+ * Hand entry (feature.orders) is open to everyone it is on for. The own-row
+ * read is skipped when the flag is off and fails closed on error
+ * (ensureOnMcpOrderList). Inside sales can be on the allow-list like anyone
+ * else (20261113090000), so the row is read for them too: it is the same
+ * cached read useMcpOrders() makes, and what the Connect page words itself by.
  */
 async function featureOpen(
   settings: Awaited<ReturnType<typeof ensureSettings>>,
@@ -371,7 +383,7 @@ async function featureOpen(
   const session = useSessionStore()
   const mcpOrdersOn = isFeatureEnabled(settings, 'feature.mcp_orders')
   const userId = session.user?.id ?? null
-  const onList = mcpOrdersOn && !session.isOrderEntry ? await ensureOnMcpOrderList(userId) : false
+  const onList = mcpOrdersOn ? await ensureOnMcpOrderList(userId) : false
   return ordersSectionOpen({
     ordersOn: false,
     mcpOrdersOn,
@@ -380,7 +392,7 @@ async function featureOpen(
   })
 }
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
   if (to.name !== 'reset-password' && carriesRecoveryCredential(to)) {
     return {
       name: 'reset-password',
@@ -416,11 +428,22 @@ router.beforeEach(async (to) => {
     return session.isAdmin ? { name: 'admin-agencies' } : { name: 'overview' }
   }
 
-  // An order_entry user's book is empty by design, so the Overview is a
-  // blank page for them — the entry queue IS their app. Redirect only when
-  // the flag is on: with it off the queue route would bounce straight back
-  // here and loop.
-  if (to.name === 'overview' && session.isOrderEntry) {
+  if (to.meta.notForReadOnlyRole && session.isReadOnlyRole) {
+    return { name: 'overview' }
+  }
+
+  // Inside sales (order_entry) reads every account (20261113090000), so the
+  // Overview is a real page for them and must stay reachable from the nav.
+  // Their day still starts in the entry queue, so ARRIVING at the root lands
+  // there: the app's first navigation (a cold open) or the one out of the
+  // sign-in screen. Once per tab (lib/queueLanding.ts): after that a reload,
+  // a restored tab or a sign-in after an expiry on the Overview stays on the
+  // Overview, and any in-app navigation to it (its tab, the wordmark) always
+  // did. Signing out clears the flag, so the next sign-in in this tab lands
+  // on the queue again. Redirect only when the Orders section is open to
+  // them: otherwise the queue route would bounce straight back here and loop.
+  const arriving = from === START_LOCATION || from.name === 'login'
+  if (to.name === 'overview' && session.isOrderEntry && arriving && !landedOnQueueThisTab()) {
     try {
       const settings = await settingsForGuard()
       // The same rule that opens the Orders section (featureAny below).
@@ -428,6 +451,7 @@ router.beforeEach(async (to) => {
         (await featureOpen(settings, 'feature.orders')) ||
         (await featureOpen(settings, 'feature.mcp_orders'))
       ) {
+        rememberQueueLanding()
         return { name: 'orders-queue' }
       }
     } catch {

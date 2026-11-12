@@ -1,5 +1,11 @@
 import { unref } from 'vue'
-import { QueryClient, type QueryKey } from '@tanstack/vue-query'
+import { MutationCache, QueryClient, type QueryKey } from '@tanstack/vue-query'
+import {
+  READ_ONLY_ROLE_MESSAGE,
+  READ_ONLY_ROLE_ORIGINAL,
+  isReadOnlyRoleError,
+  readOnlyRoleOriginal,
+} from '@/lib/readOnlyRole'
 
 /**
  * Query key convention (TECH_STACK §2.3) — flat and explicit so invalidation
@@ -142,6 +148,8 @@ export const qk = {
     list: (userId: string) => ['orders', 'list', userId] as const,
     detail: (id: number) => ['orders', 'detail', id] as const,
     queue: () => ['orders', 'queue'] as const,
+    /** The order's files in the order-documents bucket (20261113090000). */
+    documents: (id: number) => ['orders', 'documents', id] as const,
   },
   /**
    * The Agency page (20261026180000). `vendor` is the agency the reads
@@ -371,7 +379,40 @@ class RepPortalQueryClient extends QueryClient {
   }
 }
 
+/**
+ * Nearly every write in the app is a mutation, and nearly every one shows
+ * its failure as `error.message`. The read-only-role refusal (inside sales
+ * changing something outside orders, lib/readOnlyRole.ts) arrives as
+ * 'read_only_role: inside sales can view <table> but not change it', so a
+ * mutation's message is replaced here, once, before the error reaches
+ * whichever screen caught it. The writes that run outside useMutation word
+ * it themselves: the visit queue (lib/submitQueue.ts) does; photo uploads
+ * (lib/photos.ts) show what Storage said.
+ *
+ * Nothing else is lost. The database's sentence is the only record of which
+ * table refused (details and hint are null), so it is logged, and kept on
+ * the error under READ_ONLY_ROLE_ORIGINAL, which isReadOnlyRoleError() still
+ * recognises after the rewrite. The code (42501) stays for anything that
+ * reads it.
+ */
+const mutationCache = new MutationCache({
+  onError: (error) => {
+    if (!isReadOnlyRoleError(error)) return
+    const original = readOnlyRoleOriginal(error)
+    // A screen that should have been gated let this write through.
+    console.warn('[read-only role] write refused:', original)
+    try {
+      const e = error as unknown as Record<string, unknown>
+      if (typeof e[READ_ONLY_ROLE_ORIGINAL] !== 'string') e[READ_ONLY_ROLE_ORIGINAL] = original
+      e.message = READ_ONLY_ROLE_MESSAGE
+    } catch {
+      /* a frozen error keeps its own words */
+    }
+  },
+})
+
 export const queryClient = new RepPortalQueryClient({
+  mutationCache,
   defaultOptions: {
     queries: {
       // ERP data only changes once a night; app data changes when the rep acts

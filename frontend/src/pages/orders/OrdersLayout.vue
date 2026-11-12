@@ -5,8 +5,11 @@ import { useFeatureFlags } from '@/composables/useAppSettings'
 
 /**
  * The Orders shell — same tab-bar shape as AdminLayout/SalesIntelLayout.
- * The Entry Queue tab appears only for order_entry and admins; the rep's
- * pair is My Orders + New Order.
+ * The Entry Queue tab appears only for inside sales (order_entry) and
+ * admins; the rep's pair is My Orders + New Order. Inside sales has all
+ * three: since 20261113090000 they draft orders for any account too. For
+ * them and admins the list is everyone's orders (opening on their own), so
+ * the tab is just "Orders".
  */
 const session = useSessionStore()
 /** /orders also opens for Claude drafting alone; New Order is hand entry. */
@@ -14,8 +17,11 @@ const flags = useFeatureFlags()
 
 const tabs = computed(() => {
   const items: { to: { name: string }; label: string }[] = []
-  items.push({ to: { name: 'orders' }, label: 'My Orders' })
-  if (!session.isOrderEntry && flags.orders.value) {
+  items.push({
+    to: { name: 'orders' },
+    label: session.isOrderEntry || session.isAdmin ? 'Orders' : 'My Orders',
+  })
+  if (flags.orders.value) {
     items.push({ to: { name: 'orders-new' }, label: 'New Order' })
   }
   if (session.isOrderEntry || session.isAdmin) {

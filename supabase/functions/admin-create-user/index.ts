@@ -128,8 +128,10 @@ async function handle(req: Request): Promise<Response> {
     )
   }
 
-  // order_entry owns no book (constraint order_entry_empty_book): scope
-  // fields are forced null rather than trusted from the form.
+  // order_entry (inside sales) has no rep code or rep group (constraint
+  // order_entry_empty_book): it reads every account through
+  // my_customer_keys() instead (20261113090000). Scope fields are forced null
+  // rather than trusted from the form.
   const salesRepKey = role === 'order_entry' ? null : nullIfBlank(body.sales_rep_key)
   const repGroupVendorId =
     role === 'order_entry' ? null : nullIfBlank(body.rep_group_vendor_id)
@@ -163,8 +165,8 @@ async function handle(req: Request): Promise<Response> {
     (nullIfBlank(body.sales_rep_key) || nullIfBlank(body.rep_group_vendor_id))
   ) {
     warnings.push(
-      'order_entry users have no account book — the rep code / rep group ' +
-        'fields were ignored.',
+      'Inside sales (order_entry) reads every account, so it needs no rep code: ' +
+        'the rep code / rep group fields were ignored.',
     )
   }
 

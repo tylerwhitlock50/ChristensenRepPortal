@@ -146,6 +146,13 @@ function closedLabel(task: Task): string {
     ? `Dropped · added ${shortDate(task.created_at)}`
     : `Completed ${shortDate(task.completed_at)}`
 }
+
+/** No "add one above" where there is no box above. */
+const openEmptyBody = computed(() =>
+  session.canEditBook
+    ? "That's the whole list — you're not missing anything. Add a follow-up above when something needs a nudge."
+    : "That's the whole list — you're not missing anything.",
+)
 </script>
 
 <template>
@@ -178,11 +185,10 @@ function closedLabel(task: Task): string {
       </button>
     </div>
 
-    <AppCard v-if="segment === 'open'">
-      <TaskQuickAdd
-        v-if="session.canWrite"
-        placeholder="What do you need to remember?"
-      />
+    <!-- Only where a follow-up can be added: the read-only role (inside
+         sales) and view-as get no empty card where the box would be. -->
+    <AppCard v-if="segment === 'open' && session.canEditBook">
+      <TaskQuickAdd placeholder="What do you need to remember?" />
     </AppCard>
 
     <p v-if="segment === 'open' && overdueCount > 0" class="text-sm font-medium text-danger">
@@ -204,7 +210,7 @@ function closedLabel(task: Task): string {
       :updated-at="dataUpdatedAt"
       :empty="tasks.length === 0"
       empty-title="Nothing on your list"
-      empty-body="That's the whole list — you're not missing anything. Add a follow-up above when something needs a nudge."
+      :empty-body="openEmptyBody"
       @retry="refetch()"
     >
       <div class="space-y-6">
@@ -217,8 +223,11 @@ function closedLabel(task: Task): string {
           <ul class="divide-y divide-line overflow-hidden rounded-none border border-line bg-surface">
             <li v-for="task in bucket.items" :key="task.id" class="p-3">
               <div class="flex items-start gap-3">
-                <!-- 44px hit area, and it's a real control, not a hover trick -->
+                <!-- 44px hit area, and it's a real control, not a hover trick.
+                     Like every task card, only for a session that may change
+                     the book (not the read-only role, not view-as). -->
                 <button
+                  v-if="session.canEditBook"
                   type="button"
                   class="tap-target flex w-11 shrink-0 items-center justify-center rounded-[2px] border border-line-2 bg-surface"
                   :disabled="busyId === task.id"
@@ -254,7 +263,7 @@ function closedLabel(task: Task): string {
                 </div>
 
                 <button
-                  v-if="confirmingCancelId !== task.id"
+                  v-if="session.canEditBook && confirmingCancelId !== task.id"
                   type="button"
                   class="tap-target shrink-0 px-2 text-sm font-medium text-muted underline underline-offset-2"
                   @click="confirmingCancelId = task.id"
@@ -265,7 +274,7 @@ function closedLabel(task: Task): string {
 
               <!-- Inline confirm, never a modal -->
               <div
-                v-if="confirmingCancelId === task.id"
+                v-if="session.canEditBook && confirmingCancelId === task.id"
                 class="mt-2 flex flex-wrap items-center gap-2 rounded-[2px] bg-canvas p-2"
               >
                 <span class="text-sm text-ink-2">Drop this follow-up?</span>
@@ -325,6 +334,7 @@ function closedLabel(task: Task): string {
           </div>
 
           <button
+            v-if="session.canEditBook"
             type="button"
             class="tap-target shrink-0 px-2 text-sm font-medium text-muted underline underline-offset-2"
             :disabled="busyId === task.id"

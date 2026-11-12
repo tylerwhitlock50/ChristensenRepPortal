@@ -10,6 +10,7 @@ import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
 import { trackingList, upsTrackUrl } from '@/lib/tracking'
 import { shippedValue } from '@/lib/shippedValue'
+import { dealerPo } from '@/lib/portalPo'
 import {
   useAccountOrderHeaders,
   useAccountOrderLines,
@@ -358,12 +359,14 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                 {{ count(row.order_qty) }} pcs
               </span>
               <!-- The dealer's own paperwork number — the thing they quote
-                   down the phone, and the whole point of migration 035. -->
+                   down the phone, and the whole point of migration 035. Not
+                   a PORTAL- reference: the portal gave that to an order the
+                   dealer sent no PO for (lib/portalPo.ts). -->
               <span
-                v-if="row.customer_po_number"
+                v-if="dealerPo(row.customer_po_number)"
                 class="text-ink-2 text-[13px] break-words"
               >
-                Their PO {{ row.customer_po_number }}
+                Their PO {{ dealerPo(row.customer_po_number) }}
               </span>
               <AppBadge v-if="row.open_line_count > 0" tone="high">
                 Open {{ count(row.backlog_qty) }}
@@ -410,7 +413,7 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
                   </button>
                 </td>
                 <td class="text-ink-2 py-2.5 pr-3">
-                  {{ row.customer_po_number ?? '—' }}
+                  {{ dealerPo(row.customer_po_number) ?? '—' }}
                 </td>
                 <td class="py-2.5 pr-3 text-right whitespace-nowrap tabular-nums">
                   {{ count(row.line_count) }}

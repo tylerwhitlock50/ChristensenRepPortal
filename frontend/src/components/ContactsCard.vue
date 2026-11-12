@@ -208,7 +208,7 @@ defineExpose({ startAdd })
           {{ rows.length === 1 ? '1 person' : `${rows.length} people` }}
         </p>
       </div>
-      <AppButton v-if="!adding && session.canWrite" variant="secondary" @click="startAdd">
+      <AppButton v-if="!adding && session.canEditBook" variant="secondary" @click="startAdd">
         Add contact
       </AppButton>
     </template>
@@ -233,7 +233,7 @@ defineExpose({ startAdd })
       @retry="contacts.refetch()"
     >
       <template #empty-action>
-        <AppButton v-if="session.canWrite" @click="startAdd">Add the first contact</AppButton>
+        <AppButton v-if="session.canEditBook" @click="startAdd">Add the first contact</AppButton>
       </template>
 
       <ul class="divide-y divide-line">
@@ -324,7 +324,7 @@ defineExpose({ startAdd })
                   v-if="
                     item.contact.source === 'rep' &&
                     item.contact.kind !== 'rep-primary' &&
-                    session.canWrite
+                    session.canEditBook
                   "
                   type="button"
                   class="tap-target inline-flex min-w-11 items-center justify-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2 disabled:opacity-50"
@@ -334,7 +334,7 @@ defineExpose({ startAdd })
                   {{ goToPendingId === item.contact.id ? 'Saving…' : 'Make go-to contact' }}
                 </button>
                 <button
-                  v-if="item.contact.source === 'rep' && session.canWrite"
+                  v-if="item.contact.source === 'rep' && session.canEditBook"
                   type="button"
                   class="tap-target inline-flex min-w-11 items-center justify-center px-1 text-sm font-medium text-ink-2 underline underline-offset-2"
                   @click="startEdit(item.contact)"
@@ -345,7 +345,7 @@ defineExpose({ startAdd })
                   v-if="
                     item.contact.source === 'rep' &&
                     canDelete &&
-                    session.canWrite &&
+                    session.canEditBook &&
                     !isConfirmingDelete(item.contact)
                   "
                   type="button"

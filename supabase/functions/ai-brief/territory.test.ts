@@ -100,6 +100,8 @@ type Options = {
   facts?: Record<string, unknown> | null
   mix?: Record<string, unknown>[] | null
   admin?: boolean
+  /** is_order_entry(): inside sales. */
+  insideSales?: boolean
   dataThrough?: string
   /** v_data_freshness.facts_loaded_at; null = an older view without it. */
   factsLoadedAt?: string | null
@@ -169,6 +171,8 @@ function territory(
         return mix === null ? NOT_DEPLOYED : { data: mix, error: null }
       case 'rpc:is_admin':
         return { data: opts.admin === true, error: null }
+      case 'rpc:is_order_entry':
+        return { data: opts.insideSales === true, error: null }
       default:
         return { data: [], error: null }
     }
@@ -452,10 +456,13 @@ Deno.test('product mix over the same months, named, with the change worked out',
   assert(!('top_skus' in built.context), 'no unequal-window lists when the mix is there')
 })
 
-Deno.test('scope says company for an admin, territory for everyone else', async () => {
+Deno.test('scope says company for an admin and inside sales, territory for a rep', async () => {
   const rep = await buildTerritoryContext(territory(), '', OCT13)
   const admin = await buildTerritoryContext(territory(GOAL_ROLLUP, { admin: true }), '', OCT13)
-  assertEquals([rep.context.scope, admin.context.scope], ['territory', 'company'], 'scope')
+  // Inside sales reads every account (20261113090000): the company's book.
+  const inside = await buildTerritoryContext(territory(GOAL_ROLLUP, { insideSales: true }), '', OCT13)
+  assertEquals([rep.context.scope, admin.context.scope, inside.context.scope],
+    ['territory', 'company', 'company'], 'scope')
 })
 
 Deno.test('on a database without 20261013160000 the brief falls back, and stays stable', async () => {
