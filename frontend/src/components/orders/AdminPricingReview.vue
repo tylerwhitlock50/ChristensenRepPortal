@@ -13,20 +13,30 @@ import { moneyCents, shortDate } from '@/lib/format'
 import { rpcErrorText } from '@/lib/mcpOrders'
 
 /**
- * The review block for an order staged with admin pricing (20261111170000):
+ * The review block for an order staged with hand pricing (20261111170000):
  * a customer PO taken as sent — parts on no price list, prices that are not
  * the published price, item numbers that match no part. Every flagged line is
  * listed with what to compare: the PO's item number and description beside
- * the part's, and the list / admin / last-paid prices.
+ * the part's, and the list / hand / last-paid prices.
  *
- * `editable` (an admin, on a draft) adds the overrides: set a price, reset it
- * to the list price, or remove the line. The database re-checks all of it.
+ * `editable` (an admin or inside sales, on a Claude-drafted draft) adds the
+ * price overrides: set a price, or reset it to the list price. `canRemove`
+ * adds Remove line beside them, which the database allows to fewer people
+ * (the draft's owner or an admin). The database re-checks all of it.
+ *
+ * Everything here goes by the line's id. The same part can be on two lines
+ * at different prices (10 paid, 1 free), so a part number alone does not say
+ * which line is meant — the confirm and the labels name quantity and price.
  */
-const props = defineProps<{
-  lines: OrderLineRow[]
-  reason: string | null | undefined
-  editable: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    lines: OrderLineRow[]
+    reason: string | null | undefined
+    editable: boolean
+    canRemove?: boolean
+  }>(),
+  { canRemove: false },
+)
 
 const summary = computed(() => pricingSummary(props.lines))
 const flagged = computed(() =>
@@ -78,18 +88,23 @@ function resetToList(line: OrderLineRow) {
   void run(line.id, () => setPrice.mutateAsync({ lineId: line.id, unitPrice: null }))
 }
 
-function remove(line: OrderLineRow) {
-  if (!window.confirm(`Remove ${line.customer_part_ref || line.part_id} from this order?`)) return
-  void run(line.id, () => removeLine.mutateAsync(line.id))
+const money = (v: number | null | undefined) => (v == null ? '—' : moneyCents(Number(v)))
+
+/** "801-15025-01 (10 at $1,700.00)": which line, when a part is on two. */
+function lineLabel(line: OrderLineRow): string {
+  return `${line.customer_part_ref || line.part_id} (${line.qty} at ${money(line.unit_price)})`
 }
 
-const money = (v: number | null | undefined) => (v == null ? '—' : moneyCents(Number(v)))
+function remove(line: OrderLineRow) {
+  if (!window.confirm(`Remove ${lineLabel(line)} from this order?`)) return
+  void run(line.id, () => removeLine.mutateAsync(line.id))
+}
 </script>
 
 <template>
   <section
     class="border-danger bg-surface space-y-3 border border-l-[6px] px-4 py-3"
-    aria-label="Admin pricing to review"
+    aria-label="Hand pricing to review"
   >
     <div>
       <p class="text-danger text-[17px] font-bold">
@@ -105,10 +120,10 @@ const money = (v: number | null | undefined) => (v == null ? '—' : moneyCents(
       </p>
       <p class="text-ink-2 text-[14px]">
         Staged from the customer's PO as it was sent. Check every flagged line against the PO
-        before submitting<template v-if="summary.adminLines">; only an admin can submit it</template>.
+        before submitting<template v-if="summary.adminLines">; only an admin or inside sales can submit it</template>.
       </p>
       <p v-if="summary.adminLines" class="text-ink-2 mt-1 text-[14px]">
-        <span class="u-label text-muted mr-2">Admin-priced</span>{{ money(summary.adminValue) }}
+        <span class="u-label text-muted mr-2">Priced by hand</span>{{ money(summary.adminValue) }}
         <template v-if="summary.notListPrice">
           · {{ money(summary.belowList) }} below list on the lines that have one
         </template>
@@ -177,14 +192,17 @@ const money = (v: number | null | undefined) => (v == null ? '—' : moneyCents(
           </dd>
         </dl>
 
-        <div v-if="editable" class="flex flex-wrap items-center gap-2 pt-1">
+        <div
+          v-if="editable && (canRemove || !line.part_unresolved)"
+          class="flex flex-wrap items-center gap-2 pt-1"
+        >
           <template v-if="!line.part_unresolved">
             <input
               v-model="drafts[line.id]"
               inputmode="decimal"
               class="border-line text-ink min-h-10 w-32 border px-2 text-[15px]"
               :placeholder="String(line.unit_price)"
-              :aria-label="`New price for ${line.part_id}`"
+              :aria-label="`New price for ${lineLabel(line)}`"
               @keydown.enter="savePrice(line)"
             />
             <AppButton
@@ -205,6 +223,7 @@ const money = (v: number | null | undefined) => (v == null ? '—' : moneyCents(
             </AppButton>
           </template>
           <AppButton
+            v-if="canRemove"
             variant="ghost"
             :loading="busyId === line.id && removeLine.isPending.value"
             @click="remove(line)"

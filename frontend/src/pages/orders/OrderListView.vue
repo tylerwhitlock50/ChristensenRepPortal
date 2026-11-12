@@ -11,9 +11,9 @@ import { ORDER_STATUS_LABELS, ORDER_STATUSES, type OrderStatus } from '@/types/d
 
 /**
  * Every order the caller can read — a rep's own (plus the agency's for a
- * principal), everything for an admin. The feedback loop lives here: a rep
- * watches submitted → entered (with the ERP number) → verified without
- * having to call the office.
+ * principal), everything for an admin or inside sales. The feedback loop
+ * lives here: a rep watches submitted → entered (with the ERP number) →
+ * verified without having to call the office.
  */
 const ordersQuery = useMyOrders()
 /** Hand entry can be off while Claude drafting is on: no "New order" then. */

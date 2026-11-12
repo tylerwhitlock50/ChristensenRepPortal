@@ -306,8 +306,10 @@ async function submitCreate() {
     return
   }
   try {
-    // order_entry owns no book (constraint order_entry_empty_book) — never
-    // send scope fields for one, whatever the (hidden) inputs still hold.
+    // order_entry (inside sales) carries no rep code or rep group
+    // (constraint order_entry_empty_book): it reads every account by role,
+    // not by a book. Never send scope fields for one, whatever the (hidden)
+    // inputs still hold.
     const isEntry = cRole.value === 'order_entry'
     const result = await create.mutateAsync({
       email: cEmail.value.trim(),
@@ -376,9 +378,9 @@ async function saveProfile() {
   manageError.value = ''
   manageNotice.value = ''
   try {
-    // Switching someone to order_entry clears their book — leaving the old
-    // rep code on the row would trip order_entry_empty_book (and, before
-    // that constraint, would have silently kept their account access alive).
+    // Switching someone to order_entry clears their rep code and rep group —
+    // leaving the old rep code on the row would trip order_entry_empty_book.
+    // (They read every account as inside sales either way.)
     const isEntry = eRole.value === 'order_entry'
     await updateProfile.mutateAsync({
       userId: selected.value.user_id,
@@ -520,8 +522,9 @@ async function setActive(active: boolean) {
           </div>
         </template>
         <p v-else class="text-muted text-[13px] sm:col-span-2">
-          Order entry users have no account book — they see the entry queue,
-          not accounts, so there is no rep code to set.
+          Inside sales (order_entry) reads every account and can write
+          orders for any of them, but changes nothing else — so there is no
+          rep code to set.
         </p>
 
         <p
@@ -915,8 +918,9 @@ async function setActive(active: boolean) {
             </label>
           </template>
           <p v-else class="text-muted text-[13px] sm:col-span-2">
-            Order entry users have no account book — saving clears any rep
-            code or rep group this profile carried.
+            Inside sales (order_entry) reads every account and can write
+            orders for any of them, but changes nothing else — saving clears
+            any rep code or rep group this profile carried.
           </p>
           <div class="sm:col-span-2">
             <AppButton

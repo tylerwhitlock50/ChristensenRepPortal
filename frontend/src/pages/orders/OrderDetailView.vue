@@ -8,6 +8,7 @@ import OrderStatusBadge from '@/components/orders/OrderStatusBadge.vue'
 import QcResultsCard from '@/components/orders/QcResultsCard.vue'
 import McpDraftReview from '@/components/orders/McpDraftReview.vue'
 import AdminPricingReview from '@/components/orders/AdminPricingReview.vue'
+import OrderDocumentsCard from '@/components/orders/OrderDocumentsCard.vue'
 import OrderSourceBadge from '@/components/orders/OrderSourceBadge.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import {
@@ -34,6 +35,7 @@ import {
   canSubmitWithAck,
   handEntryAllows,
   needsAcknowledgement,
+  noPoHint,
   priceMismatch,
   rpcErrorText,
 } from '@/lib/mcpOrders'
@@ -41,10 +43,13 @@ import { useFeatureFlags } from '@/composables/useAppSettings'
 
 /**
  * One order, for all three audiences. Everyone sees the same facts — the
- * status timeline, the lines, the QC findings — and the action row is the
- * only role-dependent part. Every action is a transition RPC; the database
- * re-checks role and status, so a stale button click fails loudly instead
- * of corrupting anything.
+ * status timeline, the lines, the QC findings, the documents — and the
+ * action row is the only role-dependent part. Every action is a transition
+ * RPC; the database re-checks role and status, so a stale button click fails
+ * loudly instead of corrupting anything.
+ *
+ * Lines are keyed by their id throughout: a hand-priced order may carry the
+ * same part twice at different prices (10 paid, 1 free).
  */
 const props = defineProps<{ id: string }>()
 const orderId = computed(() => Number(props.id))
@@ -55,7 +60,7 @@ const detail = useOrderDetail(orderId)
 const order = computed(() => detail.data.value?.order ?? null)
 
 /**
- * What order entry has to do in the ERP before entering it: the order loader
+ * What inside sales has to do in the ERP before entering it: the order loader
  * refuses to write an order whose FFL doesn't match the ship-to's licence on
  * file. Only meaningful once submitted (the snapshot is stamped then).
  */
@@ -75,6 +80,11 @@ const qc = computed(() => detail.data.value?.qc ?? [])
 
 const isOwner = computed(() => order.value?.user_id === session.user?.id)
 const canEnter = computed(() => session.isOrderEntry || session.isAdmin)
+
+/** A draft with no customer PO: what it will be submitted as (PORTAL-<id>). */
+const poHint = computed(() =>
+  order.value ? noPoHint(order.value.po_number, order.value.id, order.value.status) : '',
+)
 
 const submitOrder = useSubmitOrder()
 const recallOrder = useRecallOrder()
@@ -100,13 +110,40 @@ async function act(action: () => Promise<unknown>) {
 const isMcp = computed(() => needsAcknowledgement(order.value?.source))
 const acknowledged = ref(false)
 
-// ------------------------------------------ admin pricing (20261112120000)
-/** Lines staged from a PO as sent: admin prices, unmatched items, checks. */
+// ------------------------------- hand pricing (20261112120000, 20261113090000)
+/** Lines staged from a PO as sent: hand prices, unmatched items, checks. */
 const pricingReview = computed(() => needsPricingReview(lines.value))
 /** The writer reprices every line from the lists; it must not open these. */
 const writerBlocked = computed(() => blocksWriterEdit(lines.value))
-/** Why submit_order() would refuse on pricing grounds, or ''. */
-const pricingBlock = computed(() => pricingSubmitBlock(lines.value, session.isAdmin))
+/**
+ * Why submit_order() would refuse on pricing grounds, or ''. Hand-priced
+ * lines need an admin or inside sales (can_price_orders()). Ownership is the
+ * other half and is the action row's own `isOwner`: the server takes a
+ * submit only from the order's owner or an admin, so inside sales submits a
+ * hand-priced order only when it is their own draft.
+ */
+const pricingBlock = computed(() => pricingSubmitBlock(lines.value, session.canPriceOrders))
+/**
+ * The per-line price controls: a Claude-drafted draft, for whoever may price
+ * (admin_set_order_line_price() re-checks all three). Not while viewing as
+ * someone or offline, where every write is refused.
+ */
+const canEditPricing = computed(
+  () =>
+    order.value?.status === 'draft' &&
+    order.value.source !== 'portal' &&
+    session.canWrite &&
+    session.canPriceOrders,
+)
+/**
+ * Removing a line sits with the price controls, but it is a plain delete
+ * under order_lines RLS, which is narrower than pricing: the draft's owner
+ * or an admin. So inside sales can reprice a colleague's draft but is only
+ * offered Remove on their own.
+ */
+const canRemoveLines = computed(
+  () => canEditPricing.value && (session.isAdmin || isOwner.value),
+)
 
 const canSubmit = computed(
   () =>
@@ -243,6 +280,8 @@ const timeline = computed(() => {
             <template v-if="order.po_number"> · PO {{ order.po_number }}</template>
             <template v-if="order.customer_type"> · {{ order.customer_type }}</template>
           </p>
+          <!-- A PO is optional: say what a blank one becomes on submit. -->
+          <p v-if="poHint" class="text-muted text-[13px]">{{ poHint }}</p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <OrderSourceBadge :source="order.source" :is-test="order.is_test" />
@@ -276,13 +315,14 @@ const timeline = computed(() => {
         </p>
       </div>
 
-      <!-- A PO staged as sent: admin prices and unmatched items, line by line,
-           with the overrides for an admin while it is a draft. -->
+      <!-- A PO staged as sent: hand prices and unmatched items, line by line,
+           with the overrides for an admin or inside sales while it is a draft. -->
       <AdminPricingReview
         v-if="pricingReview"
         :lines="lines"
         :reason="order.price_override_reason"
-        :editable="order.status === 'draft' && session.isAdmin && order.source !== 'portal'"
+        :editable="canEditPricing"
+        :can-remove="canRemoveLines"
       />
 
       <!-- Claude-drafted: warnings, the source email, and the acknowledgement
@@ -300,6 +340,7 @@ const timeline = computed(() => {
         :source="order.source"
         :warnings="order.mcp_warnings"
         :source-ref="order.source_ref"
+        :po-hint="poHint"
         :show-ack="order.status === 'draft' && isOwner"
       />
       <p v-if="order.acknowledged_at" class="text-ink-2 text-[14px]">
@@ -336,7 +377,7 @@ const timeline = computed(() => {
             <AppButton :variant="isMcp ? 'secondary' : 'primary'">Edit draft</AppButton>
           </RouterLink>
           <p v-else class="text-muted w-full text-[13px]">
-            This draft has admin-priced or unmatched lines, which the order writer would
+            This draft has hand-priced or unmatched lines, which the order writer would
             reprice: change them above, or ask Claude to update the draft.
           </p>
           <AppButton
@@ -424,6 +465,11 @@ const timeline = computed(() => {
           </li>
         </ol>
       </AppCard>
+
+      <!-- The customer's PO and anything else filed with the order: every
+           status, everyone who can open it. Beside the lines it is checked
+           against. -->
+      <OrderDocumentsCard :order-id="order.id" />
 
       <!-- Lines -->
       <AppCard title="Lines" :hint="`${lines.length} lines`">

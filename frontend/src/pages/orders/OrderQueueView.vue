@@ -15,12 +15,14 @@ import { useSessionStore } from '@/stores/session'
 import { money, shortDate } from '@/lib/format'
 
 /**
- * The order-entry workbench: every submitted order waiting to be keyed into
- * the ERP, everything entered and awaiting QC, and the discrepancies. The
- * router lets any signed-in user reach /orders when the flag is on, so this
- * page additionally gates itself to order_entry + admin — a rep deep-linking
- * here gets the notice, not the queue (RLS would show them only their own
- * orders anyway; defense in depth, same as the DB).
+ * The inside-sales (order_entry) workbench: every submitted order waiting to
+ * be keyed into the ERP, everything entered and awaiting QC, and the
+ * discrepancies. The router lets any signed-in user reach /orders when the
+ * flag is on, so this page additionally gates itself to order_entry + admin
+ * — a rep deep-linking here gets the notice, not the queue (RLS would show
+ * them only their own orders anyway; defense in depth, same as the DB).
+ * Each row opens the order's detail page, which is where its documents (the
+ * customer's PO) are.
  */
 const session = useSessionStore()
 const allowed = computed(() => session.isOrderEntry || session.isAdmin)
@@ -92,9 +94,9 @@ async function recheck(order: OrderRow) {
 
 <template>
   <div v-if="!allowed" class="px-4 py-10 text-center">
-    <p class="u-display text-ink text-2xl">Order entry only</p>
+    <p class="u-display text-ink text-2xl">Inside sales only</p>
     <p class="text-muted mx-auto mt-2 max-w-xs text-[15px]">
-      The entry queue is for the order entry role and admins.
+      The entry queue is for inside sales and admins.
     </p>
   </div>
 

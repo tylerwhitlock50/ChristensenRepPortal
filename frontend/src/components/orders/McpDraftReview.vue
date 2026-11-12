@@ -23,14 +23,29 @@ const props = withDefaults(
     showAck?: boolean
     /** The warnings were computed before a portal edit and may be stale. */
     edited?: boolean
+    /**
+     * A draft with no customer PO right now: "No customer PO: it will be
+     * submitted as PORTAL-<id>." (lib/mcpOrders noPoHint), or '' when there
+     * is one. A PO is optional since 20261113090000.
+     */
+    poHint?: string
   }>(),
-  { showAck: false, edited: false },
+  { showAck: false, edited: false, poHint: '' },
 )
 
 const acknowledged = defineModel<boolean>('acknowledged', { default: false })
 
 const warningsList = computed(() => warningList(props.warnings))
 const email = computed(() => emailSourceRef(props.sourceRef))
+/**
+ * The server flags a blank PO in the same words when Claude drafts the order
+ * (mcp_order_preview), so the line is only added when that warning is not
+ * already listed: a draft from before the PO became optional, or a PO
+ * cleared in the portal since.
+ */
+const showPoHint = computed(
+  () => !!props.poHint && !warningsList.value.some((w) => w.startsWith('No customer PO')),
+)
 </script>
 
 <template>
@@ -45,6 +60,8 @@ const email = computed(() => emailSourceRef(props.sourceRef))
         quantities before submitting.
       </p>
     </div>
+
+    <p v-if="showPoHint" class="text-muted text-[13px]">{{ poHint }}</p>
 
     <div v-if="warningsList.length">
       <p class="u-label text-ink pb-1">

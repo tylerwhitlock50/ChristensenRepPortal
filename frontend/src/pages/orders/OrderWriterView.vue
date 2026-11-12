@@ -6,6 +6,7 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AccountPicker from '@/components/AccountPicker.vue'
 import McpDraftReview from '@/components/orders/McpDraftReview.vue'
+import OrderDocumentsCard from '@/components/orders/OrderDocumentsCard.vue'
 import { useTerritoryAccounts } from '@/composables/useOverview'
 import { useFeatureFlags } from '@/composables/useAppSettings'
 import {
@@ -40,6 +41,7 @@ import {
   canSubmitWithAck,
   canEditDraftInWriter,
   needsAcknowledgement,
+  noPoHint,
   rpcErrorText,
   type OrderSource,
 } from '@/lib/mcpOrders'
@@ -92,6 +94,7 @@ const orderId = ref<number | null>(props.id ? Number(props.id) : null)
 // prefilled account as an edit, so backing out of an untouched order does
 // not ask "Leave without saving this draft?".
 const customerKey = ref(routeCustomer)
+/** Optional (20261113090000): a blank PO is submitted as PORTAL-<order id>. */
 const poNumber = ref('')
 const shipDate = ref('')
 const notes = ref('')
@@ -104,6 +107,8 @@ const lines = ref<LocalLine[]>([])
 const dirty = ref(false)
 const formError = ref('')
 const hydrated = ref(!props.id)
+/** What a blank PO becomes on submit, said under the field (and on a Claude draft's review block). */
+const poHint = computed(() => noPoHint(poNumber.value, orderId.value))
 
 /**
  * Provenance of the draft being edited. Read here, NEVER written back: the
@@ -194,9 +199,10 @@ watch(
   (detail) => {
     if (!detail || hydrated.value) return
     // Not a draft, (hand entry off) a hand-typed draft, or a PO staged with
-    // admin prices / unmatched items — this writer reprices every line from
+    // hand prices / unmatched items — this writer reprices every line from
     // the lists, so it would drop them: read-only detail, which has the
-    // admin price controls.
+    // price controls. (It is also why this screen never sees the same part
+    // on two lines: only hand-priced lines may repeat one.)
     if (
       detail.order.status !== 'draft' ||
       !canEditDraftInWriter(featureFlags.orders.value, detail.order.source) ||
@@ -618,6 +624,7 @@ onBeforeRouteLeave(() => {
       :warnings="mcpWarnings"
       :source-ref="sourceRef"
       :edited="editedHere || dirty"
+      :po-hint="poHint"
     />
 
     <!-- 1 · Account -->
@@ -1029,6 +1036,7 @@ onBeforeRouteLeave(() => {
             v-model="poNumber"
             class="border-line text-ink min-h-12 w-full border px-3 text-[15px]"
           />
+          <span v-if="poHint" class="text-muted block pt-1 text-[13px]">{{ poHint }}</span>
         </label>
         <label class="block">
           <span class="u-label text-ink block pb-2">Requested ship date</span>
@@ -1078,5 +1086,11 @@ onBeforeRouteLeave(() => {
         </AppButton>
       </div>
     </AppCard>
+
+    <!-- A saved draft's documents: the PO a Claude draft was written from, to
+         check the lines against, and the place to add one. Last on purpose:
+         a new order has no id to file them under until its first save, and a
+         card arriving then must not push Submit out from under a thumb. -->
+    <OrderDocumentsCard v-if="orderId != null && hydrated" :order-id="orderId" />
   </div>
 </template>

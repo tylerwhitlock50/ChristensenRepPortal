@@ -1,6 +1,8 @@
 /**
  * Unit tests for lib/adminPricing.ts — flags and submit rules for
- * admin-priced and unmatched order lines (20261111170000).
+ * hand-priced ("admin-priced") and unmatched order lines (20261111170000).
+ * Since 20261113090000 an admin OR inside sales may price by hand, and a
+ * hand-priced order may carry the same part on two lines.
  *
  * Run with:  npm run test:unit -- adminPricing
  */
@@ -72,10 +74,29 @@ t('writer blocked by an admin line', blocksWriterEdit([list, lower]), true)
 t('writer fine with list lines (even a description check)', blocksWriterEdit([list, base({ description_mismatch: true })]), false)
 
 // ------------------------------------------------------------- submit
+// The second argument is session.canPriceOrders: an admin or inside sales.
 t('unmatched blocks everyone', pricingSubmitBlock([lower, unmatched], true).startsWith('1 line match no part'), true)
-t('admin lines block a rep', pricingSubmitBlock([lower], false), 'This order has admin-priced lines, so only an admin can submit it.')
-t('admin lines fine for an admin', pricingSubmitBlock([lower], true), '')
+t('hand-priced lines block a rep', pricingSubmitBlock([lower], false), 'This order has hand-priced lines, so only an admin or inside sales can submit it.')
+t('hand-priced lines fine for an admin or inside sales', pricingSubmitBlock([lower], true), '')
 t('list lines fine for a rep', pricingSubmitBlock([list], false), '')
+
+// ------------------------------------------- the same part on two lines
+// 10 paid and 1 free: two lines, one part_id, told apart only by id.
+const paid = base({ id: 11, qty: 10, price_source: 'admin', unit_price: 1700, list_unit_price: 2000 })
+const free = base({ id: 12, qty: 1, price_source: 'admin', unit_price: 0, list_unit_price: 2000 })
+t('same part twice: each line is flagged on its own', [paid, free].map((l) => lineFlags(l)), [['not_list_price'], ['not_list_price']])
+t('same part twice: both count, neither is merged', pricingSummary([paid, free]), {
+  lines: 2,
+  adminLines: 2,
+  offList: 0,
+  notListPrice: 2,
+  unmatched: 0,
+  descriptionChecks: 0,
+  adminValue: 10 * 1700,
+  belowList: 10 * 300 + 2000,
+})
+t('a free line is still a hand price to review', needsPricingReview([free]), true)
+t('same part twice blocks a rep, not inside sales', [pricingSubmitBlock([paid, free], false) !== '', pricingSubmitBlock([paid, free], true)], [true, ''])
 
 // ------------------------------------------------------------- price input
 t('plain', parsePriceInput('1700'), 1700)

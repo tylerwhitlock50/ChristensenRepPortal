@@ -17,7 +17,6 @@ import ViewAsBanner from '@/components/ViewAsBanner.vue'
 import GlobalSearch from '@/components/GlobalSearch.vue'
 import { daysUntilDue } from '@/lib/format'
 import { ordersSectionOpen } from '@/lib/mcpOrders'
-import { ROLE_LABELS } from '@/types/domain'
 
 const session = useSessionStore()
 const router = useRouter()
@@ -201,6 +200,14 @@ const wide = computed(
     route.path.startsWith('/agency'),
 )
 
+/* The account menu's role line. The stored 'order_entry' is called inside
+   sales everywhere a person reads it. (Spelled out here rather than imported
+   from types/domain: that module's label maps would ride into the entry
+   chunk with it.) */
+const roleLabel = computed(() =>
+  session.isOrderEntry ? 'inside sales' : (session.role ?? ''),
+)
+
 const initials = computed(() => {
   const parts = (session.displayName || '?').trim().split(/\s+/)
   return parts
@@ -335,7 +342,7 @@ async function signOut() {
                   {{ session.user?.email }}
                 </p>
                 <p class="text-muted mt-1 text-xs capitalize">
-                  {{ session.role ? (ROLE_LABELS[session.role] ?? session.role) : '' }}
+                  {{ roleLabel }}
                   <template v-if="session.profile?.sales_rep_key">
                     · {{ session.profile.sales_rep_key }}
                   </template>

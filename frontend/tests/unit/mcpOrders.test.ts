@@ -15,7 +15,9 @@ import {
   emailSourceRef,
   isMcpOrdersUserAllowed,
   needsAcknowledgement,
+  noPoHint,
   parseMcpOrdersParams,
+  portalPoReference,
   rpcErrorText,
   ordersSectionOpen,
   canEditDraftInWriter,
@@ -108,13 +110,26 @@ t('plain message passes through', rpcErrorText('Order 5 is not a draft'), 'Order
 t('two-segment detail stripped', rpcErrorText('invalid_input:unknown_field:colour: not an order field'), 'not an order field')
 t('detail with a space stripped', rpcErrorText('ship_to_invalid:MR MONEY|2: not one of this account'), 'not one of this account')
 t('empty message', rpcErrorText(undefined), '')
+t('the read-only-role refusal gets its own sentence, not a table name',
+  rpcErrorText('read_only_role: inside sales can view account_notes but not change it'),
+  'Inside sales can view this but not change it.')
+
+// ------------------------------------------------- optional customer PO
+t('PO reference is PORTAL-<id>', portalPoReference(8123), 'PORTAL-8123')
+t('blank PO on a draft: the hint names the reference', noPoHint(null, 8123, 'draft'), 'No customer PO: it will be submitted as PORTAL-8123.')
+t('whitespace is blank', noPoHint('   ', 8123), 'No customer PO: it will be submitted as PORTAL-8123.')
+t('a PO: no hint', noPoHint('4471', 8123, 'draft'), '')
+t('past draft: no hint (the stored PO is already the reference)', noPoHint(null, 8123, 'submitted'), '')
+t('a draft not saved yet has no number to show', noPoHint('', null), "No customer PO: it will be submitted as PORTAL- plus this order's number.")
 
 const sec = (ordersOn: boolean, mcpOrdersOn: boolean, mcpUserAllowed: boolean, isOrderEntry: boolean) =>
   ordersSectionOpen({ ordersOn, mcpOrdersOn, mcpUserAllowed, isOrderEntry })
 t('orders section: hand entry on opens it', sec(true, false, false, false), true)
 t('orders section: drafting on opens it for an allowed user', sec(false, true, true, false), true)
 t('orders section: drafting on does NOT open it for a rep off the list', sec(false, true, false, false), false)
-t('orders section: drafting on opens the queue for order entry', sec(false, true, false, true), true)
+t('orders section: drafting on opens the queue for inside sales (order_entry)', sec(false, true, false, true), true)
+t('orders section: inside sales on the allow-list too', sec(false, true, true, true), true)
+t('orders section: hand entry on opens it for inside sales', sec(true, false, false, true), true)
 t('orders section: both off', sec(false, false, true, true), false)
 t('writer: hand entry off refuses a hand-typed draft', canEditDraftInWriter(false, 'portal'), false)
 t('writer: hand entry off still edits a Claude draft', canEditDraftInWriter(false, 'mcp'), true)
