@@ -227,8 +227,9 @@ async function handle(req: Request): Promise<Response> {
     .single()
 
   if (saved.error) {
-    // The summary is good even if caching it failed; hand it to the rep
-    // rather than throwing away a paid call.
+    // The summary is good even if caching it failed; hand it over rather
+    // than throwing away a paid call. Expected for inside sales: they read
+    // every account but may not write the shared cache (read_only_role).
     console.error('ai_summaries upsert failed', saved.error)
     return respond('generated', row, { cached: false })
   }

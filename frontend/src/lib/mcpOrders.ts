@@ -10,62 +10,33 @@
  * shown that the server will refuse.
  */
 import { READ_ONLY_ROLE_MESSAGE, isReadOnlyRoleError } from '@/lib/readOnlyRole'
+import { MCP_ORDERS_LIMIT_FIELDS, parseMcpOrdersParams, type McpOrdersParams } from '@/lib/ordersGate'
+import { customerPoOf, portalPoReference } from '@/lib/portalPo'
+
+// The shell's half (who the section is open to, the caps) lives in
+// lib/ordersGate.ts: the app shell, the router and the settings import it
+// from there, so this module stays out of the entry chunk. The PO rules are
+// in lib/portalPo.ts. Both are re-exported here for the order screens.
+// Import from this module only on the order screens, never in the shell.
+export {
+  MCP_ORDERS_DEFAULTS,
+  MCP_ORDERS_LIMIT_FIELDS,
+  isMcpOrdersUserAllowed,
+  ordersSectionOpen,
+  parseMcpOrdersParams,
+  type McpOrdersParams,
+} from '@/lib/ordersGate'
+export {
+  customerPoOf,
+  dealerPo,
+  isPortalReference,
+  poForSave,
+  poInputError,
+  portalPoReference,
+  PO_MAX_LENGTH,
+} from '@/lib/portalPo'
 
 export type OrderSource = 'portal' | 'mcp' | 'inbox'
-
-/**
- * public.app_settings 'feature.mcp_orders' params, with the seeded defaults.
- * WHO may draft is not a param: it is the public.mcp_order_users table
- * (composables/useMcpOrderUsers.ts), with no wildcard.
- */
-export interface McpOrdersParams {
-  max_lines: number
-  max_units_per_line: number
-  max_order_value: number
-  max_drafts_per_user_per_day: number
-  duplicate_window_days: number
-}
-
-export const MCP_ORDERS_DEFAULTS: McpOrdersParams = {
-  max_lines: 40,
-  max_units_per_line: 200,
-  max_order_value: 250000,
-  max_drafts_per_user_per_day: 25,
-  duplicate_window_days: 14,
-}
-
-/** The numeric caps, in the order the admin editor shows them. */
-export const MCP_ORDERS_LIMIT_FIELDS: {
-  key: keyof McpOrdersParams
-  label: string
-}[] = [
-  { key: 'max_lines', label: 'Max lines per order' },
-  { key: 'max_units_per_line', label: 'Max units per line' },
-  { key: 'max_order_value', label: 'Max order value ($)' },
-  { key: 'max_drafts_per_user_per_day', label: 'Max drafts per user per day' },
-  { key: 'duplicate_window_days', label: 'Duplicate check window (days)' },
-]
-
-function positiveInt(value: unknown, fallback: number): number {
-  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
-  return typeof n === 'number' && Number.isFinite(n) && Number.isInteger(n) && n > 0
-    ? n
-    : fallback
-}
-
-/**
- * Read the stored params defensively: anything missing or malformed falls
- * back to the default. Keys that are not caps (a stale allowed_user_ids
- * included) are dropped.
- */
-export function parseMcpOrdersParams(raw: unknown): McpOrdersParams {
-  const p = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  const out: McpOrdersParams = { ...MCP_ORDERS_DEFAULTS }
-  for (const { key } of MCP_ORDERS_LIMIT_FIELDS) {
-    out[key] = positiveInt(p[key], MCP_ORDERS_DEFAULTS[key])
-  }
-  return out
-}
 
 /**
  * Validate an admin's edit before it is saved. Returns the cleaned params or
@@ -87,35 +58,6 @@ export function validateMcpOrdersParams(
     }
   }
   return { ok: true, params: parseMcpOrdersParams(raw) }
-}
-
-/**
- * Same rule as mcp_orders_user_allowed(): a signed-in user with their own row
- * in public.mcp_order_users. `onAllowList` is that own-row read
- * (useMcpOrderUsers.ts); anything but a definite true — loading, an error,
- * no row — is refused (fail closed). There is no wildcard.
- */
-export function isMcpOrdersUserAllowed(
-  onAllowList: boolean | null | undefined,
-  userId: string | null | undefined,
-): boolean {
-  return !!userId && onAllowList === true
-}
-
-/**
- * Whether the Orders section (list, detail, queue, draft editor) is open to
- * this user. Hand entry (feature.orders) opens it to everyone it is on for.
- * Claude drafting opens it only to someone it is FOR: a user on the
- * allow-list, or inside sales (order_entry), who processes the submitted
- * orders whether or not they draft with Claude themselves.
- */
-export function ordersSectionOpen(opts: {
-  ordersOn: boolean
-  mcpOrdersOn: boolean
-  mcpUserAllowed: boolean
-  isOrderEntry: boolean
-}): boolean {
-  return opts.ordersOn || (opts.mcpOrdersOn && (opts.mcpUserAllowed || opts.isOrderEntry))
 }
 
 /**
@@ -182,28 +124,31 @@ export function submitOrderArgs(
 }
 
 /**
- * A customer PO number is optional (20261113090000): submit_order() gives an
- * order with a blank one the reference PORTAL-<order id>. This is that
- * reference, the same text the server writes.
- */
-export function portalPoReference(orderId: number): string {
-  return `PORTAL-${orderId}`
-}
-
-/**
  * The muted line under a blank PO on a draft, or '' when there is a PO (or
  * the order is past draft, where the stored po_number is already the
- * reference). A draft not saved yet has no id to show.
+ * reference). A PO is optional (20261113090000): submit_order() gives an
+ * order with a blank one the reference PORTAL-<order id>. A draft still
+ * carrying its own PORTAL-<id> has no customer PO (lib/portalPo.ts). A
+ * draft not saved yet has no number to show, and nothing has gone wrong on
+ * an untouched form, so it gets a plain helper instead of the warning.
  */
 export function noPoHint(
   poNumber: string | null | undefined,
   orderId: number | null | undefined,
   status: string | null | undefined = 'draft',
 ): string {
-  if (status !== 'draft' || (poNumber ?? '').trim()) return ''
+  if (status !== 'draft' || customerPoOf(poNumber, orderId)) return ''
   return orderId == null
-    ? "No customer PO: it will be submitted as PORTAL- plus this order's number."
+    ? 'Optional. Without one the order gets a PORTAL- reference.'
     : `No customer PO: it will be submitted as ${portalPoReference(orderId)}.`
+}
+
+/**
+ * The server's own no-PO warning (mcp_order_preview), stored when Claude
+ * drafted the order. It goes stale once the order has a customer PO.
+ */
+export function isNoPoWarning(warning: string): boolean {
+  return warning.startsWith('No customer PO')
 }
 
 /** mcp_warnings is jsonb written by the server; show only its strings. */

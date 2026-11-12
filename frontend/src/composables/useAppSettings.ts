@@ -9,7 +9,7 @@ import {
   isMcpOrdersUserAllowed,
   parseMcpOrdersParams,
   type McpOrdersParams,
-} from '@/lib/mcpOrders'
+} from '@/lib/ordersGate'
 
 /**
  * Feature flags (public.app_settings, migration 024).

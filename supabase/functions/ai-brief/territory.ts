@@ -261,12 +261,17 @@ export async function buildTerritoryContext(
   // is anchored on the day the rollups were rebuilt, not on the wall clock:
   // a rollup a week behind read against today's calendar is exactly how the
   // brief came to describe Oct 2 numbers as current.
-  const [factsRes, freshRes, adminRes] = await Promise.all([
+  const [factsRes, freshRes, adminRes, insideRes] = await Promise.all([
     client.rpc('report_territory_brief_facts').maybeSingle(),
     client.from('v_data_freshness').select('*').maybeSingle(),
     // View-as aware (effective user): an admin viewing as a rep gets that
     // rep's territory, worded as a territory.
     client.rpc('is_admin'),
+    // Inside sales (order_entry) reads every account too (20261113090000),
+    // so their book is the company's, not a territory. This one reads the
+    // signed-in user, not the view-as one: an admin viewing as inside sales
+    // gets the company's figures worded as a territory.
+    client.rpc('is_order_entry'),
   ])
 
   const factsData = optional(factsRes, 'report_territory_brief_facts')
@@ -300,8 +305,10 @@ export async function buildTerritoryContext(
     today.getTime() - factsLoadedMs > LOAD_GRACE_MS
   const anchor = figuresAsOf ?? businessDate(today)
 
-  // A failed is_admin read is a territory, not an outage.
-  const scope = !adminRes.error && adminRes.data === true ? 'company' : 'territory'
+  // 'company' for whoever reads every account: an admin or inside sales. A
+  // failed read is a territory, not an outage.
+  const readsEverything = (res: { data: unknown; error: unknown }) => !res.error && res.data === true
+  const scope = readsEverything(adminRes) || readsEverything(insideRes) ? 'company' : 'territory'
 
   const yearNow = Number(anchor.slice(0, 4))
   const cutoff = shiftDays(anchor, -DORMANT_DAYS)

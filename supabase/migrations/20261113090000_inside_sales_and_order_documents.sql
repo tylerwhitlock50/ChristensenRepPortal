@@ -4,11 +4,22 @@
            somewhere to keep the customer's PO document. Follows
            20261112120000_admin_order_pricing.
 
-  1. Inside sales (profiles.role = 'order_entry') sees every account and may
-     order for any of them, but changes nothing else.
-       * my_customer_keys() returns every customer for an order_entry user.
-         Every account-scoped policy, view and MCP read keys off it, so the
-         portal and their Claude read what an admin reads. The profile still
+  Deploy: this migration BEFORE the portal build (frontend) and the edge
+  functions that use it (order_owner_names, the order-documents bucket, the
+  new error codes). The portal already deployed keeps working against it.
+  It runs under lock_timeout 10s: etl/deploy_migrations.py applies each file
+  in one transaction, so a lock timeout means a load or a long query held a
+  table it needs and NOTHING was applied; simply re-run it, outside the ETL
+  windows.
+
+  1. Inside sales (profiles.role = 'order_entry') sees every account, may
+     draft for any of them, prices and submits its OWN orders, and changes
+     nothing account-side.
+       * my_customer_keys() returns every customer for an order_entry user
+         (minus an admin's account_assignments 'revoke', which also stops
+         their Claude drafting for that account). Every account-scoped
+         policy, view and MCP read keys off it, so the portal and their
+         Claude read every account as an admin does. The profile still
          carries no rep code (order_entry_empty_book stays).
        * block_writes_for_read_only_role(): a trigger on every RLS-enabled
          public table EXCEPT the ones inside sales works in (orders, order
@@ -17,11 +28,35 @@
          contact, a visit, a task, a price list, a setting or a profile gets
          'read_only_role'. Applies inside SECURITY DEFINER RPCs too: the
          caller is still the order_entry user.
+       * ai_summaries stays out of the sweep (the edge function caches under
+         the caller's JWT and tolerates a refused write), but its write
+         policies now refuse inside sales: the row is the account's one
+         shared summary, so their summaries are generated, not cached.
        * The account-photos bucket: read yes, upload no.
+       * NOT widened, because these are scoped by user, not by account:
+         other users' tasks, profiles (owners' names come from
+         order_owner_names(), never emails), and the rep and coverage
+         surfaces (v_user_accounts, account_coverage, rep_execution_summary,
+         v_rep_activity, v_rep_goal_attainment, v_rep_goal_dashboard,
+         mission batches, agency_rep_activity). Inside sales sees every
+         account, not every person's work.
+
+     The order loader signs in as an order_entry user. From this migration
+     on that login reads every account and every order (drafts included)
+     and could price and submit orders of its own. It must be a dedicated
+     account whose password is rotated and kept only in the order-entry
+     PC's .env (order_loader README and GO_LIVE.md say so).
 
   2. Pricing by hand is no longer admin-only: can_price_orders() = admin or
      inside sales. mcp_order_apply, submit_order and
      admin_set_order_line_price use it. A rep is unchanged: no price, ever.
+       * admin_set_order_line_price: an admin prices any Claude draft;
+         anyone else only an order they own (not_owner). submit_order still
+         takes the owner or an admin, so whoever may price an order may
+         submit it: an admin, or inside sales on their own order.
+       * After a hand price the order's promo pass is re-run
+         (order_apply_promo(), the same code submit_order runs), so a draft
+         shows the totals the submit will compute.
 
   3. A customer PO number is encouraged, not required. Without one the draft
      is refused once with po_confirmation_required; when the user says there
@@ -29,22 +64,45 @@
      submit_order gives the order the reference PORTAL-<id> (what the order
      loader already wrote to Visual for a blank PO, now visible in the
      portal too).
+       * Blank means blank after trimming spaces, tabs, line breaks and
+         no-break spaces; a draft still carrying its own PORTAL-<id> has no
+         customer PO; recall_order clears that reference again.
+       * Over MCP a PORTAL-<n> PO is refused unless it is the order's own,
+         and an update never drops a PO already on the draft
+         (po_would_be_removed).
 
   4. Free goods: a hand-priced order may carry the same part twice at
      different prices (10 paid + 1 at $0). The unique key
-     (order_id, price_list_id, part_id) now covers list-priced lines only.
+     (order_id, price_list_id, part_id) now covers list-priced lines only;
+     the same part twice at the SAME price is still refused, by
+     mcp_order_apply and by admin_set_order_line_price.
 
   5. Order documents: a private storage bucket 'order-documents'. Objects are
      named '<order id>/<file name>'; whoever can read the order can read its
-     documents and add one. No table: the bucket listing is the list.
+     documents and add one; the uploader, an admin or inside sales removes
+     one. No table: the bucket listing is the list.
 
   6. submit_order snapshots the buyer contact (orders.contact_name / _phone /
-     _email) so the order loader can write it to Visual, and
-     v_orders_ready_for_erp carries it with the hand-pricing fields.
+     _email; an active contact of the account only) so the order loader can
+     write it to Visual, and v_orders_ready_for_erp carries it with the
+     hand-pricing fields. It refuses a requested ship date that has passed
+     (ship_date_past).
+
+  7. MCP drafting: callers who may price get admin_max_drafts_per_user_per_day
+     (default 200) like the other admin caps; the duplicate probe is per
+     account, not per drafter; stock and inactive-part warnings are per part
+     over the order's total qty; last paid price ignores free ($0) lines.
+
+  8. order_owner_names(uuid[]): the display name and role of order owners the
+     caller may see, for the order screens.
 
   Restated function bodies are the deployed ones (pg_get_functiondef) with
   only the changes named above.
 ============================================================================*/
+
+-- See the header: fail fast instead of queueing behind a load while holding
+-- the locks already taken; a timeout is simply re-run.
+set local lock_timeout = '10s';
 
 --------------------------------------------------------------------------
 -- 1. Who may price by hand
@@ -61,13 +119,14 @@ grant execute on function public.can_price_orders() to authenticated;
 
 comment on function public.can_price_orders() is
   'Admin or inside sales (order_entry): may set an order line''s price by hand '
-  'and submit an order that has hand-priced lines. Reps never can.';
+  '(inside sales on its own orders, an admin on any) and submit an order that '
+  'has hand-priced lines. Reps never can.';
 
 comment on function public.is_order_entry() is
   'True when the caller''s active profile has role=order_entry (inside sales). '
-  'They read every account, draft, price and submit orders for any customer, '
-  'key submitted orders into the ERP, and change nothing else '
-  '(block_writes_for_read_only_role, 20261113090000).';
+  'They read every account, draft for any customer, price and submit their '
+  'own orders, key submitted orders into the ERP, and change nothing '
+  'account-side (block_writes_for_read_only_role, 20261113090000).';
 
 --------------------------------------------------------------------------
 -- 2. my_customer_keys(): inside sales reads every account
@@ -194,16 +253,37 @@ begin
 end;
 $$;
 
--- Storage is outside the sweep: has_account_access() is now true for inside
--- sales on every account, so the photo upload policy says no by itself.
+-- Storage is outside the sweep: my_customer_keys() now holds every account
+-- for inside sales, so the photo upload policy says no by itself. Restated
+-- from 010_access_performance.
 drop policy if exists "upload account photos" on storage.objects;
 create policy "upload account photos" on storage.objects
   for insert to authenticated
   with check (
     bucket_id = 'account-photos'
-    and public.has_account_access((storage.foldername(name))[1])
+    and (
+      (select public.is_admin())
+      or (storage.foldername(name))[1] in (select public.my_customer_keys())
+    )
     and not (select public.is_order_entry())
   );
+
+-- ai_summaries is one shared row per account: the summary card its rep,
+-- principal and admins see. It stays out of the sweep (ai-account-summary
+-- caches under the caller's JWT, and a refused cache write still returns
+-- the summary), but inside sales no longer writes it: their summaries are
+-- generated, not cached. Restated from 010_access_performance.
+drop policy if exists "write ai summaries" on public.ai_summaries;
+create policy "write ai summaries" on public.ai_summaries
+  for insert to authenticated
+  with check (((select public.is_admin()) or customer_key in (select public.my_customer_keys()))
+              and not (select public.is_order_entry()));
+
+drop policy if exists "update ai summaries" on public.ai_summaries;
+create policy "update ai summaries" on public.ai_summaries
+  for update to authenticated
+  using (((select public.is_admin()) or customer_key in (select public.my_customer_keys()))
+         and not (select public.is_order_entry()));
 
 --------------------------------------------------------------------------
 -- 4. Free goods: the same part twice on hand-priced lines
@@ -222,7 +302,10 @@ comment on index public.uq_order_lines_list_part is
 
 --------------------------------------------------------------------------
 -- 5. mcp_order_check_keys / mcp_order_apply / mcp_order_preview
---    (restated: can_price_orders, optional PO, repeated hand-priced parts)
+--    (restated: can_price_orders for pricing and caps, is_admin for the
+--    book; optional PO and its rules; repeated hand-priced parts; daily cap
+--    for pricers; duplicate probe per account; last paid ignores free
+--    lines; hand-pricing words; stock and part status per part)
 --------------------------------------------------------------------------
 create or replace function public.mcp_order_check_keys(p jsonb, p_update boolean)
  RETURNS void
@@ -288,12 +371,12 @@ AS $$
 declare
   v_uid      uuid := auth.uid();
   v_guc      text := current_setting('app.mcp_order_write', true);
-  v_admin    boolean := public.can_price_orders();   -- admin or inside sales
+  v_admin    boolean := public.can_price_orders();   -- admin or inside sales: pricing and caps
   v_admin_list bigint := public.admin_price_list_id();
   v_max_lines int;
   v_max_units int;
   v_max_value numeric;
-  v_max_day   int     := coalesce((p_params ->> 'max_drafts_per_user_per_day')::int, 25);
+  v_max_day   int;
   v_window    int     := coalesce((p_params ->> 'duplicate_window_days')::int, 14);
   v_cur      public.orders;
   v_ck       text;
@@ -332,15 +415,19 @@ declare
   v_id       bigint;
   k          text;
 begin
-  -- An admin or inside sales stages distributor POs (20261112120000): larger caps.
+  -- An admin or inside sales stages distributor POs (20261112120000) and
+  -- enters the day's orders: larger caps, the daily draft count included
+  -- (its own key, so raising it never raises a rep's).
   if v_admin then
     v_max_lines := coalesce((p_params ->> 'admin_max_lines')::int, 500);
     v_max_units := coalesce((p_params ->> 'admin_max_units_per_line')::int, 5000);
     v_max_value := coalesce((p_params ->> 'admin_max_order_value')::numeric, 5000000);
+    v_max_day   := coalesce((p_params ->> 'admin_max_drafts_per_user_per_day')::int, 200);
   else
     v_max_lines := coalesce((p_params ->> 'max_lines')::int, 40);
     v_max_units := coalesce((p_params ->> 'max_units_per_line')::int, 200);
     v_max_value := coalesce((p_params ->> 'max_order_value')::numeric, 250000);
+    v_max_day   := coalesce((p_params ->> 'max_drafts_per_user_per_day')::int, 25);
   end if;
 
   if p_order_id is not null then
@@ -349,6 +436,8 @@ begin
 
   -- Customer, and the caller's right to draft for it (DEFINER bypasses RLS,
   -- so the read policy is restated: admin, or the account is on my book).
+  -- is_admin(), not v_admin: for inside sales my_customer_keys() is every
+  -- account minus an admin's revokes, and a revoke stops drafting too.
   if p ? 'customer_key' and jsonb_typeof(p -> 'customer_key') <> 'null' then
     if jsonb_typeof(p -> 'customer_key') <> 'string' or btrim(p ->> 'customer_key') = '' then
       raise exception 'invalid_input:customer_key: a customer_key string is required';
@@ -363,7 +452,7 @@ begin
   select dc.customer_key, dc.customer_name, dc.customer_type into v_cust
   from erp.dim_customer dc where dc.customer_key = v_ck;
   if not found
-     or not (v_admin or v_ck in (select public.my_customer_keys())) then
+     or not (public.is_admin() or v_ck in (select public.my_customer_keys())) then
     raise exception 'customer_not_in_book: % is not on your book (or does not exist)', v_ck;
   end if;
 
@@ -427,10 +516,32 @@ begin
     if jsonb_typeof(p -> 'po_number') not in ('string', 'number') then
       raise exception 'invalid_input:po_number: must be text';
     end if;
-    v_po := nullif(btrim(p ->> 'po_number'), '');
+    -- Blank is blank whatever the whitespace (tab, line break, no-break
+    -- space), as the order loader's strip() sees it.
+    v_po := nullif(btrim(p ->> 'po_number', E' \t\r\n\u00A0'), '');
     if length(v_po) > 40 then
       raise exception 'invalid_input:po_number: 40 characters at most';
     end if;
+    -- PORTAL-<id> is the reference submit_order gives an order with no PO.
+    -- The order's own counts as none; any other is refused, so two orders
+    -- never carry the same reference.
+    if v_po ~* '^PORTAL-[0-9]+$' then
+      if p_order_id is not null and upper(v_po) = 'PORTAL-' || p_order_id then
+        v_po := null;
+      else
+        raise exception 'invalid_input:po_number: % is not a customer PO; that reference is assigned by the portal to an order that has none', v_po;
+      end if;
+    end if;
+  end if;
+  -- An update never drops a customer PO already on the draft: the model
+  -- resends every confirmation (no_po_confirmed too), and a PO a person
+  -- added in the portal would silently go. The draft's own PORTAL-<id> is
+  -- not a customer PO.
+  if p_order_id is not null and v_po is null
+     and nullif(btrim(v_cur.po_number, E' \t\r\n\u00A0'), '') is not null
+     and upper(btrim(v_cur.po_number, E' \t\r\n\u00A0')) <> 'PORTAL-' || p_order_id then
+    raise exception 'po_would_be_removed: the draft has the customer PO %; send it again as po_number (a person can clear it in the portal if it really must go)',
+      btrim(v_cur.po_number, E' \t\r\n\u00A0');
   end if;
   -- A PO is asked for every time, but an informal order ("Tim wants one")
   -- has none: the user says so (no_po_confirmed) and submit_order gives the
@@ -694,7 +805,7 @@ begin
   end if;
 
   if v_n_admin > 0 and v_reason is null then
-    raise exception 'invalid_input:price_override_reason: % line(s) are admin-priced or unmatched; say why in price_override_reason (e.g. "excess stock buy-in, approved by ...")', v_n_admin;
+    raise exception 'invalid_input:price_override_reason: % line(s) are hand-priced or unmatched; say why in price_override_reason (e.g. "excess stock buy-in, approved by ...")', v_n_admin;
   end if;
   if v_n_admin = 0 then
     v_reason := null;
@@ -731,9 +842,12 @@ begin
     raise exception 'order_value_cap: the order totals %; drafts over MCP are capped at %', v_total, v_max_value;
   end if;
 
-  -- One draft write per user at a time: the cap and the duplicate probe
-  -- below are check-then-insert, and models do issue parallel tool calls.
+  -- One draft write per user, and per account, at a time: the cap and the
+  -- duplicate probe below are check-then-insert, and models do issue
+  -- parallel tool calls; the probe is per account, so two people drafting
+  -- for one account queue too. Always user first, then account.
   perform pg_advisory_xact_lock(hashtextextended('mcp_order_apply|' || v_uid::text, 0));
+  perform pg_advisory_xact_lock(hashtextextended('mcp_order_apply|account|' || v_ck, 0));
 
   if p_order_id is null then
     select count(*) into v_n
@@ -745,16 +859,18 @@ begin
     end if;
   end if;
 
-  -- Duplicate block: a model that retries usually invents a new key.
+  -- Duplicate block: a model that retries usually invents a new key. Per
+  -- account, not per drafter: the rep and inside sales (or two inside sales
+  -- users) can both receive the same PO. Whoever may draft for the account
+  -- reads its orders, so naming the other order leaks nothing.
   if not v_allow then
     select o.id into v_dup
     from public.orders o
-    where o.user_id = coalesce(v_cur.user_id, v_uid)
-      and o.customer_key = v_ck
+    where o.customer_key = v_ck
       and o.status <> 'cancelled'
       and o.created_at >= now() - make_interval(days => v_window)
       and o.id is distinct from p_order_id
-      and (   (v_po is not null and upper(btrim(o.po_number)) = upper(v_po))
+      and (   (v_po is not null and upper(btrim(o.po_number, E' \t\r\n\u00A0')) = upper(v_po))
            or v_set = (select jsonb_agg(jsonb_build_array(s.part_id, s.q) order by s.part_id)
                        from (select l.part_id, sum(l.qty) as q from public.order_lines l
                              where l.order_id = o.id group by l.part_id) s))
@@ -821,6 +937,8 @@ begin
 
   -- For the reviewer: what this customer last paid for each part, and
   -- whether the PO's description looks like the part it was matched to.
+  -- A free unit ($0, or 100% off) is not a price paid; ties break on the
+  -- ERP order and line so the answer does not depend on scan order.
   update public.order_lines l
   set last_paid_price = h.net_price,
       last_paid_date  = h.order_date
@@ -829,9 +947,10 @@ begin
            round(f.unit_price * (1 - coalesce(f.trade_discount_pct, 0) / 100), 2) as net_price, f.order_date
     from erp.fact_order_line f
     join erp.dim_part p on p.part_key = f.part_key
-    where f.customer_key = v_ck and f.unit_price is not null
+    where f.customer_key = v_ck and f.unit_price > 0
+      and coalesce(f.trade_discount_pct, 0) < 100
       and p.part_id in (select ol.part_id from public.order_lines ol where ol.order_id = v_id)
-    order by p.part_id, f.order_date desc nulls last, f.order_id desc
+    order by p.part_id, f.order_date desc nulls last, f.order_id desc, f.line_num desc
   ) h
   where l.order_id = v_id and l.part_id = h.part_id;
 
@@ -938,7 +1057,8 @@ begin
     where l.order_id = p_order_id;
   end if;
 
-  -- Stock never blocks; it is reported per line.
+  -- Stock never blocks; each line carries its part's available-to-sell
+  -- (ats_qty), and the warning below compares it per part.
   select coalesce(jsonb_agg(x.line || jsonb_build_object('ats_qty', x.ats) order by x.ord), '[]'::jsonb)
     into v_lines
   from (
@@ -950,8 +1070,9 @@ begin
     from jsonb_array_elements(coalesce(v_lines, '[]'::jsonb)) with ordinality as e(line, ord)
   ) x;
 
-  -- Admin pricing and unmatched parts (20261112120000): these lead the
-  -- warnings, in capitals, and carry alerts of their own.
+  -- Hand pricing and unmatched parts (20261112120000): these lead the
+  -- warnings, in capitals, and carry alerts of their own. The alert type
+  -- and the admin_* keys keep their names; the words say "hand-priced".
   select count(*) as n,
          count(*) filter (where l.price_source = 'admin') as n_admin,
          count(*) filter (where l.price_source = 'admin' and l.list_unit_price is null and not l.part_unresolved) as n_off,
@@ -991,23 +1112,27 @@ begin
       'lines', v_adm.n_admin, 'off_list', v_adm.n_off, 'differs_from_list', v_adm.n_diff,
       'unmatched', v_adm.n_unres, 'admin_value', v_adm.admin_value, 'below_list', v_adm.under_list,
       'reason', o.price_override_reason,
-      'message', 'Hand-priced lines: only an admin or inside sales can submit, after reviewing each flagged line.');
+      'message', 'Hand-priced lines: an admin, or inside sales on their own order, submits it after reviewing each flagged line.');
     v_head := v_head || format(
-      'ADMIN PRICING - CHECK EVERY FLAGGED LINE: %s of %s lines are not at the published price '
+      'HAND PRICING - CHECK EVERY FLAGGED LINE: %s of %s lines are not at the published price '
       '(%s on no price list for this account, %s priced differently from the list, %s unmatched). '
-      'Admin-priced value %s; %s below list on the lines that have a list price. Reason: "%s". '
-      'Only an admin or inside sales can submit this order, after reviewing each flagged line.',
+      'Hand-priced value %s; %s below list on the lines that have a list price. Reason: "%s". '
+      'An admin, or inside sales on their own order, submits it after reviewing each flagged line.',
       v_adm.n_admin, v_adm.n, v_adm.n_off, v_adm.n_diff, v_adm.n_unres,
       '$' || to_char(v_adm.admin_value, 'FM999,999,990.00'), '$' || to_char(v_adm.under_list, 'FM999,999,990.00'),
       coalesce(o.price_override_reason, 'none given'));
     if v_adm.n_vs_paid > 0 then
       v_head := v_head || format(
-        'PRICE VS LAST PAID: %s admin-priced line(s) differ from what this customer last paid for the part (see last_paid_price per line).',
+        'PRICE VS LAST PAID: %s hand-priced line(s) differ from what this customer last paid for the part.',
         v_adm.n_vs_paid);
     end if;
   end if;
 
-  if nullif(btrim(o.po_number), '') is null then
+  -- No customer PO: blank after any whitespace, or a draft still carrying
+  -- its own PORTAL-<id> (given at a submit, then recalled). The "No
+  -- customer PO" prefix is what the portal looks for.
+  if nullif(btrim(o.po_number, E' \t\r\n\u00A0'), '') is null
+     or (o.status = 'draft' and upper(btrim(o.po_number, E' \t\r\n\u00A0')) = 'PORTAL-' || o.id) then
     v_alerts := v_alerts || jsonb_build_object('type', 'no_customer_po', 'severity', 'warning',
       'assigned_reference', 'PORTAL-' || o.id,
       'message', 'No customer PO number: the order is given the reference PORTAL-' || o.id || ' when it is submitted. Add the real PO if the customer has one.');
@@ -1020,18 +1145,16 @@ begin
     v_warn := v_warn || 'TEST ORDER: this draft was made as a test and cannot be submitted.'::text;
   end if;
 
+  -- The user's expected price is checked per line.
   for r in
-    select e.line ->> 'part_id' as part_id, (e.line ->> 'qty')::int as qty,
-           (e.line ->> 'ats_qty')::numeric as ats,
+    select e.line ->> 'part_id' as part_id,
            (e.line ->> 'unit_price')::numeric as list_price,
            (e.line ->> 'effective_unit_price')::numeric as eff_price,
            (e.line ->> 'expected_unit_price')::numeric as expected,
-           e.line ->> 'price_list_name' as list_name,
-           coalesce((e.line ->> 'part_unresolved')::boolean, false) as unres,
-           (select min(dp.status) from erp.dim_part dp where dp.part_id = e.line ->> 'part_id') as status
+           e.line ->> 'price_list_name' as list_name
     from jsonb_array_elements(v_lines) as e(line)
+    where not coalesce((e.line ->> 'part_unresolved')::boolean, false)
   loop
-    continue when r.unres;
     if r.expected is not null and r.expected is distinct from r.eff_price then
       v_alerts := v_alerts || jsonb_build_object(
         'type', 'price_mismatch', 'severity', 'warning', 'part_id', r.part_id,
@@ -1043,8 +1166,25 @@ begin
                                  case when r.eff_price > r.expected then '+' else '-' end,
                                  to_char(abs(r.eff_price - r.expected), 'FM999,999,990.00'));
     end if;
+  end loop;
+
+  -- Stock and part status per PART, over the order's total qty, once each:
+  -- free goods put one part on two lines (5 available, 5 paid + 1 free is
+  -- short).
+  for r in
+    select g.part_id, g.qty, g.ats,
+           (select min(dp.status) from erp.dim_part dp where dp.part_id = g.part_id) as status
+    from (select e.line ->> 'part_id' as part_id,
+                 sum((e.line ->> 'qty')::int) as qty,
+                 max((e.line ->> 'ats_qty')::numeric) as ats,
+                 min(e.ord) as ord
+            from jsonb_array_elements(v_lines) with ordinality as e(line, ord)
+           where not coalesce((e.line ->> 'part_unresolved')::boolean, false)
+           group by e.line ->> 'part_id') g
+    order by g.ord
+  loop
     if r.ats is null or r.ats < r.qty then
-      v_warn := v_warn || format('Stock: %s has %s available to sell; %s ordered. Stock does not block the order.',
+      v_warn := v_warn || format('Stock: %s has %s available to sell; %s ordered in all. Stock does not block the order.',
                                  r.part_id, coalesce(trim_scale(r.ats)::text, 'no'), r.qty);
     end if;
     if r.status is distinct from 'A' then
@@ -1160,8 +1300,218 @@ revoke execute on function public.mcp_order_preview(bigint, boolean) from public
 revoke execute on function public.mcp_order_apply(bigint, jsonb, jsonb, text, text) from public, anon, authenticated;
 
 --------------------------------------------------------------------------
--- 6. submit_order (restated: inside sales submits hand-priced orders; a
---    blank PO becomes PORTAL-<id>; the buyer contact is snapshotted)
+-- 5b. order_resolve_parts (restated from 20261112120000: the last price
+--     paid ignores free lines and breaks ties on the ERP line, as
+--     mcp_order_apply; inside sales may stage unmatched items too)
+--------------------------------------------------------------------------
+create or replace function public.order_resolve_parts(p_customer_key text, p_items jsonb)
+returns jsonb
+language plpgsql stable security invoker set search_path = public, erp
+as $$
+declare
+  c_stop constant text[] := array['christensen','chris','arms','ca','rifle','rifles','rd','rnd',
+                                  'round','rounds','in','inch','the','and','with','w','each','ea'];
+  v_type  text;
+  v_its   jsonb;   -- [{idx, ref, uref, digits, descr}]
+  v_cand  jsonb;   -- [{idx, part_id, how, score}]
+  v_more  jsonb;
+  v_items jsonb;
+begin
+  select dc.customer_type into v_type
+  from erp.dim_customer dc where dc.customer_key = p_customer_key;
+  if not found then
+    raise exception 'customer_not_in_book: % is not on your book (or does not exist)', p_customer_key;
+  end if;
+  if jsonb_typeof(p_items) is distinct from 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'invalid_input:items: a non-empty list of {ref, description?}';
+  end if;
+  if jsonb_array_length(p_items) > 300 then
+    raise exception 'invalid_input:items: 300 items at most per call';
+  end if;
+
+  select jsonb_agg(jsonb_build_object(
+           'idx', (e.n - 1)::int,
+           'ref', left(nullif(btrim(e.v ->> 'ref'), ''), 100),
+           'uref', upper(nullif(btrim(e.v ->> 'ref'), '')),
+           'digits', regexp_replace(coalesce(e.v ->> 'ref', ''), '\D', '', 'g'),
+           'descr', left(nullif(btrim(e.v ->> 'description'), ''), 300)) order by e.n)
+    into v_its
+  from jsonb_array_elements(p_items) with ordinality as e(v, n)
+  where jsonb_typeof(e.v) = 'object';
+
+  -- Exact part id; the customer's own item number on their past ERP orders;
+  -- the same digits ("CHR801-15025-01", "8011502501" -> 801-15025-01; six
+  -- digits at least, so a stray "22" never matches). Best kind per part wins.
+  with it as (
+    select * from jsonb_to_recordset(coalesce(v_its, '[]'::jsonb))
+      as (idx int, ref text, uref text, digits text, descr text)
+  ),
+  raw as (
+    select it.idx, p.part_id, 'exact'::text as how, 1.0::numeric as score
+    from it join erp.dim_part p on upper(p.part_id) = it.uref
+    union all
+    select it.idx, p.part_id, 'customer_history', 0.95
+    from it
+    join erp.fact_order_line f
+      on f.customer_key = p_customer_key and upper(btrim(f.customer_part_id)) = it.uref
+    join erp.dim_part p on p.part_key = f.part_key
+    union all
+    select it.idx, p.part_id, 'digits', 0.9
+    from it
+    join (select distinct dp.part_id, regexp_replace(dp.part_id, '\D', '', 'g') as d from erp.dim_part dp) p
+      on p.d = it.digits
+    where length(it.digits) >= 6
+  ),
+  best as (
+    select distinct on (idx, part_id) idx, part_id, how, score
+    from raw order by idx, part_id, score desc
+  )
+  select coalesce(jsonb_agg(to_jsonb(best)), '[]'::jsonb) into v_cand from best;
+
+  -- Description, only for items nothing above matched: the share of the PO
+  -- description's words (normalised like order_product_search) found in an
+  -- active firearm's description / family / chambering. Top 3, >= 0.5.
+  if exists (select 1 from jsonb_array_elements(coalesce(v_its, '[]'::jsonb)) i
+             where i ->> 'descr' is not null
+               and not exists (select 1 from jsonb_array_elements(v_cand) c
+                               where (c ->> 'idx')::int = (i ->> 'idx')::int)) then
+    with q as (
+      select (i ->> 'idx')::int as idx, public.order_desc_tokens(i ->> 'descr') as toks
+      from jsonb_array_elements(v_its) i
+      where i ->> 'descr' is not null
+        and not exists (select 1 from jsonb_array_elements(v_cand) c
+                        where (c ->> 'idx')::int = (i ->> 'idx')::int)
+    ),
+    docs as materialized (
+      select x.part_id,
+             public.order_desc_tokens(concat_ws(' ',
+               x.part_description, nullif(upper(btrim(x.product_family)), 'N/A'),
+               nullif(upper(btrim(x.chambering)), 'N/A'), nullif(upper(btrim(x.barrel_length)), 'N/A'),
+               nullif(upper(btrim(x.finish)), 'N/A'), nullif(upper(btrim(x.stock_color)), 'N/A'))) as toks
+      from (select distinct on (dp.part_id) dp.*
+              from erp.dim_part dp
+             where dp.status = 'A' and dp.part_id ~ '^8\d\d-' and dp.part_id !~ '-M$'
+             order by dp.part_id, dp.part_key) x
+    ),
+    scored as (
+      select q.idx, d.part_id, public.order_desc_score(q.toks, d.toks) as score
+      from q cross join docs d
+      where cardinality(q.toks) > 0
+    ),
+    ranked as (
+      select s.*, row_number() over (partition by s.idx order by s.score desc, s.part_id) as rn
+      from scored s where s.score >= 0.5
+    )
+    select coalesce(jsonb_agg(jsonb_build_object('idx', idx, 'part_id', part_id,
+                                                 'how', 'description', 'score', score)), '[]'::jsonb)
+      into v_more
+    from ranked where rn <= 3;
+    v_cand := v_cand || v_more;
+  end if;
+
+  with it as (
+    select * from jsonb_to_recordset(coalesce(v_its, '[]'::jsonb))
+      as (idx int, ref text, uref text, digits text, descr text)
+  ),
+  c0 as (
+    select * from jsonb_to_recordset(v_cand) as (idx int, part_id text, how text, score numeric)
+  ),
+  cand as (
+    select c.idx, c.part_id, c.how, c.score,
+           dp.part_description, dp.status, coalesce(dp.is_kit_flag = 'Y', false) as is_kit,
+           lp.unit_price as list_price,
+           hist.net_price as last_paid_price, hist.order_date as last_paid_date,
+           case when c.how = 'description' then c.score
+                else public.order_desc_score(public.order_desc_tokens(it.descr),
+                                             public.order_desc_tokens(public.order_part_doc(c.part_id))) end
+             as agreement,
+           row_number() over (partition by c.idx
+                              order by c.score desc, (dp.status = 'A') desc, (c.part_id ~ '-M$'), c.part_id) as rn
+    from c0 c
+    join it on it.idx = c.idx
+    left join lateral (
+      select p.part_description, p.status, p.is_kit_flag
+      from erp.dim_part p where p.part_id = c.part_id order by p.part_key limit 1) dp on true
+    left join lateral (
+      select i.unit_price
+      from public.effective_price_lists(v_type) l
+      join public.price_list_items i on i.price_list_id = l.id and i.part_id = c.part_id
+      where not l.is_special
+      order by l.effective_from desc, l.id limit 1) lp on true
+    -- Last paid: a free unit ($0, or 100% off) is not a price paid; ties
+    -- break on the ERP order and line (as mcp_order_apply, 20261113090000).
+    left join lateral (
+      select round(f.unit_price * (1 - coalesce(f.trade_discount_pct, 0) / 100), 2) as net_price, f.order_date
+      from erp.fact_order_line f
+      join erp.dim_part p on p.part_key = f.part_key
+      where f.customer_key = p_customer_key and p.part_id = c.part_id and f.unit_price > 0
+        and coalesce(f.trade_discount_pct, 0) < 100
+      order by f.order_date desc nulls last, f.order_id desc, f.line_num desc limit 1) hist on true
+  ),
+  per_item as (
+    select it.idx, it.ref, it.descr,
+           coalesce(jsonb_agg(jsonb_build_object(
+             'part_id',         c.part_id,
+             'erp_description', c.part_description,
+             'part_status',     c.status,
+             'match',           c.how,
+             'score',           c.score,
+             'description_agreement', c.agreement,
+             'is_kit',          c.is_kit,
+             'requires_ffl',    public.part_requires_ffl(c.part_id),
+             'on_price_list',   c.list_price is not null,
+             'list_price',      c.list_price,
+             'last_paid_price', c.last_paid_price,
+             'last_paid_date',  c.last_paid_date)
+             order by c.rn) filter (where c.part_id is not null and c.rn <= 5), '[]'::jsonb) as cands,
+           count(*) filter (where c.how <> 'description' and c.status = 'A' and c.part_id !~ '-M$') as strong_active,
+           count(*) filter (where c.how <> 'description') as strong,
+           count(c.part_id) as any_cand,
+           bool_or(c.rn = 1 and c.how <> 'description' and c.agreement < 0.3) as top_disagrees
+    from it
+    left join cand c on c.idx = it.idx
+    group by it.idx, it.ref, it.descr
+  )
+  select jsonb_agg(jsonb_build_object(
+           'index', p.idx,
+           'ref', p.ref,
+           'description', p.descr,
+           'status', case
+              when (p.strong_active = 1 or p.strong = 1) and coalesce(p.top_disagrees, false) then 'check_description'
+              when p.strong_active = 1 or p.strong = 1 then 'matched'
+              when p.strong > 1 then 'ambiguous'
+              when p.any_cand > 0 then 'description_only'
+              else 'unmatched' end,
+           'candidates', p.cands)
+           order by p.idx)
+    into v_items
+  from per_item p;
+
+  return jsonb_build_object(
+    'customer_type', v_type,
+    'items', coalesce(v_items, '[]'::jsonb),
+    'note', 'matched = one strong match (exact id, this customer''s own item number, or the same digits) '
+            'whose ERP description agrees with the PO''s. check_description = the number matched but '
+            'the descriptions disagree (a chambering missing, or under a third of the words): likely a typo '
+            'on the PO; show the user both. description_only and ambiguous need a person''s choice; '
+            'unmatched items can be staged only by an admin or inside sales, with a price.');
+end;
+$$;
+
+revoke execute on function public.order_resolve_parts(text, jsonb) from public, anon;
+grant execute on function public.order_resolve_parts(text, jsonb) to authenticated;
+
+comment on function public.order_resolve_parts(text, jsonb) is
+  'Resolve a PO''s lines [{ref, description}] to ERP parts across the whole catalog: exact id, '
+  'the customer''s own item number on past ERP orders, same digits, then description. Each '
+  'candidate carries its list price for the account and the last price the customer paid '
+  '(free lines ignored, 20261113090000). RLS-scoped (SECURITY INVOKER).';
+
+--------------------------------------------------------------------------
+-- 6. submit_order (restated: inside sales submits its own hand-priced
+--    orders; a blank PO becomes PORTAL-<id>; the buyer contact is
+--    snapshotted; a past ship date is refused; the promo pass moves to
+--    order_apply_promo() unchanged)
 --------------------------------------------------------------------------
 alter table public.orders
   add column if not exists contact_name  text,
@@ -1171,7 +1521,48 @@ alter table public.orders
 comment on column public.orders.contact_name is
   'The buyer (customer_contact_key) as the ERP had them at submit: name, '
   'contact_phone, contact_email. Stamped by submit_order for the order loader, '
-  'like the ship-to snapshot; null when no contact was chosen.';
+  'like the ship-to snapshot; null when no contact was chosen, or it is not '
+  'an active contact of the account.';
+
+-- The promo pass, one copy (moved out of submit_order unchanged):
+-- submit_order runs it authoritatively, admin_set_order_line_price after
+-- every hand price, so a draft shows the totals the submit will compute.
+-- Per price list: buy N get M settled as a prorated percent over the qty on
+-- that list. The admin list has no promo, so hand-priced lines keep their
+-- price. The caller opens the write window (app.mcp_order_write) first.
+create or replace function public.order_apply_promo(p_order_id bigint)
+returns void
+language sql
+set search_path = public
+as $$
+  with totals as (
+    select l.price_list_id,
+           sum(l.qty)::numeric as total_qty,
+           pl.promo_buy_qty, pl.promo_get_qty
+    from public.order_lines l
+    join public.price_lists pl on pl.id = l.price_list_id
+    where l.order_id = p_order_id
+    group by l.price_list_id, pl.promo_buy_qty, pl.promo_get_qty
+  ),
+  pct as (
+    select price_list_id,
+           case
+             when promo_buy_qty is null then 0::numeric
+             else round(
+               100 * (floor(total_qty / (promo_buy_qty + promo_get_qty))
+                      * promo_get_qty) / total_qty, 4)
+           end as discount_pct
+    from totals
+  )
+  update public.order_lines l
+  set discount_pct         = pct.discount_pct,
+      effective_unit_price = round(l.unit_price * (1 - pct.discount_pct / 100), 2)
+  from pct
+  where l.order_id = p_order_id
+    and l.price_list_id = pct.price_list_id;
+$$;
+
+revoke execute on function public.order_apply_promo(bigint) from public, anon, authenticated;
 
 create or replace function public.submit_order(p_order_id bigint, p_acknowledged boolean DEFAULT false)
  RETURNS orders
@@ -1191,6 +1582,9 @@ declare
   v_ack   boolean := coalesce(p_acknowledged, false);
   v_guc   text := current_setting('app.mcp_order_write', true);
   v_n_admin int;
+  v_cname  text;
+  v_cphone text;
+  v_cemail text;
 begin
   -- A JWT outlives deactivation; the profile is the cutoff, not the token.
   if not exists (
@@ -1237,12 +1631,13 @@ begin
       p_order_id, left(v_bad, 400);
   end if;
 
-  -- Admin prices: an admin submits, and only having acknowledged them.
+  -- Hand prices: an admin, or inside sales on their own order (the owner
+  -- check above), submits, and only having acknowledged them.
   select count(*) into v_n_admin
   from public.order_lines l where l.order_id = p_order_id and l.price_source = 'admin';
   if v_n_admin > 0 then
     if not public.can_price_orders() then
-      raise exception 'admin_price_requires_admin: order % has % line(s) priced by hand; only an admin or inside sales can submit it',
+      raise exception 'admin_price_requires_admin: order % has % line(s) priced by hand; only an admin, or inside sales on their own order, can submit it',
         p_order_id, v_n_admin;
     end if;
     if not v_ack then
@@ -1260,6 +1655,14 @@ begin
   from erp.dim_customer c where c.customer_key = v_order.customer_key;
   if not found then
     raise exception 'customer % not found in the ERP', v_order.customer_key;
+  end if;
+
+  -- A ship date already gone by would reach order entry as a date the ERP
+  -- refuses; the person submitting fixes it first. current_date is the
+  -- business date (America/Denver, 20260901190000).
+  if v_order.requested_ship_date < current_date then
+    raise exception 'ship_date_past: the requested ship date % has passed; change it before submitting',
+      v_order.requested_ship_date;
   end if;
 
   -- Ship-to: one of this account's own Visual ship-to addresses (CUST_ADDRESS,
@@ -1310,6 +1713,21 @@ begin
     v_exp := v_order.ffl_expires_on;
   end if;
 
+  -- The buyer, as the ERP has them now: the order loader writes these to
+  -- the Visual order (it reads the order, not erp.dim_customer_contact).
+  -- Only an ACTIVE contact of this account: one deactivated since the draft,
+  -- or a key pointing at another account (a portal PATCH can set one),
+  -- stamps nothing, all three fields null.
+  select public.contact_display_name(e.contact_name, e.first_name, e.last_name, null, null),
+         coalesce(nullif(btrim(e.phone), ''), nullif(btrim(e.mobile), '')),
+         nullif(btrim(e.email), '')
+    into v_cname, v_cphone, v_cemail
+  from erp.dim_customer_contact e
+  where e.customer_contact_key = v_order.customer_contact_key
+    and e.customer_key = v_order.customer_key
+    and coalesce(e.contact_active_flag, 'Y') = 'Y'
+  limit 1;
+
   -- Every LIST-priced line must sit on a list effective today for this
   -- customer type, and its captured price must still be the published price.
   -- Admin lines were checked above.
@@ -1337,37 +1755,14 @@ begin
 
   -- Authoritative promo pass (overwrites whatever the client previewed).
   -- The admin list has no promo: its lines keep their price.
-  with totals as (
-    select l.price_list_id,
-           sum(l.qty)::numeric as total_qty,
-           pl.promo_buy_qty, pl.promo_get_qty
-    from public.order_lines l
-    join public.price_lists pl on pl.id = l.price_list_id
-    where l.order_id = p_order_id
-    group by l.price_list_id, pl.promo_buy_qty, pl.promo_get_qty
-  ),
-  pct as (
-    select price_list_id,
-           case
-             when promo_buy_qty is null then 0::numeric
-             else round(
-               100 * (floor(total_qty / (promo_buy_qty + promo_get_qty))
-                      * promo_get_qty) / total_qty, 4)
-           end as discount_pct
-    from totals
-  )
-  update public.order_lines l
-  set discount_pct         = pct.discount_pct,
-      effective_unit_price = round(l.unit_price * (1 - pct.discount_pct / 100), 2)
-  from pct
-  where l.order_id = p_order_id
-    and l.price_list_id = pct.price_list_id;
+  perform public.order_apply_promo(p_order_id);
 
   update public.orders o
   set status        = 'submitted',
-      -- No customer PO: the order's own reference, so the portal, the order
-      -- loader and Visual's CUSTOMER_PO_REF all show the same thing.
-      po_number     = coalesce(nullif(btrim(o.po_number), ''), 'PORTAL-' || o.id),
+      -- No customer PO (blank after any whitespace): the order's own
+      -- reference, so the portal, the order loader and Visual's
+      -- CUSTOMER_PO_REF all show the same thing. A real PO is stored trimmed.
+      po_number     = coalesce(nullif(btrim(o.po_number, E' \t\r\n\u00A0'), ''), 'PORTAL-' || o.id),
       customer_name = coalesce(v_cust.customer_name, v_order.customer_key),
       customer_type = v_cust.customer_type,
       ship_to_id      = v_ship.ship_to_id,
@@ -1384,20 +1779,10 @@ begin
       ffl_on_file_expiration_raw = v_ship.ffl_expiration_raw,
       total_amount  = (select sum(line_total) from public.order_lines
                        where order_id = p_order_id),
-      -- The buyer, as the ERP has them now: the order loader writes these to
-      -- the Visual order (it reads the order, not erp.dim_customer_contact).
-      contact_name  = (select public.contact_display_name(e.contact_name, e.first_name, e.last_name, null, null)
-                         from erp.dim_customer_contact e
-                        where e.customer_contact_key = o.customer_contact_key
-                          and e.customer_key = o.customer_key limit 1),
-      contact_phone = (select coalesce(nullif(btrim(e.phone), ''), nullif(btrim(e.mobile), ''))
-                         from erp.dim_customer_contact e
-                        where e.customer_contact_key = o.customer_contact_key
-                          and e.customer_key = o.customer_key limit 1),
-      contact_email = (select nullif(btrim(e.email), '')
-                         from erp.dim_customer_contact e
-                        where e.customer_contact_key = o.customer_contact_key
-                          and e.customer_key = o.customer_key limit 1),
+      -- The buyer snapshot (resolved above).
+      contact_name  = v_cname,
+      contact_phone = v_cphone,
+      contact_email = v_cemail,
       submitted_at  = now(),
       acknowledged_at = case when v_ack then now() else o.acknowledged_at end,
       acknowledged_by = case when v_ack then v_uid else o.acknowledged_by end
@@ -1415,13 +1800,66 @@ grant execute on function public.submit_order(bigint, boolean) to authenticated,
 comment on function public.submit_order(bigint, boolean) is
   'draft -> submitted, with the authoritative pricing/ship-to/FFL pass. An '
   'order with source <> ''portal'' needs p_acknowledged => true. Lines '
-  'matching no ERP part never submit; hand-priced lines need an admin or '
-  'inside sales submitter and the acknowledgement. A blank PO becomes '
-  'PORTAL-<id> (20261113090000).';
+  'matching no ERP part never submit; hand-priced lines need an admin, or '
+  'inside sales on their own order, as submitter and the acknowledgement. A '
+  'blank PO becomes PORTAL-<id>; a requested ship date that has passed is '
+  'refused (ship_date_past) (20261113090000).';
 
 --------------------------------------------------------------------------
--- 7. admin_set_order_line_price (restated: admin or inside sales)
+-- 6b. recall_order (restated from 20260817000300_order_review_hardening:
+--     a stamped PORTAL-<id> is cleared again)
 --------------------------------------------------------------------------
+create or replace function public.recall_order(p_order_id bigint)
+returns public.orders
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_uid   uuid := auth.uid();
+  v_order public.orders;
+begin
+  if not exists (
+    select 1 from public.profiles p where p.user_id = v_uid and p.active
+  ) then
+    raise exception 'your account has been deactivated';
+  end if;
+
+  select * into v_order from public.orders where id = p_order_id for update;
+  if not found then
+    raise exception 'order % not found', p_order_id;
+  end if;
+  if not (v_order.user_id = v_uid or public.is_admin()) then
+    raise exception 'only the order''s owner may recall it';
+  end if;
+  if v_order.status <> 'submitted' then
+    raise exception 'order % is %, only submitted orders can be recalled',
+      p_order_id, v_order.status;
+  end if;
+
+  -- PORTAL-<id> was given at submit because the order had no customer PO:
+  -- back in draft it has none again (flagged, and re-given at the next
+  -- submit), so a PO that turns up can simply be typed in.
+  update public.orders
+  set status = 'draft', submitted_at = null, total_amount = null,
+      po_number = case when po_number = 'PORTAL-' || id then null else po_number end
+  where id = p_order_id
+  returning * into v_order;
+  return v_order;
+end;
+$$;
+
+revoke execute on function public.recall_order(bigint) from public, anon;
+grant execute on function public.recall_order(bigint) to authenticated;
+
+--------------------------------------------------------------------------
+-- 7. admin_set_order_line_price (restated: admin, or inside sales on its
+--    own orders; the same part at the same hand price is refused; the
+--    order's promo is re-run)
+--------------------------------------------------------------------------
+comment on column public.order_lines.price_source is
+  '''list'' = the published price; ''admin'' = priced by hand (off list or a different price) '
+  'by an admin or inside sales. Hand-priced lines sit on the reserved admin price list; an '
+  'admin, or inside sales on their own order, submits them (20261113090000).';
+
 create or replace function public.admin_set_order_line_price(p_line_id bigint, p_unit_price numeric, p_reason text DEFAULT NULL::text)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -1439,7 +1877,7 @@ declare
   v_admin_list bigint := public.admin_price_list_id();
 begin
   if coalesce(auth.jwt() -> 'app_metadata' ->> 'provider', '') = 'mcp' then
-    raise exception 'mcp_direct_write: prices are set in the portal by an admin' using errcode = '42501';
+    raise exception 'mcp_direct_write: prices are set in the portal by an admin or inside sales' using errcode = '42501';
   end if;
   if not public.can_price_orders() then
     raise exception 'not_admin: only an admin or inside sales can set a line''s price' using errcode = '42501';
@@ -1450,6 +1888,13 @@ begin
     raise exception 'line_not_found: order line % not found', p_line_id;
   end if;
   select * into v_order from public.orders where id = v_line.order_id for update;
+  -- An admin prices any Claude draft; inside sales only its own. submit_order
+  -- takes the owner or an admin, so whoever may price an order may also
+  -- submit it: a hand price on a rep's draft would leave it to an admin.
+  if not (public.is_admin() or v_order.user_id = auth.uid()) then
+    raise exception 'not_owner: only the order''s owner or an admin can set prices on it'
+      using errcode = '42501';
+  end if;
   if v_order.status <> 'draft' then
     raise exception 'order_not_draft: order % is %; recall it to draft first', v_order.id, v_order.status;
   end if;
@@ -1492,12 +1937,25 @@ begin
       if v_reason is null and v_order.price_override_reason is null then
         raise exception 'reason_required: say why this order is priced by hand';
       end if;
+      -- Free goods may repeat a part at DIFFERENT prices; the same part at
+      -- the same hand price is one line (mcp_order_apply's rule). The
+      -- unique key covers list-priced lines only, so it is checked here.
+      if exists (select 1 from public.order_lines o2
+                 where o2.order_id = v_order.id and o2.id <> p_line_id
+                   and o2.part_id = v_line.part_id and o2.price_source = 'admin'
+                   and o2.unit_price = p_unit_price) then
+        raise exception 'invalid_input:duplicate_line:%: the part appears twice at the same price; send one line with the total qty', v_line.part_id;
+      end if;
       update public.order_lines
       set price_list_id = v_admin_list, price_list_item_id = null,
           unit_price = p_unit_price, discount_pct = 0, effective_unit_price = p_unit_price,
           price_source = 'admin', list_unit_price = case when v_has then v_item.unit_price end
       where id = p_line_id;
     end if;
+    -- The line left (or joined) a price list: the promo of the lines still
+    -- on it changes. Re-run the order's promo pass, the one submit_order
+    -- runs, so the draft shows what the submit will compute.
+    perform public.order_apply_promo(v_order.id);
   exception when unique_violation then
     raise exception 'duplicate_line: % is already on this order at that price list; remove one of the lines first', v_line.part_id;
   end;
@@ -1513,6 +1971,14 @@ $$;
 
 revoke execute on function public.admin_set_order_line_price(bigint, numeric, text) from public, anon;
 grant execute on function public.admin_set_order_line_price(bigint, numeric, text) to authenticated;
+
+comment on function public.admin_set_order_line_price(bigint, numeric, text) is
+  'Admin or inside sales (can_price_orders), drafts from Claude only; inside sales on its own '
+  'orders only (not_owner), an admin on any. Sets a line''s unit price (it moves to the admin '
+  'price list unless it equals the published price) or, with p_unit_price null, resets it to the '
+  'published price, then re-runs the order''s promo (order_apply_promo). The same part twice at '
+  'the same hand price is refused (duplicate_line). p_reason sets orders.price_override_reason '
+  '(required if none is on the order yet). 20261113090000.';
 
 --------------------------------------------------------------------------
 -- 8. Order documents (the customer's PO as it arrived)
@@ -1530,40 +1996,35 @@ values ('order-documents', 'order-documents', false,
               'image/png', 'image/jpeg', 'image/webp', 'image/heic'])
 on conflict (id) do nothing;
 
--- '<order id>/<file name>': the first path segment is the order.
+-- '<order id>/<file name>': the first path segment is the order, in the one
+-- shape the portal and Claude write (no leading zero, no deeper folder).
+-- Anything else would count as the order's for RLS yet never show in a
+-- listing of '<id>/', so it belongs to no order.
 create or replace function public.order_document_order_id(p_name text)
 returns bigint
 language sql immutable set search_path = public
 as $$
-  select case when split_part(p_name, '/', 1) ~ '^[0-9]{1,18}$'
-               and split_part(p_name, '/', 2) <> ''
+  select case when p_name ~ '^[1-9][0-9]{0,17}/[^/]+$'
               then split_part(p_name, '/', 1)::bigint end
 $$;
 
--- Can the caller read this order? The orders read policy, as a function, so
--- the storage policies do not restate it.
-create or replace function public.can_read_order(p_order_id bigint)
-returns boolean
-language sql stable security definer set search_path = public
-as $$
-  select p_order_id is not null
-     and (public.is_admin()
-          or exists (select 1 from public.orders o
-                     where o.id = p_order_id and o.user_id = auth.uid())
-          or p_order_id in (select public.my_order_ids()));
-$$;
-
 revoke execute on function public.order_document_order_id(text) from public, anon;
-revoke execute on function public.can_read_order(bigint) from public, anon;
 grant execute on function public.order_document_order_id(text) to authenticated;
-grant execute on function public.can_read_order(bigint) to authenticated;
 
+-- The policies are set-based, like the account-photos ones (010): the
+-- caller's readable orders are built once per statement (a hashed subplan
+-- of my_order_ids(), which includes their own orders), never once per
+-- object. A folder listing filters the name with LIKE, which is not
+-- leakproof, so the policy runs on every object in the bucket before the
+-- prefix does: a per-row access function would make every listing as slow
+-- as the bucket is big.
 drop policy if exists "read order documents" on storage.objects;
 create policy "read order documents" on storage.objects
   for select to authenticated
   using (
     bucket_id = 'order-documents'
-    and public.can_read_order(public.order_document_order_id(name))
+    and ((select public.is_admin())
+         or public.order_document_order_id(name) in (select public.my_order_ids()))
   );
 
 -- Whoever can read the order can add a document to it, at any status: the
@@ -1573,20 +2034,27 @@ create policy "add order documents" on storage.objects
   for insert to authenticated
   with check (
     bucket_id = 'order-documents'
-    and public.can_read_order(public.order_document_order_id(name))
+    and ((select public.is_admin())
+         or public.order_document_order_id(name) in (select public.my_order_ids()))
   );
 
--- Removing one: whoever added it, an admin, or inside sales.
+-- Removing one: whoever uploaded it, an admin, or inside sales. owner_id,
+-- not owner: Storage documents the uuid owner column as deprecated.
 drop policy if exists "remove order documents" on storage.objects;
 create policy "remove order documents" on storage.objects
   for delete to authenticated
   using (
     bucket_id = 'order-documents'
-    and public.can_read_order(public.order_document_order_id(name))
-    and (owner = (select auth.uid())
-         or (select public.is_admin())
-         or (select public.is_order_entry()))
+    and ((select public.is_admin())
+         or public.order_document_order_id(name) in (select public.my_order_ids()))
+    and ((select public.is_admin())
+         or (select public.is_order_entry())
+         or owner_id = (select auth.uid())::text)
   );
+
+-- An earlier draft of this migration checked each object with a per-row
+-- can_read_order(); nothing uses it now.
+drop function if exists public.can_read_order(bigint);
 
 --------------------------------------------------------------------------
 -- 9. v_orders_ready_for_erp: the hand-pricing fields (appended; a view's
@@ -1660,7 +2128,43 @@ revoke all on public.v_orders_ready_for_erp from anon, public;
 grant select on public.v_orders_ready_for_erp to authenticated, service_role;
 
 --------------------------------------------------------------------------
--- 10. Words
+-- 10. order_owner_names(): who an order belongs to, for the order screens
+--------------------------------------------------------------------------
+-- profiles shows each user only their own row (and admins every row), so
+-- a rep looking at an order inside sales drafted on their account, or
+-- inside sales reviewing a rep's, could not name its owner. This returns
+-- the display name and role, never the email, for:
+--   * the caller themselves;
+--   * anyone, when the caller is an admin or inside sales;
+--   * the owner of an order the caller can read (my_order_ids()).
+-- An id outside those simply returns no row. 'order_entry' is reported as
+-- 'inside_sales', the name people use.
+create or replace function public.order_owner_names(p_user_ids uuid[])
+returns table (user_id uuid, display_name text, role text)
+language sql stable security definer set search_path = public
+as $$
+  select p.user_id,
+         coalesce(nullif(btrim(p.full_name), ''), 'Portal user'),
+         case when p.role = 'order_entry' then 'inside_sales' else p.role end
+  from public.profiles p
+  where p.user_id = any (p_user_ids)
+    and (p.user_id = auth.uid()
+         or (select public.is_admin() or public.is_order_entry())
+         or p.user_id in (select o.user_id from public.orders o
+                           where o.id in (select public.my_order_ids())));
+$$;
+
+revoke execute on function public.order_owner_names(uuid[]) from public, anon;
+grant execute on function public.order_owner_names(uuid[]) to authenticated;
+
+comment on function public.order_owner_names(uuid[]) is
+  'Display name (full_name, else ''Portal user'') and role (order_entry reported as '
+  'inside_sales) of the requested users the caller may name: themselves; anyone for an '
+  'admin or inside sales; otherwise the owners of orders the caller can read. Never the '
+  'email. 20261113090000.';
+
+--------------------------------------------------------------------------
+-- 11. Words
 --------------------------------------------------------------------------
 comment on function public.mcp_create_order_draft(jsonb) is
   'MCP only (mcp_orders_gate). Creates a DRAFT from {idempotency_key, customer_key, '

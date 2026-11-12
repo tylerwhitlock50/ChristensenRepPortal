@@ -120,8 +120,14 @@ create table if not exists storage.objects (
     owner      uuid,
     created_at timestamptz default now(),
     updated_at timestamptz default now(),
-    metadata   jsonb
+    metadata   jsonb,
+    owner_id   text
 );
+
+/* owner_id (text) is the uploader as current Storage writes it; the uuid
+   owner column is deprecated. The order-documents delete policy keys on
+   owner_id. Added for harnesses built before it. */
+alter table storage.objects add column if not exists owner_id text;
 
 /* Supabase ships storage.objects with RLS on; without it the storage policies
    (account photos, order documents) are never evaluated here. */

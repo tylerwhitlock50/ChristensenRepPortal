@@ -9,6 +9,7 @@ import {
   ORDER_DOCUMENT_ACCEPT,
   ORDER_DOCUMENT_MAX_BYTES,
   ORDER_DOCUMENT_TYPES,
+  canOfferRemove,
   documentDisplayName,
   documentErrorText,
   documentStampedAt,
@@ -152,7 +153,14 @@ t('every content type sent is one the bucket allows',
     'text/plain',
   ])
 t('the limit is the bucket file_size_limit', ORDER_DOCUMENT_MAX_BYTES, 26214400)
-t('the picker lists every extension', ORDER_DOCUMENT_ACCEPT.startsWith('.pdf,.xlsx,.xls,.docx,.doc,.csv,.txt,.eml,.msg,.png,.jpg,.jpeg,.webp,.heic'), true)
+// The picker names every type but HEIC, so an iPhone converts its photos to
+// JPEG; a HEIC chosen or dropped anyway is still taken.
+t('the picker lists every extension but HEIC, then the picture types', ORDER_DOCUMENT_ACCEPT,
+  '.pdf,.xlsx,.xls,.docx,.doc,.csv,.txt,.eml,.msg,.png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp')
+t('…and never HEIC', /heic/i.test(ORDER_DOCUMENT_ACCEPT), false)
+t('a HEIC that arrives anyway is still taken',
+  validateDocumentFile({ name: 'IMG_0042.HEIC', size: 900_000, type: 'image/heic' }),
+  { ok: true, contentType: 'image/heic', fileName: 'IMG_0042.HEIC' })
 
 // ------------------------------------------------------------------ size
 t('bytes', formatFileSize(812), '812 B')
@@ -190,20 +198,53 @@ t('an empty folder is an empty list', toOrderDocuments(8123, []), [])
 t('a listing needs a real order id', throws(() => toOrderDocuments(0, listed)), true)
 
 // ---------------------------------------------------------------- errors
-t('RLS refusal', documentErrorText({ message: 'new row violates row-level security policy' }, 'PO.pdf'),
-  "You don't have access to this order's documents.")
+// Every per-file failure names the file and what was being done with it.
+t('RLS refusal on an upload', documentErrorText({ message: 'new row violates row-level security policy' }, 'PO.pdf'),
+  "PO.pdf didn't upload: you don't have access to this order's documents.")
+t('…on an open', documentErrorText({ message: 'new row violates row-level security policy' }, 'PO.pdf', 'open'),
+  "PO.pdf couldn't be opened: you don't have access to this order's documents.")
+t('…on a remove', documentErrorText({ message: 'permission denied' }, 'PO.pdf', 'remove'),
+  "PO.pdf wasn't removed: you don't have access to this order's documents.")
 t('too large', documentErrorText({ message: 'The object exceeded the maximum allowed size' }, 'PO.pdf'),
   'PO.pdf is over the 25 MB limit.')
 t('wrong type', documentErrorText({ message: 'mime type application/zip is not supported' }, 'po.zip').startsWith("po.zip isn't a file type"), true)
 t('duplicate', documentErrorText({ message: 'The resource already exists' }, 'PO.pdf'),
   'PO.pdf was just uploaded. Refresh the list before trying again.')
-t('no bucket', documentErrorText({ message: 'Bucket not found' }), "Order documents aren't set up on this database yet.")
-t('no signal', documentErrorText(new Error('Failed to fetch'), 'PO.pdf').startsWith("PO.pdf didn't upload"), true)
-t('anything else passes through', documentErrorText({ message: 'Something odd' }), 'Something odd')
-t('nothing at all', documentErrorText(null), 'That failed.')
-t('bucket missing is recognised', isBucketMissing({ message: 'Bucket not found' }), true)
+t('no bucket', documentErrorText({ message: 'Bucket not found' }, 'PO.pdf'),
+  "PO.pdf didn't upload: order documents aren't set up on this database yet.")
+t('removed by someone else since the list loaded', documentErrorText({ message: 'Object not found' }, 'PO.pdf', 'open'),
+  'PO.pdf was removed; refresh the list.')
+t('no signal on an upload', documentErrorText(new Error('Failed to fetch'), 'PO.pdf'),
+  "PO.pdf didn't upload: this device couldn't reach the network. Try again when you have signal.")
+t('no signal on an open does not say upload', documentErrorText(new Error('Load failed'), 'PO.pdf', 'open'),
+  "PO.pdf couldn't be opened: this device couldn't reach the network. Try again when you have signal.")
+t('no signal on a remove', documentErrorText(new TypeError('NetworkError when attempting to fetch resource.'), 'PO.pdf', 'remove'),
+  "PO.pdf wasn't removed: this device couldn't reach the network. Try again when you have signal.")
+t('anything else passes through, after the name', documentErrorText({ message: 'Something odd' }, 'PO.pdf'),
+  "PO.pdf didn't upload: Something odd")
+t('nothing at all', documentErrorText(null), "That file didn't upload.")
+// Storage says 'Bucket not found' (404) to an upload, a sign and a remove of a
+// missing bucket. A listing never does: it answers with an empty list.
+t('an upload or sign refused for a missing bucket is recognised',
+  isBucketMissing({ name: 'StorageApiError', message: 'Bucket not found', status: 404 }), true)
+t('…as a bare message too', isBucketMissing('Bucket not found'), true)
 t('another error is not', isBucketMissing({ message: 'jwt expired' }), false)
+t('a missing object is not a missing bucket', isBucketMissing({ message: 'Object not found' }), false)
 t('no error is not', isBucketMissing(null), false)
+
+// ------------------------------------------------------------ remove rule
+// Storage lets the uploader, an admin or inside sales remove. A listing does
+// not say who uploaded, so anyone else is offered it only on the files this
+// browser uploaded for them; nobody is offered it without a session that writes.
+const rep = { canWrite: true, isAdmin: false, isOrderEntry: false }
+const admin = { canWrite: true, isAdmin: true, isOrderEntry: false }
+const insideSales = { canWrite: true, isAdmin: false, isOrderEntry: true }
+t('admin: every file', canOfferRemove(admin, false), true)
+t('inside sales: every file', canOfferRemove(insideSales, false), true)
+t('a rep: the file they just uploaded', canOfferRemove(rep, true), true)
+t('a rep: not a file from before (who added it is unknown)', canOfferRemove(rep, false), false)
+t('viewing as someone: nothing, even as an admin', canOfferRemove({ ...admin, canWrite: false }, false), false)
+t('offline: nothing, even the file just uploaded', canOfferRemove({ ...rep, canWrite: false }, true), false)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

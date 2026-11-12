@@ -14,6 +14,7 @@ import {
   wipePersistedCache,
   type OfflineIdentity,
 } from '@/lib/queryPersist'
+import { forgetQueueLanding } from '@/lib/queueLanding'
 import { fetchActingContext, type ActingContext } from '@/composables/useViewAs'
 import type { Tables } from '@/types/database.types'
 import type { Role } from '@/types/domain'
@@ -714,6 +715,10 @@ export const useSessionStore = defineStore('session', () => {
     profile.value = null
     acting.value = null
     if (isOffline.value) leaveOffline()
+    // Inside sales' "landed on the queue" flag is per tab, and sign-out does
+    // not end the tab: without this, tomorrow's sign-in in the same tab or
+    // installed app window would open on the Overview, not the queue.
+    forgetQueueLanding()
     // Sign-out is an in-tab router.push, not a reload, so the queryClient
     // singleton survives it. Account, recommendation and admin keys are NOT
     // scoped by user id, so without this the next rep to sign in on a shared

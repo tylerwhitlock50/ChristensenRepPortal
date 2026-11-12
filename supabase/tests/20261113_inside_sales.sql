@@ -1,12 +1,17 @@
 /*============================================================================
   20261113_inside_sales.sql — assertions for
   20261113090000_inside_sales_and_order_documents: inside sales (order_entry)
-  reads every account and changes nothing outside orders; drafts, prices and
-  submits orders for any customer; a PO is optional (PORTAL-<id>); the same
-  part may sit on two hand-priced lines; order documents follow the order.
+  reads every account (an admin's revoke excepted) and changes nothing
+  account-side; drafts for any customer; prices and submits its OWN orders
+  (an admin prices and submits any); a PO is optional (PORTAL-<id>) and its
+  rules; the same part may sit on two hand-priced lines, never at the same
+  price; a hand price re-runs the order's promo; order documents follow the
+  order, with set-based policies; order_owner_names().
 
   Harness and fixtures copied from 20261111_admin_order_pricing.sql, plus an
-  order_entry user. One transaction, ROLLED BACK.
+  order_entry user. One transaction, ROLLED BACK. Safe on the live project
+  too: direct deletes from storage.objects set storage.allow_delete_query
+  first, as hosted Storage requires.
 
       etl/venv/Scripts/python.exe etl/run_sql_guard.py supabase/tests/20261113_inside_sales.sql
 
@@ -40,10 +45,14 @@ select '00000000-0000-0000-0000-000000000000', u.id,
        now(), now(), now(), '{}'::jsonb, '{}'::jsonb, false
 from t_user u;
 
-update public.profiles set sales_rep_key = 'MO REP'  where user_id = (select id from t_user where label = 'rep');
-update public.profiles set sales_rep_key = 'MO REP2' where user_id = (select id from t_user where label = 'rep2');
-update public.profiles set role = 'admin'            where user_id = (select id from t_user where label = 'admin');
-update public.profiles set role = 'order_entry'      where user_id = (select id from t_user where label = 'entry');
+update public.profiles set sales_rep_key = 'MO REP', full_name = 'Rex Rep'
+ where user_id = (select id from t_user where label = 'rep');
+update public.profiles set sales_rep_key = 'MO REP2', full_name = 'Rae Rep'
+ where user_id = (select id from t_user where label = 'rep2');
+update public.profiles set role = 'admin', full_name = '  '
+ where user_id = (select id from t_user where label = 'admin');
+update public.profiles set role = 'order_entry', full_name = 'Ivy Inside'
+ where user_id = (select id from t_user where label = 'entry');
 
 insert into erp.dim_customer
   (customer_key, customer_id, customer_name, assigned_sales_rep_id, customer_type, active_flag, credit_status)
@@ -95,6 +104,17 @@ values
 insert into erp.fact_available_to_sell (part_key, site_key, shippable_warehouse_id, available_to_sell_qty)
 values ('MOPK-BG', 'MO-SITE', 'MAIN', 5);
 
+-- What MO-OTHER paid for MO-RL-BG on its last ERP order: two paid lines and
+-- two free ones ($0, and 100% off), all on the same order and day. The free
+-- lines (highest line numbers) are not a price paid; of the paid two the
+-- higher line wins.
+insert into erp.fact_order_line (order_id, line_num, customer_key, part_key, unit_price,
+                                 trade_discount_pct, order_date_key)
+values ('IS-HIST-1', 1, 'MO-OTHER', 'MOPK-BG', 1950.00,   0, to_char(current_date - 20, 'YYYYMMDD')::int),
+       ('IS-HIST-1', 2, 'MO-OTHER', 'MOPK-BG', 1980.00,   0, to_char(current_date - 20, 'YYYYMMDD')::int),
+       ('IS-HIST-1', 3, 'MO-OTHER', 'MOPK-BG',    0.00,   0, to_char(current_date - 20, 'YYYYMMDD')::int),
+       ('IS-HIST-1', 4, 'MO-OTHER', 'MOPK-BG', 2000.00, 100, to_char(current_date - 20, 'YYYYMMDD')::int);
+
 create temporary table t_ids (label text primary key, id bigint) on commit drop;
 create temporary table t_tok (label text primary key, id uuid, token text) on commit drop;
 create temporary table t_prev (label text primary key, j jsonb) on commit drop;
@@ -112,8 +132,10 @@ insert into public.price_list_items (price_list_id, part_id, unit_price)
 select (select id from t_ids where label = 'pl'), v.part, v.price
 from (values ('MO-RL-BG', 2000.00), ('MO-RL-CG', 2000.00), ('MO-RL-TI', 3000.00), ('MO-RL-270', 2000.00),
              ('MO-ACC', 50.00), ('MO-KIT', 100.00)) v(part, price);
+-- The promo list (buy 2 get 1) carries the bipod and, at 60, the rings.
 insert into public.price_list_items (price_list_id, part_id, unit_price)
-values ((select id from t_ids where label = 'pl_special'), 'MO-SPC', 500.00);
+values ((select id from t_ids where label = 'pl_special'), 'MO-SPC', 500.00),
+       ((select id from t_ids where label = 'pl_special'), 'MO-ACC', 60.00);
 
 -- Portal hand entry (feature.orders) is independent of MCP drafting and may
 -- be off live; the portal-order cases below need it on (rolled back).
@@ -131,6 +153,16 @@ begin
     json_build_object('sub', (select id from t_user where label = p_label), 'role', 'authenticated',
                       'app_metadata', json_build_object('provider', 'email'))::text, true);
   perform set_config('role', 'authenticated', true);
+end $$;
+
+-- The superuser with no signed-in user: fixtures written mid-test (the
+-- read-only trigger would otherwise see the last user's claims).
+create or replace function pg_temp.as_postgres() returns void
+language plpgsql as $$
+begin
+  reset role;
+  perform set_config('request.jwt.claim.sub', '', true);
+  perform set_config('request.jwt.claims', '', true);
 end $$;
 
 -- An MCP session as the edge function mints it: provider mcp, the token id,
@@ -162,11 +194,12 @@ begin
   perform set_config('role', 'authenticated', true);
 end $$;
 
--- feature.mcp_orders: on/off and params (merged), as the superuser.
+-- feature.mcp_orders: on/off and params (merged), as the superuser with no
+-- signed-in user (an inside-sales session would trip the read-only trigger).
 create or replace function pg_temp.flag(p_enabled boolean, p_params jsonb default '{}') returns void
 language plpgsql as $$
 begin
-  reset role;
+  perform pg_temp.as_postgres();
   update public.app_settings
      set enabled = p_enabled, params = params || p_params
    where setting_key = 'feature.mcp_orders';
@@ -226,6 +259,8 @@ language sql as $$
 $$;
 create or replace function pg_temp.create_sql(p jsonb) returns text
 language sql as $$ select format('select public.mcp_create_order_draft(%L::jsonb)', p) $$;
+create or replace function pg_temp.update_sql(p_id bigint, p jsonb) returns text
+language sql as $$ select format('select public.mcp_update_order_draft(%s, %L::jsonb)', p_id, p) $$;
 create or replace function pg_temp.create(p_label text, p jsonb) returns jsonb
 language plpgsql as $$
 declare j jsonb;
@@ -239,6 +274,8 @@ create or replace function pg_temp.prev(p_label text) returns jsonb
 language sql as $$ select j from t_prev where label = p_label $$;
 create or replace function pg_temp.oid(p_label text) returns bigint
 language sql as $$ select id from t_ids where label = p_label $$;
+create or replace function pg_temp.uid(p_label text) returns uuid
+language sql as $$ select id from t_user where label = p_label $$;
 create or replace function pg_temp.mint(p_user text, p_label text, p_scopes text[]) returns void
 language plpgsql as $$
 declare r record;
@@ -281,7 +318,7 @@ select pg_temp.assert(
   'a rep is unchanged: own book only, cannot price');
 
 --------------------------------------------------------------------------
--- 2. ...and changes nothing outside orders
+-- 2. ...and changes nothing account-side
 --------------------------------------------------------------------------
 select pg_temp.become('entry');
 select pg_temp.assert_fails(
@@ -315,6 +352,25 @@ select pg_temp.assert(
                         and g.tgname = 'trg_' || t.tablename || '_read_only_role')),
   'every RLS table outside the exempt list carries the read-only trigger');
 
+-- The AI summary is the account's one shared row: inside sales reads it,
+-- never writes it (the edge function's cache upsert is refused, tolerated).
+select pg_temp.become('rep');
+insert into public.ai_summaries (customer_key, content) values ('MO-CUST', 'The rep''s summary');
+select pg_temp.become('entry');
+select pg_temp.assert(
+  (select content from public.ai_summaries where customer_key = 'MO-CUST') = 'The rep''s summary',
+  'inside sales reads an account''s AI summary');
+select pg_temp.assert(
+  pg_temp.rows($$update public.ai_summaries set content = 'overwritten' where customer_key = 'MO-CUST'$$) = 0,
+  'inside sales cannot overwrite it');
+select pg_temp.assert_fails(
+  $$insert into public.ai_summaries (customer_key, content) values ('MO-CUST', 'x')
+    on conflict (customer_key) do update set content = excluded.content$$,
+  '%row-level security%', 'nor upsert it, as ai-account-summary would');
+select pg_temp.assert_fails(
+  $$insert into public.ai_summaries (customer_key, content) values ('MO-OTHER', 'x')$$,
+  '%row-level security%', 'nor write one for another account');
+
 --------------------------------------------------------------------------
 -- 3. Inside sales drafts for any customer, at the PO's prices
 --------------------------------------------------------------------------
@@ -336,6 +392,41 @@ select pg_temp.assert(
 select pg_temp.assert(
   (pg_temp.prev('is1') ->> 'total_amount')::numeric = 10 * 1900 + 0 + 4 * 50,
   'the total is the paid units plus the list line');
+select pg_temp.assert(
+  (select count(*) from public.order_lines
+    where order_id = pg_temp.oid('is1') and part_id = 'MO-RL-BG' and last_paid_price = 1980) = 2,
+  'last paid ignores the free ERP lines and breaks the tie on the line number');
+select pg_temp.assert(
+  (public.order_resolve_parts('MO-OTHER', '[{"ref":"MO-RL-BG"}]')
+     -> 'items' -> 0 -> 'candidates' -> 0 ->> 'last_paid_price')::numeric = 1980,
+  'order_resolve_parts: last paid ignores the free ERP lines and breaks the tie on the line number');
+select pg_temp.assert(
+  pg_temp.prev('is1') -> 'warnings' ->> 0 like 'HAND PRICING - CHECK EVERY FLAGGED LINE: 2 of 3 lines%'
+  and pg_temp.prev('is1') -> 'warnings' ->> 0 like '%Hand-priced value $19,000.00%'
+  and pg_temp.prev('is1') -> 'warnings' ->> 0 like '%An admin, or inside sales on their own order, submits it%'
+  and pg_temp.prev('is1') -> 'warnings' ->> 1
+        = 'PRICE VS LAST PAID: 2 hand-priced line(s) differ from what this customer last paid for the part.'
+  and not exists (select 1 from jsonb_array_elements_text(pg_temp.prev('is1') -> 'warnings') w
+                  where w ilike '%admin pricing%' or w ilike '%admin-priced%'
+                     or w like '%last_paid_price%' or w like '%Only an admin or inside sales%')
+  and exists (select 1 from jsonb_array_elements(pg_temp.prev('is1') -> 'alerts') a
+              where a ->> 'type' = 'admin_pricing'
+                and a ->> 'message' like '%an admin, or inside sales on their own order, submits it%'),
+  'the preview says HAND PRICING and who submits; no column names, no "admin-priced"');
+select pg_temp.assert(
+  (select count(*) from jsonb_array_elements_text(pg_temp.prev('is1') -> 'warnings') w
+    where w like 'Stock: MO-RL-BG %') = 1
+  and exists (select 1 from jsonb_array_elements_text(pg_temp.prev('is1') -> 'warnings') w
+              where w = 'Stock: MO-RL-BG has 5 available to sell; 11 ordered in all. Stock does not block the order.'),
+  'stock is checked once per part, over both lines (10 paid + 1 free against 5)');
+select pg_temp.as_postgres();
+update erp.dim_part set status = 'O' where part_id = 'MO-RL-BG';
+select pg_temp.assert(
+  (select count(*) from jsonb_array_elements_text(public.mcp_order_preview(pg_temp.oid('is1'), false) -> 'warnings') w
+    where w like 'MO-RL-BG is not an active part%') = 1,
+  'and an inactive part is reported once, not once per line');
+update erp.dim_part set status = 'A' where part_id = 'MO-RL-BG';
+select pg_temp.become_mcp('entry', 'w_entry');
 select pg_temp.assert_fails(
   pg_temp.create_sql(jsonb_build_object(
     'idempotency_key', 'is-0002-aaaa', 'customer_key', 'MO-OTHER', 'po_number', 'PO-IS-2',
@@ -355,15 +446,75 @@ select pg_temp.assert_fails(
   pg_temp.create_sql(pg_temp.req('is-rep-0001', '[{"part_id":"MO-RL-BG","qty":1,"unit_price":1}]')),
   'price_not_allowed:%', 'a rep still cannot send a price');
 
+-- An admin's revoke hides an account from inside sales, and stops their
+-- Claude drafting for it (the pricing right is not a right to every book).
+select pg_temp.become('admin');
+insert into public.account_assignments (customer_key, user_id, access)
+values ('MO-ONE', pg_temp.uid('entry'), 'revoke');
+select pg_temp.become('entry');
+select pg_temp.assert(
+  (select count(*) from erp.dim_customer where customer_key = 'MO-ONE') = 0,
+  'a revoked account is hidden from inside sales');
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.assert_fails(
+  pg_temp.create_sql('{"idempotency_key":"is-rev-0001","customer_key":"MO-ONE","po_number":"PO-REV-1",
+                       "lines":[{"part_id":"MO-ACC","qty":1,"part_confirmed":true}]}'::jsonb),
+  'customer_not_in_book:%', 'and inside sales'' Claude cannot draft for it');
+select pg_temp.become('admin');
+delete from public.account_assignments where customer_key = 'MO-ONE' and user_id = pg_temp.uid('entry');
+
+-- Daily cap: a pricer reads admin_max_drafts_per_user_per_day, a rep
+-- max_drafts_per_user_per_day; raising one never raises the other.
+select pg_temp.flag(true, '{"max_drafts_per_user_per_day": 0}'::jsonb);
+select pg_temp.become_mcp('rep', 'w_rep');
+select pg_temp.assert_fails(
+  pg_temp.create_sql(pg_temp.req('is-cap-0001', '[{"part_id":"MO-RL-TI","qty":1}]')),
+  'daily_draft_cap:%', 'a rep at the rep cap is refused');
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.create('cap1', '{"idempotency_key":"is-cap-0002","customer_key":"MO-OTHER","po_number":"PO-IS-CAP",
+                                "lines":[{"part_id":"MO-ACC","qty":9,"part_confirmed":true}]}'::jsonb);
+select pg_temp.assert(pg_temp.oid('cap1') is not null, 'inside sales is not held to the rep cap');
+select pg_temp.become('admin');
+select pg_temp.flag(true, jsonb_build_object('admin_max_drafts_per_user_per_day',
+  (select count(*) from public.orders where created_by = pg_temp.uid('entry') and source <> 'portal')));
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.assert_fails(
+  pg_temp.create_sql('{"idempotency_key":"is-cap-0003","customer_key":"MO-OTHER","po_number":"PO-IS-CAP-2",
+                       "lines":[{"part_id":"MO-ACC","qty":8,"part_confirmed":true}]}'::jsonb),
+  'daily_draft_cap:%', 'inside sales has its own cap, admin_max_drafts_per_user_per_day');
+select pg_temp.flag(true, '{"max_drafts_per_user_per_day": 25, "admin_max_drafts_per_user_per_day": null}'::jsonb);
+
+-- The duplicate probe is per account, not per drafter: the rep and inside
+-- sales both received the same PO.
+select pg_temp.become_mcp('rep', 'w_rep');
+select pg_temp.create('shared', pg_temp.req('is-dup-0001', '[{"part_id":"MO-RL-TI","qty":2}]',
+                                            '{"po_number":"PO-SHARED-1"}'));
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.assert_fails(
+  pg_temp.create_sql(pg_temp.req('is-dup-0002', '[{"part_id":"MO-ACC","qty":5}]', '{"po_number":"po-shared-1"}')),
+  format('possible_duplicate:%s:%%', pg_temp.oid('shared')),
+  'inside sales drafting the rep''s PO for the same account is a possible duplicate');
+select pg_temp.assert_fails(
+  pg_temp.create_sql(pg_temp.req('is-dup-0003', '[{"part_id":"MO-RL-TI","qty":2}]', '{"po_number":"PO-SHARED-2"}')),
+  format('possible_duplicate:%s:%%', pg_temp.oid('shared')),
+  'and so is the same set of lines');
+
 --------------------------------------------------------------------------
 -- 4. The PO is asked for, not required
 --------------------------------------------------------------------------
+select pg_temp.become_mcp('rep', 'w_rep');
 select pg_temp.assert_fails(
   pg_temp.create_sql(pg_temp.req('is-po-0001', '[{"part_id":"MO-ACC","qty":1}]') - 'po_number'),
   'po_confirmation_required:%', 'no PO and no word from the user: refused, ask');
 select pg_temp.assert_fails(
   pg_temp.create_sql(pg_temp.req('is-po-0001', '[{"part_id":"MO-ACC","qty":1}]', '{"po_number":"  "}')),
   'po_confirmation_required:%', 'a blank PO is no PO');
+select pg_temp.assert_fails(
+  pg_temp.create_sql(pg_temp.req('is-po-0001', '[{"part_id":"MO-ACC","qty":1}]', '{"po_number":"\t\u00a0\r\n"}')),
+  'po_confirmation_required:%', 'nor is one of tabs, line breaks and no-break spaces');
+select pg_temp.assert_fails(
+  pg_temp.create_sql(pg_temp.req('is-po-0001', '[{"part_id":"MO-ACC","qty":1}]', '{"po_number":"portal-424242"}')),
+  'invalid_input:po_number:%assigned by the portal%', 'a PORTAL-<n> reference is not a customer PO');
 select pg_temp.assert_fails(
   pg_temp.create_sql(pg_temp.req('is-po-0001', '[{"part_id":"MO-ACC","qty":1}]', '{"no_po_confirmed":"yes"}') - 'po_number'),
   'invalid_input:no_po_confirmed:%', 'no_po_confirmed must be a boolean');
@@ -374,6 +525,8 @@ select pg_temp.assert(
   and exists (select 1 from jsonb_array_elements(pg_temp.prev('nopo') -> 'alerts') a
               where a ->> 'type' = 'no_customer_po'
                 and a ->> 'assigned_reference' = 'PORTAL-' || pg_temp.oid('nopo'))
+  and exists (select 1 from jsonb_array_elements_text(pg_temp.prev('nopo') -> 'warnings') w
+              where w like 'No customer PO:%')
   and (pg_temp.prev('nopo') -> 'would_submit' ->> 'ok')::boolean,
   'the user said there is none: saved without a PO, flagged, and it would submit');
 
@@ -388,8 +541,64 @@ select pg_temp.assert(
     where order_id = pg_temp.oid('nopo')),
   'and the ERP handoff view shows the same reference');
 
+-- Recalled, it is a draft with no PO again.
+select public.recall_order(pg_temp.oid('nopo'));
+select pg_temp.assert(
+  (select status = 'draft' and po_number is null from public.orders where id = pg_temp.oid('nopo')),
+  'a recall clears the PORTAL-<id> it was given');
+select pg_temp.become_mcp('rep', 'w_rep');
+select pg_temp.assert_fails(
+  pg_temp.update_sql(pg_temp.oid('nopo'),
+    pg_temp.req('is-po-0002', '[{"part_id":"MO-ACC","qty":1}]',
+                jsonb_build_object('po_number', 'PORTAL-' || pg_temp.oid('nopo')))),
+  'po_confirmation_required:%', 'the order''s own PORTAL-<id> counts as no PO');
+select pg_temp.assert_fails(
+  pg_temp.update_sql(pg_temp.oid('nopo'),
+    pg_temp.req('is-po-0002', '[{"part_id":"MO-ACC","qty":1}]',
+                jsonb_build_object('po_number', 'PORTAL-' || pg_temp.oid('is1'), 'no_po_confirmed', true))),
+  'invalid_input:po_number:%', 'another order''s PORTAL-<id> is refused on an update too');
+select public.mcp_update_order_draft(pg_temp.oid('nopo'),
+  pg_temp.req('is-po-0002', '[{"part_id":"MO-ACC","qty":1}]',
+              jsonb_build_object('po_number', 'PORTAL-' || pg_temp.oid('nopo'), 'no_po_confirmed', true)));
+select pg_temp.assert(
+  (select po_number is null from public.orders where id = pg_temp.oid('nopo')),
+  'confirmed: saved with no PO, not with the reference');
+
+-- A person adds the PO in the portal; a later Claude update keeps it.
+select pg_temp.become('rep');
+select pg_temp.assert(
+  pg_temp.rows(format($$update public.orders set po_number = 'PO-LATE-1' where id = %s$$, pg_temp.oid('nopo'))) = 1,
+  'the PO turns up and the rep types it into the draft');
+select pg_temp.become_mcp('rep', 'w_rep');
+select pg_temp.assert_fails(
+  pg_temp.update_sql(pg_temp.oid('nopo'),
+    pg_temp.req('is-po-0002', '[{"part_id":"MO-ACC","qty":4}]', '{"no_po_confirmed":true}') - 'po_number'),
+  'po_would_be_removed:%PO-LATE-1%', 'an update without the PO (no_po_confirmed or not) is refused, naming it');
+select pg_temp.assert_fails(
+  pg_temp.update_sql(pg_temp.oid('nopo'),
+    pg_temp.req('is-po-0002', '[{"part_id":"MO-ACC","qty":4}]',
+                jsonb_build_object('po_number', 'PORTAL-' || pg_temp.oid('nopo'), 'no_po_confirmed', true))),
+  'po_would_be_removed:%PO-LATE-1%', 'sending the draft''s own reference instead does not remove it either');
+select public.mcp_update_order_draft(pg_temp.oid('nopo'),
+  pg_temp.req('is-po-0002', '[{"part_id":"MO-ACC","qty":4}]', '{"po_number":"PO-LATE-1"}'));
+select pg_temp.assert(
+  (select po_number = 'PO-LATE-1' from public.orders where id = pg_temp.oid('nopo')),
+  'sent again, the PO stays');
+
+-- A draft still carrying its own PORTAL-<id> (recalled before this
+-- migration) has no customer PO: the preview flags it.
+select pg_temp.become('rep');
+select pg_temp.rows(format($$update public.orders set po_number = 'PORTAL-' || id where id = %s$$, pg_temp.oid('nopo')));
+reset role;
+select pg_temp.assert(
+  exists (select 1 from jsonb_array_elements(public.mcp_order_preview(pg_temp.oid('nopo'), false) -> 'alerts') a
+          where a ->> 'type' = 'no_customer_po'),
+  'a draft whose PO is its own PORTAL-<id> is flagged as having none');
+select pg_temp.become('rep');
+select pg_temp.rows(format($$update public.orders set po_number = null where id = %s$$, pg_temp.oid('nopo')));
+
 --------------------------------------------------------------------------
--- 5. Submitting a hand-priced order: its owner in inside sales, or an admin
+-- 5. Pricing and submitting by hand: the owner in inside sales, or an admin
 --------------------------------------------------------------------------
 select pg_temp.become('rep');
 select pg_temp.assert_fails(
@@ -399,6 +608,11 @@ select pg_temp.become('entry');
 select pg_temp.assert_fails(
   format('select public.submit_order(%s, false)', pg_temp.oid('is1')),
   'acknowledge_required:%', 'inside sales must acknowledge a Claude draft');
+select pg_temp.assert_fails(
+  format('select public.admin_set_order_line_price(%s, 1900.00, null)',
+         (select id from public.order_lines where order_id = pg_temp.oid('is1') and unit_price = 0)),
+  'invalid_input:duplicate_line:MO-RL-BG:%',
+  'the free line cannot be priced like its paid sibling: the same part at the same price is one line');
 select pg_temp.assert(
   (select (public.admin_set_order_line_price(
              (select id from public.order_lines where order_id = pg_temp.oid('is1') and part_id = 'MO-ACC'),
@@ -422,16 +636,50 @@ select pg_temp.assert(
   and (select contact_name is null from public.orders where id = pg_temp.oid('nopo')),
   'the buyer contact is snapshotted at submit (none chosen: none stamped)');
 
--- A rep's own draft that an admin priced by hand: the rep still cannot submit it.
+-- A rep's draft that an admin priced by hand: inside sales cannot price it,
+-- the rep cannot submit it, an admin can.
 select pg_temp.become_mcp('rep', 'w_rep');
 select pg_temp.create('repd', pg_temp.req('is-rep-0002', '[{"part_id":"MO-ACC","qty":2}]'));
 select pg_temp.become('admin');
 select public.admin_set_order_line_price(
   (select id from public.order_lines where order_id = pg_temp.oid('repd')), 40.00, 'show special');
+select pg_temp.become('entry');
+select pg_temp.assert_fails(
+  format('select public.admin_set_order_line_price(%s, 30.00, %L)',
+         (select id from public.order_lines where order_id = pg_temp.oid('repd')), 'inside sales special'),
+  'not_owner:%', 'inside sales cannot price a rep''s draft');
+select pg_temp.assert(
+  (select unit_price = 40 from public.order_lines where order_id = pg_temp.oid('repd'))
+  and (select price_override_reason = 'show special' from public.orders where id = pg_temp.oid('repd')),
+  'the admin''s price and reason stand');
 select pg_temp.become('rep');
 select pg_temp.assert_fails(
   format('select public.submit_order(%s, true)', pg_temp.oid('repd')),
-  'admin_price_requires_admin:%', 'a rep cannot submit a hand-priced order');
+  'admin_price_requires_admin:%only an admin, or inside sales on their own order, can submit it',
+  'a rep cannot submit a hand-priced order');
+-- The portal's header editor: a direct update of the owner's own draft.
+select pg_temp.assert(
+  pg_temp.rows(format($$update public.orders
+                          set po_number = 'PO-REPD-2', requested_ship_date = current_date + 7,
+                              notes = 'Leave at the dock',
+                              ffl_license_number = '1-23-456-78-9A-12345', ffl_expires_on = current_date + 365
+                        where id = %s$$, pg_temp.oid('repd'))) = 1,
+  'the owner edits PO, ship date, notes and FFL on their hand-priced Claude draft');
+select pg_temp.assert(
+  (select po_number = 'PO-REPD-2' and notes = 'Leave at the dock'
+          and requested_ship_date = current_date + 7 and ffl_expires_on = current_date + 365
+     from public.orders where id = pg_temp.oid('repd')),
+  'and the edits are stored');
+select pg_temp.become('entry');
+select pg_temp.assert(
+  pg_temp.rows(format($$update public.orders set notes = 'x', po_number = 'PO-X' where id = %s$$, pg_temp.oid('repd'))) = 0,
+  'inside sales cannot edit someone else''s draft');
+select pg_temp.become('admin');
+select pg_temp.assert(
+  (select status = 'submitted' and total_amount = 2 * 40 and po_number = 'PO-REPD-2'
+          and acknowledged_by = pg_temp.uid('admin') and user_id = pg_temp.uid('rep')
+     from public.submit_order(pg_temp.oid('repd'), true)),
+  'an admin submits the rep''s hand-priced draft');
 
 -- Keying it: inside sales records the ERP number as before (orders are exempt
 -- from the read-only trigger).
@@ -442,20 +690,142 @@ select pg_temp.assert(
      from public.orders where id = pg_temp.oid('is1')),
   'inside sales marks the order entered');
 
+-- A ship date that passed while the draft waited: the dry run reports it,
+-- submit refuses it, today is fine.
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.create('late', '{"idempotency_key":"is-late-0001","customer_key":"MO-OTHER","po_number":"PO-IS-LATE",
+                                "lines":[{"part_id":"MO-ACC","qty":3,"part_confirmed":true}]}'::jsonb);
+select pg_temp.become('entry');
+select pg_temp.rows(format($$update public.orders set requested_ship_date = current_date - 1 where id = %s$$,
+                           pg_temp.oid('late')));
+reset role;
+select pg_temp.assert(
+  public.mcp_order_preview(pg_temp.oid('late'), false) -> 'would_submit' ->> 'error' like 'ship_date_past:%',
+  'the dry run reports a requested ship date that has passed');
+select pg_temp.become('entry');
+select pg_temp.assert_fails(
+  format('select public.submit_order(%s, true)', pg_temp.oid('late')),
+  'ship_date_past: the requested ship date % has passed; change it before submitting',
+  'submit refuses it');
+select pg_temp.rows(format($$update public.orders set requested_ship_date = current_date where id = %s$$,
+                           pg_temp.oid('late')));
+select pg_temp.assert(
+  (select status = 'submitted' from public.submit_order(pg_temp.oid('late'), true)),
+  'a ship date of today submits');
+
+-- The buyer snapshot comes only from an active contact of the account.
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.create('buyer', pg_temp.req('is-buy-0001', '[{"part_id":"MO-ACC","qty":6}]',
+                                           '{"customer_contact_key":"MO-CUST|C1"}'));
+select pg_temp.as_postgres();
+update erp.dim_customer_contact set contact_active_flag = 'N' where customer_contact_key = 'MO-CUST|C1';
+select pg_temp.become('entry');
+select pg_temp.assert(
+  (select status = 'submitted' and customer_contact_key = 'MO-CUST|C1'
+          and contact_name is null and contact_phone is null and contact_email is null
+     from public.submit_order(pg_temp.oid('buyer'), true)),
+  'a buyer deactivated in the ERP since the draft is not stamped');
+select pg_temp.as_postgres();
+update erp.dim_customer_contact set contact_active_flag = 'Y' where customer_contact_key = 'MO-CUST|C1';
+
+-- Hand-pricing a line of a promo order re-runs the promo for the lines left
+-- on the list, so the draft shows the total submit_order computes.
+select pg_temp.become_mcp('entry', 'w_entry');
+select pg_temp.create('promo', jsonb_build_object(
+  'idempotency_key', 'is-promo-0001', 'customer_key', 'MO-CUST', 'ship_to_key', 'MO-CUST|1',
+  'ship_to_confirmed', true, 'po_number', 'PO-IS-PROMO',
+  'lines', jsonb_build_array(
+    jsonb_build_object('part_id', 'MO-SPC', 'qty', 2, 'part_confirmed', true, 'price_list_id', pg_temp.oid('pl_special')),
+    jsonb_build_object('part_id', 'MO-ACC', 'qty', 1, 'part_confirmed', true, 'price_list_id', pg_temp.oid('pl_special')))));
+select pg_temp.assert(
+  (pg_temp.prev('promo') ->> 'total_amount')::numeric = 2 * 333.33 + 40.00
+  and (select bool_and(discount_pct = 33.3333) from public.order_lines where order_id = pg_temp.oid('promo')),
+  'buy 2 get 1 over 3 units on the promo list: a third off every line');
+select pg_temp.become('entry');
+select public.admin_set_order_line_price(
+  (select id from public.order_lines where order_id = pg_temp.oid('promo') and part_id = 'MO-ACC'),
+  30.00, 'counter display');
+select pg_temp.assert(
+  (select discount_pct = 0 and effective_unit_price = 500
+     from public.order_lines where order_id = pg_temp.oid('promo') and part_id = 'MO-SPC')
+  and (select sum(line_total) from public.order_lines where order_id = pg_temp.oid('promo')) = 2 * 500 + 30,
+  'the rings moved to a hand price: 2 units left on the promo list, no free one, and the draft says so');
+insert into t_prev
+select 'promo_draft_lines', jsonb_agg(jsonb_build_object('id', id, 'pct', discount_pct, 'eff', effective_unit_price,
+                                                        'total', line_total) order by id)
+from public.order_lines where order_id = pg_temp.oid('promo');
+select pg_temp.assert(
+  pg_temp.rows(format($$update public.orders
+                          set po_number = 'PO-IS-PROMO-2', requested_ship_date = current_date + 3,
+                              notes = 'Counter display',
+                              ffl_license_number = '1-23-456-78-9A-12345', ffl_expires_on = current_date + 365
+                        where id = %s$$, pg_temp.oid('promo'))) = 1,
+  'inside sales edits the header of its own hand-priced Claude draft');
+select pg_temp.assert(
+  (select status = 'submitted' and total_amount = 2 * 500 + 30 and po_number = 'PO-IS-PROMO-2'
+     from public.submit_order(pg_temp.oid('promo'), true)),
+  'submit computes the total the draft showed');
+select pg_temp.assert(
+  pg_temp.prev('promo_draft_lines') =
+    (select jsonb_agg(jsonb_build_object('id', id, 'pct', discount_pct, 'eff', effective_unit_price,
+                                         'total', line_total) order by id)
+       from public.order_lines where order_id = pg_temp.oid('promo')),
+  'and leaves every line as the draft showed it (one promo pass, order_apply_promo)');
+
 --------------------------------------------------------------------------
--- 6. Order documents follow the order
+-- 6. order_owner_names(): who an order belongs to
+--------------------------------------------------------------------------
+reset role;
+select pg_temp.assert(
+  pg_get_function_result('public.order_owner_names(uuid[])'::regprocedure)
+    = 'TABLE(user_id uuid, display_name text, role text)',
+  'order_owner_names returns a name and a role, never an email');
+select pg_temp.become('admin');
+select pg_temp.assert(
+  (select count(*) from public.order_owner_names(array(select id from t_user))) = 4
+  and (select display_name = 'Ivy Inside' and role = 'inside_sales'
+         from public.order_owner_names(array[pg_temp.uid('entry')]))
+  and (select display_name = 'Portal user' and role = 'admin'
+         from public.order_owner_names(array[pg_temp.uid('admin')])),
+  'an admin names anyone; order_entry reads as inside_sales; a blank name reads as Portal user');
+select pg_temp.become('entry');
+select pg_temp.assert(
+  (select count(*) from public.order_owner_names(array(select id from t_user))) = 4,
+  'inside sales names anyone');
+select pg_temp.become('rep');
+select pg_temp.assert(
+  (select display_name = 'Ivy Inside' and role = 'inside_sales'
+     from public.order_owner_names(array[pg_temp.uid('entry')])),
+  'a rep names inside sales, who drafted orders on their account');
+select pg_temp.assert(
+  (select count(*) = 1 and min(display_name) = 'Rex Rep'
+     from public.order_owner_names(array[pg_temp.uid('rep'), pg_temp.uid('rep2')])),
+  'a rep names themselves; a stranger (no order they can read) gets nothing');
+select pg_temp.become('rep2');
+select pg_temp.assert(
+  not exists (select 1 from public.order_owner_names(array[pg_temp.uid('rep')]))
+  and exists (select 1 from public.order_owner_names(array[pg_temp.uid('entry')])),
+  'rep2 cannot name the rep, but can name inside sales, who drafted on rep2''s account');
+
+--------------------------------------------------------------------------
+-- 7. Order documents follow the order
 --------------------------------------------------------------------------
 select pg_temp.assert(
   public.order_document_order_id('123/po.pdf') = 123
+  and public.order_document_order_id('999999999999999999/po.pdf') = 999999999999999999
   and public.order_document_order_id('123') is null
+  and public.order_document_order_id('123/') is null
+  and public.order_document_order_id('0123/po.pdf') is null
+  and public.order_document_order_id('123/sub/po.pdf') is null
+  and public.order_document_order_id('1234567890123456789/po.pdf') is null
   and public.order_document_order_id('abc/po.pdf') is null
   and public.order_document_order_id('../123/po.pdf') is null
   and public.order_document_order_id('') is null,
-  'the order id is the first path segment, and only a number');
+  'the order id is the first path segment, in the one shape the portal writes: <id>/<file>');
 
 select pg_temp.become('rep');   -- MO-CUST is on their book; 'repd' is their order
-insert into storage.objects (bucket_id, name, owner)
-values ('order-documents', pg_temp.oid('repd') || '/1-po.pdf', (select id from t_user where label = 'rep'));
+insert into storage.objects (bucket_id, name, owner, owner_id)
+values ('order-documents', pg_temp.oid('repd') || '/1-po.pdf', pg_temp.uid('rep'), pg_temp.uid('rep')::text);
 select pg_temp.assert(
   (select count(*) from storage.objects where bucket_id = 'order-documents') = 1,
   'a rep adds and reads a document on their own order');
@@ -465,6 +835,12 @@ select pg_temp.assert_fails(
 select pg_temp.assert_fails(
   $$insert into storage.objects (bucket_id, name) values ('order-documents', 'loose.pdf')$$,
   '%row-level security%', 'nor outside an order folder');
+select pg_temp.assert_fails(
+  format($$insert into storage.objects (bucket_id, name) values ('order-documents', '0%s/x.pdf')$$, pg_temp.oid('repd')),
+  '%row-level security%', 'nor under a leading-zero folder no listing shows');
+select pg_temp.assert_fails(
+  format($$insert into storage.objects (bucket_id, name) values ('order-documents', '%s/sub/x.pdf')$$, pg_temp.oid('repd')),
+  '%row-level security%', 'nor in a sub-folder');
 
 select pg_temp.become('rep2');
 select pg_temp.assert(
@@ -475,11 +851,62 @@ select pg_temp.become('entry');
 select pg_temp.assert(
   (select count(*) from storage.objects where bucket_id = 'order-documents') = 1,
   'inside sales reads the document on a rep''s order');
-insert into storage.objects (bucket_id, name, owner)
-values ('order-documents', pg_temp.oid('is1') || '/2-signed-po.pdf', (select id from t_user where label = 'entry'));
+insert into storage.objects (bucket_id, name, owner, owner_id)
+values ('order-documents', pg_temp.oid('repd') || '/2-signed-po.pdf', pg_temp.uid('entry'), pg_temp.uid('entry')::text),
+       ('order-documents', pg_temp.oid('is1') || '/3-signed-po.pdf', pg_temp.uid('entry'), pg_temp.uid('entry')::text);
+
+-- Hosted Storage refuses direct deletes from storage.objects unless this is
+-- set (the Storage API sets it itself); harmless on the local harness.
+select set_config('storage.allow_delete_query', 'true', true);
+select pg_temp.become('rep');
+select pg_temp.assert(
+  (select count(*) from storage.objects where bucket_id = 'order-documents') = 2,
+  'the rep sees both documents on their order');
+select pg_temp.assert(
+  pg_temp.rows(format($$delete from storage.objects where bucket_id = 'order-documents' and name = '%s/2-signed-po.pdf'$$,
+                      pg_temp.oid('repd'))) = 0,
+  'a rep cannot remove a document someone else added to their order');
+select pg_temp.assert(
+  pg_temp.rows(format($$delete from storage.objects where bucket_id = 'order-documents' and name = '%s/1-po.pdf'$$,
+                      pg_temp.oid('repd'))) = 1,
+  'but removes the one they uploaded (owner_id)');
+select pg_temp.become('entry');
 select pg_temp.assert(
   pg_temp.rows($$delete from storage.objects where bucket_id = 'order-documents'$$) = 2,
-  'inside sales adds one after the order was entered, and may remove documents');
+  'inside sales adds one after the order was entered, and may remove any');
+
+-- Listing one order's folder costs the same however full the bucket is: the
+-- policies build the readable order set once per statement. 3,000 accounts,
+-- 300 orders, a document on each; per object (the earlier draft) this took
+-- well over a second locally, set-based about 10 ms.
+select pg_temp.as_postgres();
+insert into erp.dim_customer (customer_key, customer_id, customer_name, assigned_sales_rep_id, customer_type, active_flag)
+select 'MO-T-' || g, 'MO-T-' || g, 'Timing Dealer ' || g, 'MO TIMING', 'MO-DEALER', 'Y'
+from generate_series(1, 3000) g;
+with o as (
+  insert into public.orders (user_id, created_by, customer_key, customer_name, status, source)
+  select pg_temp.uid('rep'), pg_temp.uid('rep'), 'MO-T-' || (g * 10), 'Timing Dealer', 'draft', 'portal'
+  from generate_series(1, 300) g
+  returning id
+)
+insert into storage.objects (bucket_id, name, owner_id)
+select 'order-documents', o.id || '/1-po.pdf', pg_temp.uid('rep')::text from o;
+insert into t_ids select 'timing', min(id) from public.orders where customer_key like 'MO-T-%';
+select pg_temp.become('entry');
+do $$
+declare
+  v_id bigint := pg_temp.oid('timing');
+  t0   timestamptz;
+  n    bigint;
+  ms   numeric;
+begin
+  t0 := clock_timestamp();
+  select count(*) into n from storage.objects
+   where bucket_id = 'order-documents' and name like v_id || '/%';
+  ms := extract(epoch from clock_timestamp() - t0) * 1000;
+  perform pg_temp.assert(n = 1 and ms < 500,
+    format('inside sales lists one order''s folder among 300 documents in %s ms (bound 500 ms)', round(ms, 1)));
+end $$;
 
 do $$ begin raise notice 'ALL INSIDE SALES TESTS PASSED'; end $$;
 rollback;

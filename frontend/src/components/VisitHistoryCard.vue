@@ -5,11 +5,15 @@
  *
  * Deliberately dense: type, date, inventory and the three 1–5 scales on one
  * row each, so a season of visits fits on a phone screen without a tap.
+ *
+ * The empty state asks for a survey only where one can be logged: the
+ * read-only role (inside sales) and view-as read a plain "none yet".
  */
 import { computed } from 'vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import { useSessionStore } from '@/stores/session'
 import { useAccountVisits, type Visit } from '@/composables/useVisits'
 import {
   competitorPromoLabel,
@@ -27,6 +31,8 @@ const props = withDefaults(
   }>(),
   { limit: 20 },
 )
+
+const session = useSessionStore()
 
 const key = computed(() => props.customerKey)
 const { data, dataUpdatedAt, isPending, error, refetch } = useAccountVisits(
@@ -84,7 +90,9 @@ function ratings(visit: Visit): Rating[] {
       :updated-at="dataUpdatedAt"
       :empty="visits.length === 0"
       empty-title="No surveys yet"
-      empty-body="Log one on your next stop — it takes under a minute."
+      :empty-body="
+        session.canEditBook ? 'Log one on your next stop — it takes under a minute.' : undefined
+      "
       @retry="refetch()"
     >
       <ul class="divide-y divide-line">

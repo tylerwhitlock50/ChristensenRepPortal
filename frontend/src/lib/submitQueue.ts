@@ -16,6 +16,8 @@
  *  1. Nothing is ever dropped. A row that keeps failing backs off, and after
  *     enough attempts it is surfaced as *stuck* — it is never deleted. A rep
  *     watching a survey vanish is the single biggest adoption risk in the PRD.
+ *     A refusal no retry can fix (the read-only role, `blocked`) is stuck at
+ *     once and is not sent again until the role could write it.
  *  2. A retry never duplicates. Each queued item records what already landed
  *     (`progress.actionId` / `visitId` / `photoIds`), so a submit that dies
  *     between the visit insert and the third photo resumes at the third photo.
@@ -28,6 +30,11 @@ import { useQueryClient } from '@tanstack/vue-query'
 import { supabase } from '@/lib/supabase'
 import { newPhotoId, uploadPhoto } from '@/lib/photos'
 import { qk } from '@/lib/queryClient'
+import {
+  READ_ONLY_ROLE_MESSAGE,
+  isReadOnlyRoleError,
+  readOnlyRoleOriginal,
+} from '@/lib/readOnlyRole'
 import { useSessionStore } from '@/stores/session'
 import type { TablesInsert } from '@/types/database.types'
 import type { ActionType, PhotoCategory } from '@/types/domain'
@@ -104,6 +111,15 @@ export interface QueuedSubmit {
   lastAttemptAt: string | null
   /** ISO; the flush skips the item until then. Null means "try now". */
   nextAttemptAt: string | null
+  /**
+   * Set when the database refused the visit for a reason a retry cannot
+   * change: 'read_only_role' is inside sales (lib/readOnlyRole.ts), whose
+   * role may not log visits at all. The item stays queued (nothing is ever
+   * dropped) but is not sent again while the signed-in user is still that
+   * role; it goes up by itself if they are a rep again. Absent on items
+   * queued before this field existed.
+   */
+  blocked?: 'read_only_role' | null
   progress: {
     actionId: number | null
     visitId: number | null
@@ -219,7 +235,10 @@ function backoffMs(attempts: number): number {
   return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), MAX_BACKOFF_MS)
 }
 
-function dueNow(item: QueuedSubmit, force: boolean): boolean {
+function dueNow(item: QueuedSubmit, force: boolean, readOnlyRole: boolean): boolean {
+  // A permanent refusal is not retried, not even by Try now, until the
+  // signed-in role could write the visit.
+  if (item.blocked === 'read_only_role' && readOnlyRole) return false
   if (force || !item.nextAttemptAt) return true
   return item.nextAttemptAt <= new Date().toISOString()
 }
@@ -306,9 +325,19 @@ export async function flush(options?: {
    * is only correct in a test.
    */
   userId?: string
+  /**
+   * Whether the signed-in user is the read-only role (session.isReadOnlyRole).
+   * Items the database refused for that role are skipped while it is true.
+   * Omitted counts as true: a caller that does not know never re-sends them.
+   */
+  readOnlyRole?: boolean
 }): Promise<FlushResult> {
   if (inFlight) return inFlight
-  inFlight = runFlush(options?.force ?? false, options?.userId).finally(() => {
+  inFlight = runFlush(
+    options?.force ?? false,
+    options?.userId,
+    options?.readOnlyRole ?? true,
+  ).finally(() => {
     inFlight = null
   })
   return inFlight
@@ -316,7 +345,8 @@ export async function flush(options?: {
 
 async function runFlush(
   force: boolean,
-  userId?: string,
+  userId: string | undefined,
+  readOnlyRole: boolean,
 ): Promise<FlushResult> {
   await ensureHydrated()
 
@@ -341,7 +371,7 @@ async function runFlush(
 
   try {
     for (const item of [...items.value].sort(byQueuedAt)) {
-      if (!dueNow(item, force)) continue
+      if (!dueNow(item, force, readOnlyRole)) continue
       // Never send another user's work under this user's JWT. Left in the
       // queue, not discarded — the original author may sign back in.
       if (userId && item.payload.userId && item.payload.userId !== userId) continue
@@ -355,9 +385,20 @@ async function runFlush(
         item.attempts += 1
         item.lastAttemptAt = new Date().toISOString()
         item.lastError = messageFor(err)
-        item.nextAttemptAt = new Date(
-          Date.now() + backoffMs(item.attempts),
-        ).toISOString()
+        if (isReadOnlyRoleError(err)) {
+          // Retrying cannot help: this role may not log visits. Kept, shown
+          // as stuck, and not sent again while the role is read-only. The
+          // database's own words (which table) go to the console only.
+          console.warn('[submitQueue] refused for the read-only role:', readOnlyRoleOriginal(err))
+          item.blocked = 'read_only_role'
+          item.attempts = Math.max(item.attempts, STUCK_AFTER_ATTEMPTS)
+          item.nextAttemptAt = null
+        } else {
+          item.blocked = null
+          item.nextAttemptAt = new Date(
+            Date.now() + backoffMs(item.attempts),
+          ).toISOString()
+        }
         lastFlushError.value = item.lastError
         await persist(item)
         // The connection dropped mid-drain; stop rather than burn the rest of
@@ -379,6 +420,8 @@ async function runFlush(
 }
 
 function messageFor(err: unknown): string {
+  // The database's 'read_only_role: …' sentence is for the console (above), not the rep.
+  if (isReadOnlyRoleError(err)) return READ_ONLY_ROLE_MESSAGE
   if (err && typeof err === 'object' && 'message' in err) {
     return String((err as { message: unknown }).message)
   }
@@ -486,6 +529,7 @@ export function useSubmitQueue(): UseSubmitQueue {
     const result = await flush({
       force: options?.force ?? false,
       userId: session.user?.id,
+      readOnlyRole: session.isReadOnlyRole,
     })
     for (const customerKey of result.customerKeys) {
       void qc.invalidateQueries({ queryKey: qk.account.root(customerKey) })

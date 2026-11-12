@@ -13,7 +13,7 @@
  * one folder level, the numeric order id. Get that segment wrong and the
  * upload is refused, which is the failure we want. Whoever can read the
  * order can list, open and add; removing is the uploader, an admin or
- * inside sales.
+ * inside sales (canOfferRemove says where the card offers it).
  *
  * Everything here mirrors what the bucket enforces (size, MIME types) so the
  * person hears about a bad file before a 25 MB upload, not after it.
@@ -58,14 +58,23 @@ const EXTENSION_BY_MIME: Readonly<Record<string, string>> = Object.fromEntries(
     .map(([ext, mime]) => [mime, ext]),
 )
 
-/** For the file picker's `accept`: every extension, then the picture types
- *  (which is what makes a phone offer its camera and photo library). */
+/**
+ * For the file picker's `accept`: every extension, then the picture types
+ * (which is what makes a phone offer its camera and photo library) — except
+ * HEIC. Naming HEIC here tells an iPhone to hand over the original .HEIC
+ * from the camera roll; leaving it out makes it convert the photo to JPEG,
+ * which every desk browser opens (a .heic only downloads, opensInBrowser).
+ * A HEIC file dropped or chosen anyway is still taken: the type table and
+ * the bucket allow it.
+ */
+const NOT_OFFERED_BY_THE_PICKER = new Set(['heic'])
 export const ORDER_DOCUMENT_ACCEPT = [
-  ...Object.keys(ORDER_DOCUMENT_TYPES).map((ext) => `.${ext}`),
+  ...Object.keys(ORDER_DOCUMENT_TYPES)
+    .filter((ext) => !NOT_OFFERED_BY_THE_PICKER.has(ext))
+    .map((ext) => `.${ext}`),
   'image/png',
   'image/jpeg',
   'image/webp',
-  'image/heic',
 ].join(',')
 
 /** In words, for the drop zone and the refusal. */
@@ -283,15 +292,36 @@ export function toOrderDocuments(orderId: number, listed: readonly ListedObject[
   })
 }
 
+/** What the person was doing with a document when Storage refused. */
+export type DocumentAction = 'upload' | 'open' | 'remove'
+
+/** "PO.pdf didn't upload", "PO.pdf couldn't be opened", "PO.pdf wasn't removed". */
+function failedTo(action: DocumentAction, fileName: string): string {
+  if (action === 'open') return `${fileName} couldn't be opened`
+  if (action === 'remove') return `${fileName} wasn't removed`
+  return `${fileName} didn't upload`
+}
+
+/** What the card says when the bucket is not there (isBucketMissing). */
+export const ORDER_DOCUMENTS_NOT_SET_UP = "Order documents aren't set up on this database yet."
+
 /**
- * What Storage said when it refused, in words. Unrecognised messages pass
- * through: a specific wrong answer beats a friendly dead end.
+ * What Storage said when it refused, in words, naming the file and what
+ * was being done with it: in a batch of three the person has to know which
+ * one failed, and a failed open must not read as a failed upload.
+ * Unrecognised messages pass through after the name: a specific wrong
+ * answer beats a friendly dead end.
  */
-export function documentErrorText(error: unknown, fileName = 'That file'): string {
+export function documentErrorText(
+  error: unknown,
+  fileName = 'That file',
+  action: DocumentAction = 'upload',
+): string {
   const message =
     typeof error === 'string' ? error : String((error as { message?: unknown } | null)?.message ?? '')
+  const failed = failedTo(action, fileName)
   if (/row-level security|unauthorized|not authorized|permission denied/i.test(message)) {
-    return "You don't have access to this order's documents."
+    return `${failed}: you don't have access to this order's documents.`
   }
   if (/exceeded the maximum allowed size|payload too large|entity too large/i.test(message)) {
     return `${fileName} is over the ${formatFileSize(ORDER_DOCUMENT_MAX_BYTES)} limit.`
@@ -303,15 +333,40 @@ export function documentErrorText(error: unknown, fileName = 'That file'): strin
     return `${fileName} was just uploaded. Refresh the list before trying again.`
   }
   if (isBucketMissing(error)) {
-    return "Order documents aren't set up on this database yet."
+    return `${failed}: order documents aren't set up on this database yet.`
+  }
+  // Someone else removed it after this list loaded (a sign of a gone name).
+  if (/object not found/i.test(message)) {
+    return `${fileName} was removed; refresh the list.`
   }
   if (/failed to fetch|network ?request ?failed|networkerror|load failed/i.test(message)) {
-    return `${fileName} didn't upload: this device couldn't reach the network. Try again when you have signal.`
+    return `${failed}: this device couldn't reach the network. Try again when you have signal.`
   }
-  return message || 'That failed.'
+  return message ? `${failed}: ${message}` : `${failed}.`
 }
 
-/** The bucket is not there: a database without 20261113090000. */
+/**
+ * Whether a row offers Remove. Storage's own rule ('remove order documents',
+ * 20261113090000) is the uploader, an admin or inside sales. A listing does
+ * not say who uploaded a file, so for anyone else the card offers it only
+ * on the files this browser uploaded for them this session (they know those
+ * are theirs); an older file of theirs is removed by asking inside sales or
+ * an admin. Nothing is offered without a session that can write.
+ */
+export function canOfferRemove(
+  viewer: { canWrite: boolean; isAdmin: boolean; isOrderEntry: boolean },
+  uploadedHere: boolean,
+): boolean {
+  if (!viewer.canWrite) return false
+  return viewer.isAdmin || viewer.isOrderEntry || uploadedHere
+}
+
+/**
+ * The bucket is not there: a database without 20261113090000. Storage says
+ * so ('Bucket not found', 404) on an upload, a sign or a remove. A listing
+ * never does: it answers an unknown bucket with an empty list, so the card
+ * learns of a missing bucket from the first upload or open that fails.
+ */
 export function isBucketMissing(error: unknown): boolean {
   const message =
     typeof error === 'string' ? error : String((error as { message?: unknown } | null)?.message ?? '')

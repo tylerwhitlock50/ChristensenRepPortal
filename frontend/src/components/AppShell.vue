@@ -16,7 +16,7 @@ import NavBadge from '@/components/NavBadge.vue'
 import ViewAsBanner from '@/components/ViewAsBanner.vue'
 import GlobalSearch from '@/components/GlobalSearch.vue'
 import { daysUntilDue } from '@/lib/format'
-import { ordersSectionOpen } from '@/lib/mcpOrders'
+import { ordersSectionOpen } from '@/lib/ordersGate'
 
 const session = useSessionStore()
 const router = useRouter()

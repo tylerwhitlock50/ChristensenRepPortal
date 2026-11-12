@@ -87,3 +87,11 @@ revoke all on public.mcp_order_users from authenticated, anon, public;
 grant select, insert, delete on public.mcp_order_users to authenticated;
 revoke execute on function public.mcp_order_users_not_from_mcp()
   from authenticated, anon, public;
+
+-- 20261113090000: the read-only trigger function and the shared promo pass
+-- are called by the server only (the latter from submit_order and
+-- admin_set_order_line_price, inside their write window).
+revoke execute on function public.block_writes_for_read_only_role()
+  from authenticated, anon, public;
+revoke execute on function public.order_apply_promo(bigint)
+  from authenticated, anon, public;

@@ -269,8 +269,11 @@ post_load_sql:
   # erp.fact_order_line load (migration 20260817000200) and flags
   # discrepancies. An exception here must never block the rollups above,
   # and with nothing after it, it stops nothing else. The flag gate at the
-  # call site matches the recommendations pattern.
-  - "select public.run_order_qc() where exists (select 1 from public.app_settings s where s.setting_key = 'feature.orders' and s.enabled);"
+  # call site matches the recommendations pattern: either way of creating
+  # orders turns it on, portal hand entry (feature.orders) or Claude
+  # drafting (feature.mcp_orders); with hand entry off, Claude-drafted
+  # orders still need checking.
+  - "select public.run_order_qc() where exists (select 1 from public.app_settings s where s.setting_key in ('feature.orders', 'feature.mcp_orders') and s.enabled);"
 
 # Then pre-generate the account briefings for the top of each rep's book (by
 # account_signals.score — no recommendation needed since 20261013140000).

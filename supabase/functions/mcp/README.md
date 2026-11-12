@@ -8,7 +8,7 @@ https://<project-ref>.supabase.co/functions/v1/mcp
 ```
 
 Read-only, apart from gated order **drafting** (see "Order drafting, gated"
-below): twenty-one read tools, plus seven order tools that only a pilot user
+below): twenty-one read tools, plus ten order tools that only a pilot user
 on the order-drafting allow-list ever sees (with any valid token). No new access
 model: a token identifies a user, and that user's existing RLS decides
 everything they can see.
@@ -41,7 +41,14 @@ If you change one thing in this directory, do not make it that.
 ```bash
 supabase functions deploy mcp --no-verify-jwt
 supabase secrets set MCP_JWT_SECRET=<Settings → API → JWT Secret>
+supabase secrets set PORTAL_URL=https://carms.app
 ```
+
+`PORTAL_URL` is the portal's origin. Set it: draft previews, order status,
+the order lists and both document tools add `portal_url` = this +
+`/orders/<id>`, and the document flow's fallback ("give the user the portal
+link, they drop the file on the order page") is only a link the user can
+click when it is set. Without it the tools carry only `portal_path`.
 
 `--no-verify-jwt` for the same reason as every other function here: the
 gateway's check would reject an MCP token, which is not a Supabase JWT. The
@@ -68,7 +75,6 @@ else in the design changes; the signing algorithm is the only assumption.
 |---|---|---|
 | `MCP_DISABLED_TOOLS` | *(empty)* | Comma-separated tool names to turn off without a deploy. |
 | `MCP_ALLOWED_ORIGIN` | `*` | CORS origin. Pin it if browser-based MCP clients are ever the only consumers. |
-| `PORTAL_URL` | *(empty)* | Portal origin, e.g. `https://portal.example.com`. Draft previews add `portal_url` = this + `/orders/<id>`; without it they carry only `portal_path`. |
 
 `MCP_DISABLED_TOOLS` exists mainly for `list_contacts`. `ai-account-summary`
 deliberately keeps contact PII out of a model's context (see the PII note in
@@ -124,6 +130,19 @@ informational `mcp_scopes` claim) remain for OAuth, which will bring back
 per-connection consent. Reps whose client can send a header should still send
 a header.
 
+**For an admin or inside-sales user the blast radius is the whole company,
+not one book.** Their RLS reads every account, so a leaked URL token of theirs
+reads every account, order, note and contact; if they are on the
+order-drafting list it can also stage hand-priced drafts (a `unit_price` of 0
+included) for any customer under the raised caps, mint upload URLs for any
+order, and fetch 10-minute links to every order's PO documents. It still
+cannot submit, and an issued upload URL or document link outlives a revoked
+token until it expires. Nothing in this function treats those tokens
+differently (`tokenVia` is informational). So: admins and inside sales should
+connect with the header transport wherever the client supports it (Claude
+Code, the desktop config), keep URL connectors to the people who need
+claude.ai, and revoke a token on `/connect` the moment a URL may have leaked.
+
 ---
 
 ## Tools
@@ -151,7 +170,7 @@ minutes on weekdays) were last loaded.
 | `check_availability` | `v_ats_list` | Company-wide stock / available-to-sell |
 | `list_orders` | `v_account_recent_order_headers`, `v_account_order_lines` | Order history and one order's lines |
 | `list_shipments` | `v_account_recent_shipment_headers`, `v_account_shipment_lines` | Did it ship, where is it, tracking number; `shipped_value` is packlist value, not revenue |
-| `lookup_order` | `lookup_orders()` | Which order is PO 44182 / tracking 1Z…, across the whole book |
+| `lookup_order` | `lookup_orders()` | Which order is PO 44182 / tracking 1Z…, across the whole book; an order or PO number equal to the term comes first, marked `exact: true` (the match is a substring one: `PORTAL-12` also finds `PORTAL-123`) |
 | `get_goal_progress` | `v_account_goal_progress`, `v_my_goal_rollup` | Goal attainment and seasonal pace |
 | `list_recommendations` | `recommendations` | The generated work list, with why-now |
 | `list_account_activity` | `notes`, `actions`, `visits` | What the team has actually done there |
@@ -234,21 +253,25 @@ here touches the ERP; Tyler's middleware reads submitted orders from
 | `create_order_draft` | `mcp_create_order_draft(p)` | write, idempotent (keyed) |
 | `update_order_draft` | `mcp_update_order_draft(p_order_id, p)` | write |
 | `cancel_order_draft` | `mcp_cancel_order_draft(p_order_id)` | write, destructive |
-| `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS | read-only |
-| `list_my_order_drafts` | `orders` where `user_id` = caller | read-only |
+| `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS (the header includes `notes` and `customer_contact_key`, so an update can send them back) | read-only |
+| `list_my_order_drafts` | `orders` where `user_id` = caller (`scope: "mine"`, the default), or every order RLS shows (`scope: "everyone"`, admin and inside sales only, owners named by `order_owner_names()`); rows carry `erp_order_number` | read-only |
+| `list_order_documents` | storage `order-documents` list of `<order id>/` + one `createSignedUrls` call (10-minute links, `link_error` per file, newest 100 and `has_more`) | read-only |
+| `attach_order_document` | storage `createSignedUploadUrl('<order id>/<epoch ms>-<name>')` — a one-time upload URL and the exact `content_type` to PUT with | write |
 
-**Admin pricing (20261111170000).** For an admin caller (`caller.role ===
+**Admin pricing (20261112120000).** For an admin caller (`caller.role ===
 'admin'`) the create/update schemas also take a per-line `unit_price` and an
 order-level `price_override_reason`, so a distributor PO (ATS, SMUs, special
 pricing, parts on no price list) can be staged as it was sent. The database
-decides: `mcp_order_apply` refuses a price from anyone but an admin, puts every
+decides: `mcp_order_apply` refuses a price from anyone but an admin (or, since
+`20261113090000`, inside sales: `can_price_orders()`), puts every
 line whose price is not the published one on the reserved "Admin price (off
 list)" list with `price_source = 'admin'`, stages an item number that matches
 no part as `part_unresolved`, and records the PO's item number/description,
 the customer's last paid price and a description check per line. The preview
-leads with UNMATCHED PARTS / DESCRIPTION CHECK / ADMIN PRICING warnings.
+leads with UNMATCHED PARTS / DESCRIPTION CHECK / HAND PRICING warnings.
 `submit_order` refuses unmatched lines, and admin-priced ones unless an admin
-submits with the acknowledgement. In the portal an admin can set or reset a
+(or inside sales, on their own order) submits with the acknowledgement. In the
+portal an admin can set or reset a
 line's price (`admin_set_order_line_price`) or remove it; the order writer
 does not open such drafts (it would reprice them).
 
@@ -257,25 +280,46 @@ sales reads every account (`my_customer_keys()` returns them all, so every read
 tool here answers for the whole company) and changes nothing outside orders
 (a trigger refuses the write with `read_only_role`). For orders they are
 treated like an admin: their create/update schemas take `unit_price` and
-`price_override_reason` (`can_price_orders()` in SQL), they may draft for any
-customer, and they may submit their own hand-priced drafts in the portal. A
+`price_override_reason` (`can_price_orders()` in SQL), and they may draft for
+any customer. **Inside sales prices and submits only their own drafts; an
+admin submits anyone's.** In the portal a non-admin sets a hand price
+(`admin_set_order_line_price`) only on an order they own (`not_owner`
+otherwise), and a hand-priced order is submitted, after the acknowledgement,
+by an admin or by the inside-sales owner. Over MCP the question does not
+arise: update and cancel reach only the caller's own MCP drafts. A
 hand-priced order may carry the same part on two lines at different prices
-(10 paid and 1 at `unit_price: 0`).
+(10 paid and 1 at `unit_price: 0`). `whoami` reports `role: inside_sales`
+and says the same in its `access_note`.
 
 **No PO.** A customer PO is asked for every time. When the user says the
 customer gave none, `no_po_confirmed: true` saves the draft without one (a
 `no_customer_po` alert names the reference) and `submit_order` stamps
 `PORTAL-<order id>` as the PO, which is what the order loader writes to
-Visual's `CUSTOMER_PO_REF`.
+Visual's `CUSTOMER_PO_REF`. A PO already on a draft is never dropped by an
+update: one that leaves it out is refused (`po_would_be_removed`), and only a
+person removes a PO, in the portal. A `PORTAL-<id>` reference is never
+accepted as a PO, and a PO or PO item number sent as a JSON number is
+forwarded as its digits.
 
 **Documents.** `attach_order_document` returns a one-time signed upload URL
-for the private `order-documents` bucket (objects are `<order id>/<file>`;
-storage RLS: whoever can read the order can read and add its documents). A
-tool call carries JSON, not files, so the client PUTs the bytes to that URL;
-a client that cannot make that request gives the user the portal link, where
-a file can be dropped on the order. `list_order_documents` returns names,
-sizes and 10-minute links. The order loader shows the same files to the
-person keying the order.
+for the private `order-documents` bucket (objects are
+`<order id>/<epoch ms>-<name>`; storage RLS: whoever can read the order can
+read and add its documents). The name and the accepted types are the
+portal's own rule: `mcp/orderDocuments.ts` is a copy of
+`frontend/src/lib/orderDocuments.ts`, and `orderDocuments.test.ts` fails if
+the two differ. An extension the bucket does not take is refused before any
+URL is minted; otherwise the result carries the exact `content_type`, which
+the PUT must send as `Content-Type` (Storage checks only that header: a
+missing or different one is a 415). A tool call carries JSON, not files, so
+the client PUTs the bytes to that URL; the tool says to use it only when the
+model can actually make that request, and otherwise to give the user the
+portal link, where a file can be dropped on the order. The audit row names
+the `object_name`; its `ok` means a URL was issued, not that a file arrived.
+An order the caller cannot see is an `order_not_found` refusal, logged
+against no order. `list_order_documents` returns names, sizes and 10-minute
+links from one signing request (a file whose link could not be made carries
+`link_error`), newest 100 with `has_more`. The order loader shows the same
+files to the person keying the order.
 
 **Who sees them.** All ten are listed and callable only when both hold;
 otherwise they are absent from `tools/list` and `tools/call` calls them
@@ -303,11 +347,13 @@ are listed. Postgres enforces the same gate again in `mcp_orders_gate()`
 `app_metadata.mcp_token_id` names a live token of the caller's); hiding the
 tools is a convenience, not the boundary.
 
-**No money, no FFL.** No input schema has a price or FFL field, the RPC
-payload is built from a whitelist, and a call that sends `unit_price`,
-`price`, `ffl_license_number` (or similar) at the top level or on a line is
-refused before anything reaches the database. Prices are resolved server-side;
-the FFL is the one on file, or a person types it in the portal.
+**No money from a rep, no FFL from anyone.** No rep input schema has a price
+or FFL field, the RPC payload is built from a whitelist, and a rep's call that
+sends `unit_price`, `price`, `ffl_license_number` (or similar) at the top
+level or on a line is refused before anything reaches the database. An admin
+or inside sales may send a line's `unit_price` and nothing else money-shaped
+(see "Admin pricing"). Prices are otherwise resolved server-side; the FFL is
+the one on file, or a person types it in the portal.
 
 **Confirmations, enforced in Postgres** (`20261112090000`, after test draft
 #345 picked its own ship-to and SKU, had no PO, and showed $1,566.67 where the
@@ -337,8 +383,14 @@ and appends the choices JSON to the text the model reads.
 **Errors.** The RPCs raise `code[:detail]: text`. `orderToolError` turns each
 code into an instruction the model can follow — `possible_duplicate` says to
 ask the user before retrying with `allow_duplicate`, FFL and acknowledgement
-codes say a person finishes in the portal — and keeps the raw text in
-brackets.
+codes say a person finishes in the portal, `po_would_be_removed` says to
+resend the stored PO, `ship_date_past` to ask for a new date, `not_owner`
+who may finish the order — and keeps the raw text in brackets. A caller who
+may price is never told that prices are never accepted: a bad `unit_price`,
+a missing `price_override_reason` and a `duplicate_line` each get their own
+sentence. A rep who earns `duplicate_line` (one part on two list-priced
+lines) is told to send one line, never to price a free line at 0: an admin
+adds free goods in the portal.
 
 **Audit.** After every write tool, success or failure, the function calls
 `mcp_log_call` in its own request (a refusal is a RAISE, so a row written
@@ -358,7 +410,8 @@ Kill switch without a deploy: turn `feature.mcp_orders` off, or name tools in
 mcp/
 ├── index.ts        transport, JSON-RPC dispatch, auth handover
 ├── tools.ts        the twenty-one read tools + the registry
-├── orderTools.ts   the seven gated order-drafting tools + toolsFor()
+├── orderTools.ts   the ten gated order-drafting tools + toolsFor()
+├── orderDocuments.ts  document names and types (copy of the portal's, parity-tested)
 ├── prompts.ts      the three MCP prompts
 └── README.md       this file
 ../_shared/mcpAuth.ts   token extraction, resolution, JWT minting

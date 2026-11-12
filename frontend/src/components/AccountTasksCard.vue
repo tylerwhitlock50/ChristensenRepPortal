@@ -19,12 +19,18 @@ import { daysUntilDue, dueLabel } from '@/lib/format'
  *
  * Existing rows stay null. There is no signal left to recover the association
  * from, so there is nothing to backfill.
+ *
+ * Not shown to the read-only role (inside sales): they keep no follow-ups
+ * (the tasks table is outside what they may change) and have no Today page,
+ * so the card could only invite them to add one. No key, no query.
  */
 const props = defineProps<{ customerKey: string }>()
 
 const session = useSessionStore()
 
-const query = useAccountTasks(computed(() => props.customerKey))
+const query = useAccountTasks(
+  computed(() => (session.isReadOnlyRole ? '' : props.customerKey)),
+)
 const tasks = computed<Task[]>(() => query.data.value ?? [])
 
 const toggle = useToggleTask()
@@ -52,7 +58,7 @@ async function complete(task: Task) {
        looking at a rep's account sees their own follow-ups here, not the
        rep's. That is right for a personal to-do list, but the empty state has
        to say so or it reads as "this account has none". -->
-  <AppCard title="Your follow-ups here">
+  <AppCard v-if="!session.isReadOnlyRole" title="Your follow-ups here">
     <TaskQuickAdd
       v-if="session.canEditBook"
       :customer-key="customerKey"

@@ -9,7 +9,7 @@
  * mirror it so the rep sees the problem before pressing Submit, plus two
  * things only a warning can say: an entered licence differs from the one on
  * file in Visual, or there is none on file. Those don't block submit (a
- * renewed licence is legitimately new); order entry fixes Visual's ship-to
+ * renewed licence is legitimately new); inside sales fixes Visual's ship-to
  * before the order can be entered, and the order loader refuses to write it
  * until they match.
  *
@@ -131,7 +131,7 @@ export interface FflContext {
 export interface ShipToFflCheck {
   /** Block submit — submit_order() would refuse these too. */
   errors: string[]
-  /** Order entry will have to act; the rep should know. */
+  /** Inside sales will have to act; the rep should know. */
   warnings: string[]
   /** The rep must type an FFL (firearms on the order, no current licence on file). */
   needsEntry: boolean
@@ -154,9 +154,7 @@ export function checkShipToAndFfl(input: {
   fflExpiresOn: string
   today?: Date
 }): ShipToFflCheck {
-  const today = input.today ?? new Date()
   const errors: string[] = []
-  const warnings: string[] = []
   const shipTo = input.shipTo
 
   if (!shipTo) {
@@ -165,9 +163,48 @@ export function checkShipToAndFfl(input: {
     errors.push(`Ship-to ${shipTo.ship_to_id} is inactive in the ERP — pick another address.`)
   }
 
-  const entered = input.fflNumber.trim() !== ''
+  const ffl = checkFfl(input, false)
+  return { errors: [...errors, ...ffl.errors], warnings: ffl.warnings, needsEntry: ffl.needsEntry }
+}
+
+/**
+ * The FFL half alone, for a screen that cannot change the ship-to (the order
+ * page's details editor) and saves a draft rather than submitting it: only
+ * what was typed is checked, so a draft can be saved before the licence is
+ * known, as the writer's Save draft can. `needsEntry` still says that
+ * submitting will want one.
+ */
+export function checkEnteredFfl(input: {
+  shipTo: ShipToRow | null | undefined
+  requiresFfl: boolean
+  onFileCurrent: boolean
+  fflNumber: string
+  fflExpiresOn: string
+  today?: Date
+}): ShipToFflCheck {
+  return checkFfl(input, true)
+}
+
+function checkFfl(
+  input: {
+    shipTo: ShipToRow | null | undefined
+    requiresFfl: boolean
+    onFileCurrent: boolean
+    fflNumber: string
+    fflExpiresOn: string
+    today?: Date
+  },
+  onlyWhatIsTyped: boolean,
+): ShipToFflCheck {
+  const today = input.today ?? new Date()
+  const errors: string[] = []
+  const warnings: string[] = []
+  const shipTo = input.shipTo
+
+  const entered =
+    input.fflNumber.trim() !== '' || (onlyWhatIsTyped && input.fflExpiresOn.trim() !== '')
   const needsEntry = input.requiresFfl && !!shipTo && !input.onFileCurrent
-  if (!input.requiresFfl || !shipTo || (!needsEntry && !entered)) {
+  if (!input.requiresFfl || !shipTo || (!needsEntry && !entered) || (onlyWhatIsTyped && !entered)) {
     return { errors, warnings, needsEntry }
   }
 
@@ -185,13 +222,23 @@ export function checkShipToAndFfl(input: {
     const onFile = (shipTo.ffl_license_number ?? '').trim()
     if (!onFile) {
       warnings.push(
-        `${shipTo.ship_to_id} has no FFL on file in the ERP. Order entry will add this one before entering the order.`,
+        `${shipTo.ship_to_id} has no FFL on file in the ERP. Inside sales will add this one before entering the order.`,
       )
     } else if (!fflNumbersMatch(input.fflNumber, onFile)) {
       warnings.push(
-        `This FFL differs from the one on file for ${shipTo.ship_to_id} (${onFile}). Order entry will update the ERP before entering the order — attach or send the new licence.`,
+        `This FFL differs from the one on file for ${shipTo.ship_to_id} (${onFile}). Inside sales will update the ERP before entering the order — attach or send the new licence.`,
       )
     }
   }
   return { errors, warnings, needsEntry }
+}
+
+/**
+ * submit_order() refuses a requested ship date that has passed
+ * (ship_date_past, on the business calendar). '' when it is fine or blank.
+ */
+export function shipDateError(shipDate: string | null | undefined, today: Date = new Date()): string {
+  const d = (shipDate ?? '').trim()
+  if (!d || d >= businessDate(today)) return ''
+  return `The requested ship date ${d} has passed. Pick a later date, or leave it blank.`
 }

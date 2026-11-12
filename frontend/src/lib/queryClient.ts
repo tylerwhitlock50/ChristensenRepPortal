@@ -1,6 +1,11 @@
 import { unref } from 'vue'
 import { MutationCache, QueryClient, type QueryKey } from '@tanstack/vue-query'
-import { READ_ONLY_ROLE_MESSAGE, isReadOnlyRoleError } from '@/lib/readOnlyRole'
+import {
+  READ_ONLY_ROLE_MESSAGE,
+  READ_ONLY_ROLE_ORIGINAL,
+  isReadOnlyRoleError,
+  readOnlyRoleOriginal,
+} from '@/lib/readOnlyRole'
 
 /**
  * Query key convention (TECH_STACK §2.3) — flat and explicit so invalidation
@@ -375,19 +380,31 @@ class RepPortalQueryClient extends QueryClient {
 }
 
 /**
- * Every write in the app is a mutation, and nearly every one shows its
- * failure as `error.message`. The read-only-role refusal (inside sales
+ * Nearly every write in the app is a mutation, and nearly every one shows
+ * its failure as `error.message`. The read-only-role refusal (inside sales
  * changing something outside orders, lib/readOnlyRole.ts) arrives as
- * 'read_only_role: inside sales can view <table> but not change it', so its
- * message is replaced here, once, before the error reaches whichever screen
- * caught it. Only the message changes: the code (42501) stays for anything
- * that reads it.
+ * 'read_only_role: inside sales can view <table> but not change it', so a
+ * mutation's message is replaced here, once, before the error reaches
+ * whichever screen caught it. The writes that run outside useMutation word
+ * it themselves: the visit queue (lib/submitQueue.ts) does; photo uploads
+ * (lib/photos.ts) show what Storage said.
+ *
+ * Nothing else is lost. The database's sentence is the only record of which
+ * table refused (details and hint are null), so it is logged, and kept on
+ * the error under READ_ONLY_ROLE_ORIGINAL, which isReadOnlyRoleError() still
+ * recognises after the rewrite. The code (42501) stays for anything that
+ * reads it.
  */
 const mutationCache = new MutationCache({
   onError: (error) => {
     if (!isReadOnlyRoleError(error)) return
+    const original = readOnlyRoleOriginal(error)
+    // A screen that should have been gated let this write through.
+    console.warn('[read-only role] write refused:', original)
     try {
-      ;(error as { message: string }).message = READ_ONLY_ROLE_MESSAGE
+      const e = error as unknown as Record<string, unknown>
+      if (typeof e[READ_ONLY_ROLE_ORIGINAL] !== 'string') e[READ_ONLY_ROLE_ORIGINAL] = original
+      e.message = READ_ONLY_ROLE_MESSAGE
     } catch {
       /* a frozen error keeps its own words */
     }

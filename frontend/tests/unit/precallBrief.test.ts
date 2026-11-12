@@ -132,6 +132,11 @@ t(
   lastOrderLine({ ...order, backlog_qty: 1 }, '2026-10-08'),
   'SO-88412 · $13,693 · 3 lines · their PO PO-1001 · 1 unit still open',
 )
+t(
+  'a PORTAL- reference (an order sent with no PO) is not their PO',
+  lastOrderLine({ ...order, customer_po_number: 'PORTAL-8124' }, '2026-10-08'),
+  'SO-88412 · $13,693 · 3 lines · 5 units still open',
+)
 t('no order yet → empty', lastOrderLine(null, '2026-10-08'), '')
 
 /* --------------------------------------------------------------- bought */

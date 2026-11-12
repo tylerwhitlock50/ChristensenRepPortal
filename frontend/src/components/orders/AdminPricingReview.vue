@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import { useRemoveOrderLine, useSetLinePrice, type OrderLineRow } from '@/composables/useOrders'
 import {
   FLAG_LABEL,
-  lineFlags,
+  needsPricingReview,
   parsePriceInput,
   pricingSummary,
+  reviewLines,
 } from '@/lib/adminPricing'
 import { moneyCents, shortDate } from '@/lib/format'
 import { rpcErrorText } from '@/lib/mcpOrders'
@@ -19,10 +20,16 @@ import { rpcErrorText } from '@/lib/mcpOrders'
  * listed with what to compare: the PO's item number and description beside
  * the part's, and the list / hand / last-paid prices.
  *
- * `editable` (an admin or inside sales, on a Claude-drafted draft) adds the
- * price overrides: set a price, or reset it to the list price. `canRemove`
- * adds Remove line beside them, which the database allows to fewer people
- * (the draft's owner or an admin). The database re-checks all of it.
+ * `editable` (whoever may price this draft: an admin, or inside sales on
+ * their own, lib/adminPricing.ts mayPriceOrder) adds the price overrides:
+ * set a price, or reset it to the list price. It also lists EVERY line, not
+ * only flagged ones, so a price can be set on a line at list price or put
+ * back on one reset by mistake; with nothing flagged the block is a plain
+ * price editor. `canRemove` (the draft's owner, whatever their role, or an
+ * admin: order_lines RLS) adds Remove line, and lists every line as well:
+ * the writer is closed to a hand-priced draft, so this block is the only
+ * place a rep who owns one can take off a line at list price. The price
+ * controls stay behind `editable`. The database re-checks all of it.
  *
  * Everything here goes by the line's id. The same part can be on two lines
  * at different prices (10 paid, 1 free), so a part number alone does not say
@@ -34,16 +41,19 @@ const props = withDefaults(
     reason: string | null | undefined
     editable: boolean
     canRemove?: boolean
+    /** Still a draft: the "before submitting" advice applies. */
+    isDraft?: boolean
   }>(),
-  { canRemove: false },
+  { canRemove: false, isDraft: true },
 )
 
+/** Something an action elsewhere on the page should know started here. */
+const emit = defineEmits<{ action: [] }>()
+
 const summary = computed(() => pricingSummary(props.lines))
-const flagged = computed(() =>
-  props.lines
-    .map((line) => ({ line, flags: lineFlags(line) }))
-    .filter((x) => x.flags.length > 0),
-)
+/** Anything flagged; without it the block is only the price editor. */
+const hasFindings = computed(() => needsPricingReview(props.lines))
+const rows = computed(() => reviewLines(props.lines, props.editable || props.canRemove))
 
 const setPrice = useSetLinePrice()
 const removeLine = useRemoveOrderLine()
@@ -57,6 +67,7 @@ const needsReason = computed(() => !props.reason)
 
 async function run(lineId: number, action: () => Promise<unknown>) {
   error.value = ''
+  emit('action')
   busyId.value = lineId
   try {
     await action()
@@ -67,6 +78,17 @@ async function run(lineId: number, action: () => Promise<unknown>) {
     busyId.value = null
   }
 }
+
+/** Cleared when another action starts, here or on the page. */
+function clearError() {
+  error.value = ''
+}
+defineExpose({ clearError })
+// A refetch after any change (here or elsewhere) makes an old refusal stale.
+watch(
+  () => props.lines,
+  () => clearError(),
+)
 
 function savePrice(line: OrderLineRow) {
   const price = parsePriceInput(drafts.value[line.id] ?? '')
@@ -84,15 +106,17 @@ function savePrice(line: OrderLineRow) {
   )
 }
 
-function resetToList(line: OrderLineRow) {
-  void run(line.id, () => setPrice.mutateAsync({ lineId: line.id, unitPrice: null }))
-}
-
 const money = (v: number | null | undefined) => (v == null ? '—' : moneyCents(Number(v)))
 
 /** "801-15025-01 (10 at $1,700.00)": which line, when a part is on two. */
 function lineLabel(line: OrderLineRow): string {
   return `${line.customer_part_ref || line.part_id} (${line.qty} at ${money(line.unit_price)})`
+}
+
+/** One click loses the hand price, so it asks first, naming the line and the price it gets. */
+function resetToList(line: OrderLineRow) {
+  if (!window.confirm(`Reset ${lineLabel(line)} to the list price ${money(line.list_unit_price)}?`)) return
+  void run(line.id, () => setPrice.mutateAsync({ lineId: line.id, unitPrice: null }))
 }
 
 function remove(line: OrderLineRow) {
@@ -103,10 +127,18 @@ function remove(line: OrderLineRow) {
 
 <template>
   <section
-    class="border-danger bg-surface space-y-3 border border-l-[6px] px-4 py-3"
-    aria-label="Hand pricing to review"
+    class="bg-surface space-y-3 border px-4 py-3"
+    :class="hasFindings ? 'border-danger border-l-[6px]' : 'border-line border-l-accent border-l-[3px]'"
+    :aria-label="hasFindings ? 'Hand pricing to review' : 'Prices'"
   >
-    <div>
+    <div v-if="!hasFindings">
+      <p class="u-label text-ink">Prices</p>
+      <p class="text-ink-2 text-[14px]">
+        Every line is at its list price. Set a price on a line to price it by hand<template
+          v-if="needsReason"> (the first one needs a reason)</template>.
+      </p>
+    </div>
+    <div v-else>
       <p class="text-danger text-[17px] font-bold">
         <template v-if="summary.unmatched">
           {{ summary.unmatched }} line{{ summary.unmatched === 1 ? '' : 's' }} match no part ·
@@ -119,8 +151,9 @@ function remove(line: OrderLineRow) {
         </template>
       </p>
       <p class="text-ink-2 text-[14px]">
-        Staged from the customer's PO as it was sent. Check every flagged line against the PO
-        before submitting<template v-if="summary.adminLines">; only an admin or inside sales can submit it</template>.
+        Staged from the customer's PO as it was sent.<template v-if="isDraft">
+          Check every flagged line against the PO before submitting<template v-if="summary.adminLines">;
+          an admin, or inside sales on their own order, submits it</template>.</template>
       </p>
       <p v-if="summary.adminLines" class="text-ink-2 mt-1 text-[14px]">
         <span class="u-label text-muted mr-2">Priced by hand</span>{{ money(summary.adminValue) }}
@@ -149,7 +182,7 @@ function remove(line: OrderLineRow) {
     <p v-if="error" role="alert" class="text-danger text-sm font-medium">{{ error }}</p>
 
     <ul class="divide-line border-line divide-y border-t">
-      <li v-for="{ line, flags } in flagged" :key="line.id" class="space-y-1.5 py-3">
+      <li v-for="{ line, flags } in rows" :key="line.id" class="space-y-1.5 py-3">
         <div class="flex flex-wrap items-center gap-2">
           <span class="text-ink font-semibold break-all">{{ line.part_id }}</span>
           <span class="text-muted text-[13px]">× {{ line.qty }}</span>
@@ -193,10 +226,10 @@ function remove(line: OrderLineRow) {
         </dl>
 
         <div
-          v-if="editable && (canRemove || !line.part_unresolved)"
+          v-if="(editable && !line.part_unresolved) || canRemove"
           class="flex flex-wrap items-center gap-2 pt-1"
         >
-          <template v-if="!line.part_unresolved">
+          <template v-if="editable && !line.part_unresolved">
             <input
               v-model="drafts[line.id]"
               inputmode="decimal"
