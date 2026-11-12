@@ -237,11 +237,12 @@ select pg_temp.assert(
   (select jsonb_array_length(public.order_ffl_context('ST-OTHER', array['ST-PART-1']) -> 'ship_tos') = 0),
   'order_ffl_context shows no ship-tos outside the rep''s book');
 
--- Order entry, which cannot read erp.dim_ship_to, sees the snapshot.
+-- Inside sales reads erp.dim_ship_to (every account since 20261113090000),
+-- and the order still carries its own snapshot.
 select pg_temp.become('entry');
 select pg_temp.assert(
-  (select count(*) from erp.dim_ship_to where customer_id = 'ST-CUST') = 0,
-  'order entry cannot read dim_ship_to');
+  (select count(*) from erp.dim_ship_to where customer_id = 'ST-CUST') > 0,
+  'inside sales reads dim_ship_to');
 select pg_temp.assert(
   (select ship_to_id from public.orders where id = (select id from t_ids where label = 'o1')) = 'NOFFL',
   'order entry reads the ship-to snapshot on the order');

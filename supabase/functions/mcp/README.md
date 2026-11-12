@@ -252,7 +252,32 @@ submits with the acknowledgement. In the portal an admin can set or reset a
 line's price (`admin_set_order_line_price`) or remove it; the order writer
 does not open such drafts (it would reprice them).
 
-**Who sees them.** All eight are listed and callable only when both hold;
+**Inside sales** (`profiles.role = 'order_entry'`, `20261113090000`). Inside
+sales reads every account (`my_customer_keys()` returns them all, so every read
+tool here answers for the whole company) and changes nothing outside orders
+(a trigger refuses the write with `read_only_role`). For orders they are
+treated like an admin: their create/update schemas take `unit_price` and
+`price_override_reason` (`can_price_orders()` in SQL), they may draft for any
+customer, and they may submit their own hand-priced drafts in the portal. A
+hand-priced order may carry the same part on two lines at different prices
+(10 paid and 1 at `unit_price: 0`).
+
+**No PO.** A customer PO is asked for every time. When the user says the
+customer gave none, `no_po_confirmed: true` saves the draft without one (a
+`no_customer_po` alert names the reference) and `submit_order` stamps
+`PORTAL-<order id>` as the PO, which is what the order loader writes to
+Visual's `CUSTOMER_PO_REF`.
+
+**Documents.** `attach_order_document` returns a one-time signed upload URL
+for the private `order-documents` bucket (objects are `<order id>/<file>`;
+storage RLS: whoever can read the order can read and add its documents). A
+tool call carries JSON, not files, so the client PUTs the bytes to that URL;
+a client that cannot make that request gives the user the portal link, where
+a file can be dropped on the order. `list_order_documents` returns names,
+sizes and 10-minute links. The order loader shows the same files to the
+person keying the order.
+
+**Who sees them.** All ten are listed and callable only when both hold;
 otherwise they are absent from `tools/list` and `tools/call` calls them
 unknown:
 
@@ -293,7 +318,7 @@ user said $1,485). `mcp_order_apply` refuses a create or update unless:
 | another active account the caller can see has the same name (`customer_name_key`) | `customer_confirmed: true` | `customer_confirmation_required` — the accounts |
 | more than one orderable ship-to | `ship_to_key` + `ship_to_confirmed: true` | `ship_to_confirmation_required` — ship-tos with FFL number, expiry, current |
 | every line, always (the server can't know which search a part came from) | `lines[].part_confirmed: true` | `part_confirmation_required` — per line, the part and its priced siblings (RH/LH/Ti…) |
-| always | `po_number` | `po_required` |
+| always, unless the user said the customer gave none | `po_number`, or `no_po_confirmed: true` | `po_confirmation_required` |
 
 The flags are the agent's claim that the user was asked, not proof — but a
 step can no longer be skipped by accident, and every refusal is logged.

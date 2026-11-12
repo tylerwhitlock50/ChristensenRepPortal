@@ -17,6 +17,10 @@ import {
   forbiddenKeysIn,
   type McpOrdersSetting,
   NEXT_STEP,
+  documentDisplayName,
+  isAdminCaller,
+  orderDocumentPath,
+  safeDocumentName,
   ORDER_TOOLS,
   ORDERING_INSTRUCTIONS,
   orderAccess,
@@ -682,14 +686,16 @@ Deno.test('status and list: scoped to the caller where "mine" matters', async ()
   Confirmations (20261112090000): enforced in SQL, surfaced here
 ============================================================================*/
 
-Deno.test('confirmations: schemas require the PO and part_confirmed', () => {
+Deno.test('confirmations: schemas ask for the PO (optional) and require part_confirmed', () => {
   for (const name of ['create_order_draft', 'update_order_draft']) {
     const schema = tool(name).inputSchema as {
       required: string[]
       properties: Record<string, { items?: { required: string[]; properties: Record<string, unknown> } }>
     }
-    assert(schema.required.includes('po_number'), `${name}: po_number required`)
-    for (const f of ['customer_confirmed', 'ship_to_confirmed', 'is_test']) {
+    // 20261113090000: the PO is asked for, not required (no_po_confirmed).
+    assert(!schema.required.includes('po_number'), `${name}: po_number not required`)
+    assert('po_number' in schema.properties, `${name}: po_number accepted`)
+    for (const f of ['customer_confirmed', 'ship_to_confirmed', 'is_test', 'no_po_confirmed']) {
       assert(f in schema.properties, `${name}: ${f} accepted`)
     }
     const line = schema.properties.lines.items!
@@ -743,6 +749,11 @@ Deno.test('confirmations: a refusal carries its choices, part choices labelled',
 
   const po = orderToolError({ message: "po_required: the customer's PO number is required" })
   assert(/never\s+invent one/.test(po.message), 'po_required → ask, never invent')
+  const noPo = orderToolError({ message: 'po_confirmation_required: no customer PO number was given' })
+  assert(
+    /no_po_confirmed: true/.test(noPo.message) && /Never invent/.test(noPo.message),
+    'po_confirmation_required → ask; no_po_confirmed only on the user\'s word',
+  )
   const acct = orderToolError({ message: 'customer_confirmation_required:ALS SPORT: 4 active accounts' })
   assert(/customer_confirmed: true/.test(acct.message), 'account guidance')
 })
@@ -758,4 +769,122 @@ Deno.test('confirmations: search items carry a label from the general list price
   }
   eq(res.items[0].label, 'LH · Ridgeline FFT · Carbon/Gray · 300 PRC · 22 in · $1,566.67', 'label')
   eq(partLabel({ part_id: 'X' }), 'X', 'nothing to say → the part id')
+})
+
+/*============================================================================
+  Inside sales, the optional PO and order documents (20261113090000)
+============================================================================*/
+
+const INSIDE = () => caller({ role: 'rep', realRole: 'order_entry', fullName: 'Inside Sales' })
+
+Deno.test('inside sales: priced like an admin, a rep is not', () => {
+  assert(isAdminCaller(INSIDE()), 'order_entry takes the pricing schemas')
+  assert(isAdminCaller(caller()), 'so does an admin')
+  assert(!isAdminCaller(REP()), 'a rep does not')
+  const create = toolsFor(INSIDE(), setting(true), true).find((t) => t.name === 'create_order_draft')!
+  const line = (create.inputSchema as { properties: { lines: { items: { properties: Record<string, unknown> } } } })
+    .properties.lines.items.properties
+  assert('unit_price' in line && 'customer_part_ref' in line, 'inside sales may send the PO price and item number')
+  const repCreate = toolsFor(REP(), setting(true), true).find((t) => t.name === 'create_order_draft')!
+  const repLine = (repCreate.inputSchema as { properties: { lines: { items: { properties: Record<string, unknown> } } } })
+    .properties.lines.items.properties
+  assert(!('unit_price' in repLine), 'a rep\'s schema has no unit_price')
+  assert(/Free goods/.test(ADMIN_ORDERING_INSTRUCTIONS), 'the pricing paragraph explains free goods lines')
+})
+
+Deno.test('optional PO: no_po_confirmed is forwarded, and only as a boolean', () => {
+  const base = {
+    idempotency_key: 'k-12345678',
+    customer_key: 'C100',
+    lines: [{ part_id: 'P1', qty: 1, part_confirmed: true }],
+  }
+  const p = draftPayload({ ...base, no_po_confirmed: true }, true)
+  eq(p.no_po_confirmed, true, 'forwarded')
+  assert(!('po_number' in p), 'no PO is sent')
+  assert(!('no_po_confirmed' in draftPayload({ ...base, no_po_confirmed: 'yes' }, true)), 'a non-boolean is dropped')
+  assert(/no_po_confirmed/.test(ORDERING_INSTRUCTIONS) && /PORTAL-/.test(ORDERING_INSTRUCTIONS),
+    'instructions explain the no-PO path')
+})
+
+Deno.test('order documents: object names', () => {
+  eq(safeDocumentName('PO 197065 (signed).pdf'), 'PO_197065_signed_.pdf', 'spaces and brackets become _')
+  eq(safeDocumentName('..\\..\\secret/../po.pdf'), 'po.pdf', 'only the last path segment is kept')
+  eq(safeDocumentName('...'), 'document', 'nothing usable: a default')
+  const long = safeDocumentName('a'.repeat(300) + '.xlsx')
+  assert(long.length === 120 && long.endsWith('.xlsx'), 'trimmed, extension kept')
+  eq(orderDocumentPath(4321, 'PO 1.pdf', 1700000000000), '4321/1700000000000-PO_1.pdf', 'order folder, timestamp, name')
+  eq(documentDisplayName('1700000000000-PO_1.pdf'), 'PO_1.pdf', 'the timestamp prefix is not shown')
+  eq(documentDisplayName('2024-report.pdf'), '2024-report.pdf', 'a short number is part of the name')
+})
+
+function withStorage(db: SupabaseClient, storage: Record<string, unknown>): SupabaseClient {
+  ;(db as unknown as { storage: unknown }).storage = { from: () => storage }
+  return db
+}
+
+Deno.test('attach_order_document: a signed upload URL for a readable order, audited', async () => {
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 4321, status: 'submitted' }] })
+  const signed: string[] = []
+  const db = withStorage(fake.db, {
+    createSignedUploadUrl: (name: string) => {
+      signed.push(name)
+      return Promise.resolve({ data: { signedUrl: 'https://x.test/upload?token=t', path: name }, error: null })
+    },
+  })
+  const out = (await tool('attach_order_document').handler(
+    { order_id: 4321, file_name: 'PO 197065.pdf' },
+    { db, caller: REP() },
+  )) as Record<string, unknown>
+  eq(out.upload_url, 'https://x.test/upload?token=t', 'the URL is returned')
+  assert(/^4321\/\d{13}-PO_197065\.pdf$/.test(signed[0]), `object name: ${signed[0]}`)
+  eq(out.object_name, signed[0], 'and reported')
+  const log = fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  eq([log.params.p_tool, log.params.p_outcome, log.params.p_order_id], ['attach_order_document', 'ok', 4321], 'audited')
+})
+
+Deno.test('attach_order_document: an order the caller cannot see gets no URL', async () => {
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [] })
+  let asked = false
+  const db = withStorage(fake.db, {
+    createSignedUploadUrl: () => {
+      asked = true
+      return Promise.resolve({ data: null, error: null })
+    },
+  })
+  let message = ''
+  try {
+    await tool('attach_order_document').handler({ order_id: 9, file_name: 'x.pdf' }, { db, caller: REP() })
+  } catch (e) {
+    message = (e as Error).message
+  }
+  assert(/No order 9 that you can see/.test(message), `refused: ${message}`)
+  assert(!asked, 'storage was never asked')
+})
+
+Deno.test('list_order_documents: names, sizes and short-lived links', async () => {
+  const fake = fakeDb({}, { orders: [{ id: 4321, status: 'draft' }] })
+  const db = withStorage(fake.db, {
+    list: (prefix: string) =>
+      Promise.resolve({
+        data: prefix === '4321'
+          ? [
+            { id: 'o1', name: '1700000000000-PO_1.pdf', created_at: '2026-11-13T15:00:00Z',
+              metadata: { size: 1234, mimetype: 'application/pdf' } },
+            { id: null, name: '.emptyFolderPlaceholder' },
+          ]
+          : [],
+        error: null,
+      }),
+    createSignedUrl: (name: string) =>
+      Promise.resolve({ data: { signedUrl: `https://x.test/get/${name}` }, error: null }),
+  })
+  const out = (await tool('list_order_documents').handler({ order_id: 4321 }, { db, caller: REP() })) as {
+    documents: Record<string, unknown>[]
+  }
+  eq(out.documents.length, 1, 'placeholders are not documents')
+  eq(
+    [out.documents[0].name, out.documents[0].size_bytes, out.documents[0].content_type, out.documents[0].url],
+    ['PO_1.pdf', 1234, 'application/pdf', 'https://x.test/get/4321/1700000000000-PO_1.pdf'],
+    'display name, size, type and link',
+  )
 })

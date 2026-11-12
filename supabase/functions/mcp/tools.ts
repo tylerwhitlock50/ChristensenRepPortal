@@ -285,7 +285,7 @@ const whoami: ToolDef = {
     return {
       user: compact({
         name: caller.fullName,
-        role: caller.role,
+        role: caller.realRole === 'order_entry' ? 'inside_sales' : caller.role,
         sales_rep_key: caller.salesRepKey,
         rep_group_vendor_id: caller.repGroupVendorId,
       }),
@@ -298,7 +298,10 @@ const whoami: ToolDef = {
       access_note:
         caller.role === 'admin'
           ? 'Admin: every account in the ERP is visible.'
-          : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
+          : caller.realRole === 'order_entry'
+            ? 'Inside sales: every account in the ERP is visible, read-only. Orders can be ' +
+              'drafted for any customer when order drafting is on.'
+            : 'Rep: only accounts assigned to you in the ERP, plus any explicit grants.',
       capabilities: compact({
         mcp_orders: orders?.mcp_orders ?? false,
         order_drafting: orders?.order_tools_listed

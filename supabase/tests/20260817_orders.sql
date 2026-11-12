@@ -193,8 +193,8 @@ select pg_temp.assert(
 
 select pg_temp.become('entry');
 select pg_temp.assert(
-  (select count(*) from public.orders where customer_key like 'OW-CUST-%') = 0,
-  'order entry does NOT see drafts');
+  (select count(*) from public.orders where customer_key like 'OW-CUST-%') >= 1,
+  'inside sales sees drafts too (every account since 20261113090000)');
 
 --------------------------------------------------------------------------
 -- 3. submit_order: owner-only, and the promo recompute is authoritative.

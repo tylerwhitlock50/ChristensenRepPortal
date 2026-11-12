@@ -93,6 +93,13 @@ language sql stable as $$
   )::uuid
 $$;
 
+/* auth.jwt(): the whole claims object. The order RPCs read app_metadata from
+   it (an MCP session carries provider = 'mcp' and its token id). */
+create or replace function auth.jwt() returns jsonb
+language sql stable as $$
+  select coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb)
+$$;
+
 --------------------------------------------------------------------------
 -- storage schema: 009 creates a bucket and policies over storage.objects.
 --------------------------------------------------------------------------
@@ -115,6 +122,10 @@ create table if not exists storage.objects (
     updated_at timestamptz default now(),
     metadata   jsonb
 );
+
+/* Supabase ships storage.objects with RLS on; without it the storage policies
+   (account photos, order documents) are never evaluated here. */
+alter table storage.objects enable row level security;
 
 /* Splits an object path into segments; the photo policies key on the first
    segment being the customer_key. */

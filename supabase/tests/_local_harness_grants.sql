@@ -24,6 +24,9 @@ grant usage on schema erp    to authenticated;
 -- calling role, so `authenticated` needs to reach it here too.
 grant usage on schema auth to authenticated, anon;
 grant execute on function auth.uid() to authenticated, anon;
+grant execute on function auth.jwt() to authenticated, anon;
+grant usage on schema storage to authenticated;
+grant select, insert, update, delete on all tables in schema storage to authenticated;
 
 grant select, insert, update, delete on all tables    in schema public to authenticated;
 grant usage, select                  on all sequences in schema public to authenticated;
