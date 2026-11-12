@@ -31,6 +31,10 @@ export interface OrderRow {
   customer_name: string
   customer_type: string | null
   status: OrderStatus
+  /**
+   * The customer's PO. Optional (20261113090000): submit_order() sets a blank
+   * one to PORTAL-<id>, so it is only ever null on a draft.
+   */
   po_number: string | null
   requested_ship_date: string | null
   notes: string | null
@@ -38,7 +42,7 @@ export interface OrderRow {
   ship_to_key: string | null
   ffl_license_number: string | null
   ffl_expires_on: string | null
-  /** Stamped by submit_order() — what order entry, which cannot read the ERP, works from. */
+  /** Stamped by submit_order() — the address as it was when the order was submitted, which is what inside sales keys. */
   ship_to_id: string | null
   ship_to_addr_no: number | null
   ship_to_name: string | null
@@ -99,9 +103,11 @@ export interface OrderLineRow {
   /** The unit price the user told Claude to expect; display only. */
   mcp_expected_unit_price: number | null
   /**
-   * Admin pricing (20261112120000), read-only here: a trigger refuses a
+   * Hand pricing (20261112120000), read-only here: a trigger refuses a
    * client write to any of them. Optional until the migration is live.
-   * 'admin' = priced by an admin (lib/adminPricing.ts has the rules).
+   * 'admin' = priced by hand, by an admin or inside sales
+   * (lib/adminPricing.ts has the rules). Such lines may repeat a part_id at
+   * different prices: identify a line by `id`.
    */
   price_source?: 'list' | 'admin'
   /** The published price when drafted; null = on no list for the account. */
@@ -137,14 +143,15 @@ export interface OrderDetail {
 // ---------------------------------------------------------------- reads
 
 /** Everything RLS lets the caller read — their own orders, plus the book's
- *  for a principal. Admin sees all; the views split by status client-side. */
+ *  for a principal. An admin sees all, and so does inside sales (every
+ *  account is on their book); the views split by status client-side. */
 export function useMyOrders() {
   const session = useSessionStore()
   return useQuery({
     queryKey: computed(() => qk.orders.list(session.user?.id ?? '')),
     enabled: computed(() => !!session.user),
     queryFn: async (): Promise<OrderRow[]> => {
-      // An admin's read is every order ever written, which outgrows
+      // An admin's (or inside sales') read is every order ever written, which outgrows
       // PostgREST's 1,000-row cap within a season — and the views split by
       // status client-side, so a silently truncated list loses old drafts
       // first. id breaks created_at ties so pages never overlap.
@@ -444,9 +451,11 @@ export function useResolveDiscrepancy() {
 }
 
 /**
- * Admin only: set a Claude-drafted line's price, or reset it to the
- * published price (unitPrice null). The database decides whether the line
- * stays admin-priced; a reason is required when the order has none yet.
+ * An admin or inside sales (can_price_orders()): set a Claude-drafted line's
+ * price, or reset it to the published price (unitPrice null). The database
+ * decides whether the line stays hand-priced; a reason is required when the
+ * order has none yet. The line is named by its id — the same part can be on
+ * two lines.
  */
 export function useSetLinePrice() {
   const qc = useQueryClient()
@@ -463,13 +472,26 @@ export function useSetLinePrice() {
   })
 }
 
-/** Remove one line from a draft (RLS: the owner, or an admin). */
+/**
+ * Remove one line from a draft, by line id. RLS lets the draft's owner or an
+ * admin do it — not inside sales on somebody else's draft — and a delete RLS
+ * filters out is not an error, it just removes nothing: hence the check.
+ */
 export function useRemoveOrderLine() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (lineId: number) => {
-      const { error } = await db.from('order_lines').delete().eq('id', lineId)
+      const { data, error } = await db
+        .from('order_lines')
+        .delete()
+        .eq('id', lineId)
+        .select('id')
       if (error) throw error
+      if (!data?.length) {
+        throw new Error(
+          "That line wasn't removed. Only the order's owner or an admin can remove a line from a draft.",
+        )
+      }
     },
     onSuccess: () => invalidateOrders(qc),
   })

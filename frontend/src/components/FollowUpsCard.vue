@@ -96,7 +96,7 @@ function taskAccount(task: Task): string {
 
     <AppCard :padded="false">
       <div class="border-line border-b p-4">
-        <TaskQuickAdd v-if="session.canWrite" placeholder="Remind me to…" />
+        <TaskQuickAdd v-if="session.canEditBook" placeholder="Remind me to…" />
       </div>
 
       <p v-if="taskError" role="alert" class="text-danger px-4 pt-3 text-sm font-medium">
@@ -125,7 +125,7 @@ function taskAccount(task: Task): string {
               class="flex items-start gap-3 py-3 first:pt-0 last:pb-0"
             >
               <button
-                v-if="session.canWrite"
+                v-if="session.canEditBook"
                 type="button"
                 class="tap-target border-line-2 flex w-12 shrink-0 items-center justify-center rounded-[2px] border"
                 :disabled="busyTaskId === task.id"

@@ -94,7 +94,23 @@ export const useSessionStore = defineStore('session', () => {
       : realRole.value,
   )
   const isAdmin = computed(() => role.value === 'admin')
+  /** Inside sales: profiles.role = 'order_entry' (public.is_order_entry()). */
   const isOrderEntry = computed(() => role.value === 'order_entry')
+
+  /**
+   * Inside sales reads every account (my_customer_keys() returns them all,
+   * 20261113090000) and works orders, and changes nothing else: a trigger on
+   * every other table refuses the write with 'read_only_role'. One role today;
+   * named for what it means so the screens don't each spell out the role.
+   */
+  const isReadOnlyRole = computed(() => isOrderEntry.value)
+
+  /**
+   * Mirrors public.can_price_orders(): an admin or inside sales may set an
+   * order line's price by hand and submit an order that has hand-priced
+   * lines (submit_order() still wants the order's owner, or an admin).
+   */
+  const canPriceOrders = computed(() => isAdmin.value || isOrderEntry.value)
 
   /**
    * The agency (erp vendor id) the EFFECTIVE user is principal of, or null.
@@ -130,6 +146,17 @@ export const useSessionStore = defineStore('session', () => {
   const canWrite = computed(
     () => isSignedIn.value && !isViewingAs.value && !isOffline.value,
   )
+
+  /**
+   * May change what a rep keeps on an account: notes, contacts, goals,
+   * visits and photos, logged calls, follow-ups, recommendations, call-list
+   * reactions, deactivations. canWrite, minus the read-only role.
+   *
+   * The Orders section, support questions, the Claude connection and the AI
+   * summaries stay on canWrite: inside sales works there, and the database
+   * leaves those tables out of the read-only trigger.
+   */
+  const canEditBook = computed(() => canWrite.value && !isReadOnlyRole.value)
 
   /**
    * Whether this identity may keep the ERP read cache on the device between
@@ -709,12 +736,15 @@ export const useSessionStore = defineStore('session', () => {
     role,
     isAdmin,
     isOrderEntry,
+    isReadOnlyRole,
+    canPriceOrders,
     repGroupVendorId,
     isPrincipal,
     realRole,
     isRealAdmin,
     isViewingAs,
     canWrite,
+    canEditBook,
     offlineSince,
     offlineHasCopy,
     isOffline,

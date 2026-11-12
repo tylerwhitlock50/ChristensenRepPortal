@@ -54,7 +54,7 @@ async function complete(task: Task) {
        to say so or it reads as "this account has none". -->
   <AppCard title="Your follow-ups here">
     <TaskQuickAdd
-      v-if="session.canWrite"
+      v-if="session.canEditBook"
       :customer-key="customerKey"
       placeholder="Remind me about this account…"
     />
@@ -85,7 +85,7 @@ async function complete(task: Task) {
             class="flex items-start gap-3 py-3 first:pt-0 last:pb-0"
           >
             <button
-              v-if="session.canWrite"
+              v-if="session.canEditBook"
               type="button"
               class="tap-target border-line-2 flex w-12 shrink-0 items-center justify-center rounded-[2px] border"
               :disabled="busyId === task.id"

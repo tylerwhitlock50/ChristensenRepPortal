@@ -180,7 +180,7 @@ function closedLabel(task: Task): string {
 
     <AppCard v-if="segment === 'open'">
       <TaskQuickAdd
-        v-if="session.canWrite"
+        v-if="session.canEditBook"
         placeholder="What do you need to remember?"
       />
     </AppCard>

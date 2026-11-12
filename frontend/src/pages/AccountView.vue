@@ -100,15 +100,18 @@ const flags = useFeatureFlags()
 /* The quick-action strip only offers chips whose target panels exist under
    the current flags. Summary is data-side and always available.
 
-   The other five each end in a write, so an admin viewing as a rep gets
-   none of them. The database would refuse anyway (20260816140000), but
-   refusing after someone has filled in a visit survey is not the same as
-   not offering it. Summary stays: it only scrolls, and while viewing as a
-   rep the card it lands on shows the cached brief without its Summarize
-   button. The link chips below write nothing either, and stay too. */
+   The other five each end in a write to the rep's side of the account, so
+   an admin viewing as a rep gets none of them, and neither does inside
+   sales (session.canEditBook). The database would refuse anyway
+   (20260816140000, 20261113090000), but refusing after someone has filled
+   in a visit survey is not the same as not offering it. Summary stays: it
+   only scrolls, and while viewing as a rep the card it lands on shows the
+   cached brief without its Summarize button. The link chips below write
+   nothing to the account either (New order is the Orders section, which
+   inside sales works in), and stay too. */
 const quickActions = computed<QuickAction[]>(() => {
   const list: QuickAction[] = ['summary']
-  if (!session.canWrite) return list
+  if (!session.canEditBook) return list
   if (flags.visits.value) list.push('visit', 'photo')
   if (flags.actionLogging.value) list.push('contact', 'note')
   if (flags.tasks.value) list.push('task')
@@ -722,7 +725,7 @@ watch(key, () => {
               </p>
               <p v-else class="text-canvas mt-1 text-sm">No buyer number on file</p>
               <button
-                v-if="session.canWrite"
+                v-if="session.canEditBook"
                 type="button"
                 class="tap-target font-label text-canvas mt-2 inline-flex items-center rounded-[2px] border border-[#4A4D44] px-3 text-[13px] font-semibold tracking-[0.1em] uppercase hover:border-canvas"
                 @click="addContact"
@@ -819,7 +822,10 @@ watch(key, () => {
             “{{ deactivation.note }}”
           </p>
         </div>
+        <!-- A write to the rep's side of the account: not for a read-only
+             viewer (view-as, offline, inside sales). -->
         <AppButton
+          v-if="session.canEditBook"
           variant="secondary"
           :loading="reactivate.isPending.value"
           @click="submitReactivation"
@@ -913,7 +919,7 @@ watch(key, () => {
 
     <!-- Log a contact — the 10-second path. The full survey is below it. -->
     <section
-      v-if="flags.actionLogging.value && session.canWrite"
+      v-if="flags.actionLogging.value && session.canEditBook"
       ref="logSection"
       class="scroll-mt-16"
     >
@@ -962,10 +968,11 @@ watch(key, () => {
     </section>
 
     <!-- Visit survey — the one green button on this view. Opens inline.
-         Hidden while viewing as a rep: the survey is the longest form in the
-         app, and the database refuses the insert at the end of it. -->
+         Hidden while viewing as a rep, and for inside sales: the survey is
+         the longest form in the app, and the database refuses the insert at
+         the end of it. -->
     <section
-      v-if="flags.visits.value && session.canWrite"
+      v-if="flags.visits.value && session.canEditBook"
       ref="surveySection"
       class="scroll-mt-16 space-y-3"
     >
@@ -1074,7 +1081,7 @@ watch(key, () => {
     <AppCard title="Notes">
       <!-- The notes themselves stay: reading what the rep has written on this
            account is most of the point of looking at it as them. -->
-      <form v-if="session.canWrite" class="mb-4" @submit.prevent="submitNote">
+      <form v-if="session.canEditBook" class="mb-4" @submit.prevent="submitNote">
         <label class="sr-only" for="note">Add a note</label>
         <textarea
           id="note"
@@ -1120,7 +1127,7 @@ watch(key, () => {
     <!-- Photos that aren't tied to a survey — an endcap on the way past.
          Upload-only, so it has nothing to show a read-only viewer. -->
     <section
-      v-if="flags.visits.value && session.canWrite"
+      v-if="flags.visits.value && session.canEditBook"
       ref="photoSection"
       class="scroll-mt-16"
     >
@@ -1166,9 +1173,15 @@ watch(key, () => {
     <!-- Deactivate — last on purpose: this is "I'm done with this account",
          not a daily action. Inline confirm with a required reason, never a
          modal (TECH_STACK §2.4). Hidden while already deactivated; the
-         banner at the top owns that state. -->
+         banner at the top owns that state. Not offered to a read-only
+         viewer (view-as, offline, inside sales): it is a write. -->
     <section
-      v-if="account.data.value && !deactivation && !deactivationQuery.isPending.value"
+      v-if="
+        session.canEditBook &&
+        account.data.value &&
+        !deactivation &&
+        !deactivationQuery.isPending.value
+      "
     >
       <div v-if="!deactivating">
         <AppButton variant="ghost" block @click="deactivating = true">

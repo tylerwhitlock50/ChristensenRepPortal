@@ -83,7 +83,7 @@ function onCall(row: CallListRow, contactLabel: string) {
 
 /* ---- reactions ---------------------------------------------------------- */
 
-const canReact = computed(() => session.canWrite && list.reactionsAvailable.value)
+const canReact = computed(() => session.canEditBook && list.reactionsAvailable.value)
 const menuFor = ref<CallListRow | null>(null)
 const showReasons = ref(false)
 const menuOpen = computed({

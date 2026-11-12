@@ -69,7 +69,7 @@ async function closeSearch(restoreFocus: boolean) {
 /* "/" opens it at a desk, the way most search boxes do — unless the rep is
    already typing somewhere else. */
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (open.value || session.isOrderEntry) return
+  if (open.value) return
   if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return
   const t = e.target as HTMLElement | null
   if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
@@ -81,10 +81,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown))
 </script>
 
 <template>
-  <!-- Not for the order-entry role: its book is empty by design (see the
-       nav in AppShell), so every search would come back blank. -->
+  <!-- For every role: inside sales (order_entry) reads every account, so
+       its searches have something to find. -->
   <button
-    v-if="!session.isOrderEntry"
     ref="trigger"
     type="button"
     class="tap-target grid min-w-11 place-items-center text-[#C9C5BB] hover:text-canvas"

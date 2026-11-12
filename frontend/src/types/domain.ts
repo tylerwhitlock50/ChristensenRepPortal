@@ -11,6 +11,17 @@
 export const ROLES = ['admin', 'rep', 'order_entry'] as const
 export type Role = (typeof ROLES)[number]
 
+/**
+ * What a role is called on screen. The stored value stays 'order_entry';
+ * since 20261113090000 the people holding it are inside sales: every account
+ * to read, orders to write, nothing else to change.
+ */
+export const ROLE_LABELS: Record<Role, string> = {
+  admin: 'Admin',
+  rep: 'Rep',
+  order_entry: 'Inside sales',
+}
+
 export const REC_STATUSES = ['open', 'acted', 'closed', 'dismissed'] as const
 export type RecStatus = (typeof REC_STATUSES)[number]
 

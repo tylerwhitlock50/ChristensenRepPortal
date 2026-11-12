@@ -23,7 +23,8 @@ import { useSessionStore } from '@/stores/session'
  * localStorage, because a phone that is short on memory may discard the tab
  * during a long call and reload it on return.
  *
- * Off unless the flag is on AND the user can write — view-as is read-only.
+ * Off unless the flag is on AND the user can write to the account —
+ * view-as is read-only, and so is inside sales outside orders.
  */
 
 /** How long after the tap an outcome is still worth asking for. */
@@ -137,7 +138,7 @@ export function useQuickCallLog() {
   const logAction = useLogAccountAction()
   const createTask = useCreateTask()
 
-  const enabled = computed(() => flags.quickLog.value && session.canWrite)
+  const enabled = computed(() => flags.quickLog.value && session.canEditBook)
   /** "Remind me next week" needs somewhere to put the reminder. */
   const remindAvailable = computed(() => flags.tasks.value)
 

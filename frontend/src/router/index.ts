@@ -1,6 +1,7 @@
 import {
   createRouter,
   createWebHistory,
+  START_LOCATION,
   type RouteLocationNormalized,
 } from 'vue-router'
 import { until } from '@vueuse/core'
@@ -359,9 +360,12 @@ function settingsForGuard() {
 /**
  * A featureAny key is open when its flag is on, except Claude order drafting,
  * which opens the Orders section only to a user it is for (a row in
- * public.mcp_order_users, or order entry). Hand entry (feature.orders) is open
- * to everyone it is on for. The own-row read is skipped when the flag is off
- * and fails closed on error (ensureOnMcpOrderList).
+ * public.mcp_order_users, or inside sales, who work the queue either way).
+ * Hand entry (feature.orders) is open to everyone it is on for. The own-row
+ * read is skipped when the flag is off and fails closed on error
+ * (ensureOnMcpOrderList). Inside sales can be on the allow-list like anyone
+ * else (20261113090000), so the row is read for them too: it is the same
+ * cached read useMcpOrders() makes, and what the Connect page words itself by.
  */
 async function featureOpen(
   settings: Awaited<ReturnType<typeof ensureSettings>>,
@@ -371,7 +375,7 @@ async function featureOpen(
   const session = useSessionStore()
   const mcpOrdersOn = isFeatureEnabled(settings, 'feature.mcp_orders')
   const userId = session.user?.id ?? null
-  const onList = mcpOrdersOn && !session.isOrderEntry ? await ensureOnMcpOrderList(userId) : false
+  const onList = mcpOrdersOn ? await ensureOnMcpOrderList(userId) : false
   return ordersSectionOpen({
     ordersOn: false,
     mcpOrdersOn,
@@ -380,7 +384,7 @@ async function featureOpen(
   })
 }
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
   if (to.name !== 'reset-password' && carriesRecoveryCredential(to)) {
     return {
       name: 'reset-password',
@@ -416,11 +420,16 @@ router.beforeEach(async (to) => {
     return session.isAdmin ? { name: 'admin-agencies' } : { name: 'overview' }
   }
 
-  // An order_entry user's book is empty by design, so the Overview is a
-  // blank page for them — the entry queue IS their app. Redirect only when
-  // the flag is on: with it off the queue route would bounce straight back
-  // here and loop.
-  if (to.name === 'overview' && session.isOrderEntry) {
+  // Inside sales (order_entry) reads every account (20261113090000), so the
+  // Overview is a real page for them and must stay reachable from the nav.
+  // Their day still starts in the entry queue, so ARRIVING at the root lands
+  // there: the app's first navigation (a cold open, a reload) or the one out
+  // of the sign-in screen. Any later navigation to the Overview — its tab,
+  // the wordmark — goes to the Overview. Redirect only when the Orders
+  // section is open to them: otherwise the queue route would bounce straight
+  // back here and loop.
+  const arriving = from === START_LOCATION || from.name === 'login'
+  if (to.name === 'overview' && session.isOrderEntry && arriving) {
     try {
       const settings = await settingsForGuard()
       // The same rule that opens the Orders section (featureAny below).

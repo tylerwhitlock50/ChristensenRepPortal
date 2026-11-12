@@ -9,6 +9,7 @@
  * What lives here only decides what the screen OFFERS, so a button is never
  * shown that the server will refuse.
  */
+import { READ_ONLY_ROLE_MESSAGE, isReadOnlyRoleError } from '@/lib/readOnlyRole'
 
 export type OrderSource = 'portal' | 'mcp' | 'inbox'
 
@@ -105,7 +106,8 @@ export function isMcpOrdersUserAllowed(
  * Whether the Orders section (list, detail, queue, draft editor) is open to
  * this user. Hand entry (feature.orders) opens it to everyone it is on for.
  * Claude drafting opens it only to someone it is FOR: a user on the
- * allow-list, or order entry, who processes the submitted orders.
+ * allow-list, or inside sales (order_entry), who processes the submitted
+ * orders whether or not they draft with Claude themselves.
  */
 export function ordersSectionOpen(opts: {
   ordersOn: boolean
@@ -179,6 +181,31 @@ export function submitOrderArgs(
   return { p_order_id: orderId, p_acknowledged: acknowledged === true }
 }
 
+/**
+ * A customer PO number is optional (20261113090000): submit_order() gives an
+ * order with a blank one the reference PORTAL-<order id>. This is that
+ * reference, the same text the server writes.
+ */
+export function portalPoReference(orderId: number): string {
+  return `PORTAL-${orderId}`
+}
+
+/**
+ * The muted line under a blank PO on a draft, or '' when there is a PO (or
+ * the order is past draft, where the stored po_number is already the
+ * reference). A draft not saved yet has no id to show.
+ */
+export function noPoHint(
+  poNumber: string | null | undefined,
+  orderId: number | null | undefined,
+  status: string | null | undefined = 'draft',
+): string {
+  if (status !== 'draft' || (poNumber ?? '').trim()) return ''
+  return orderId == null
+    ? "No customer PO: it will be submitted as PORTAL- plus this order's number."
+    : `No customer PO: it will be submitted as ${portalPoReference(orderId)}.`
+}
+
 /** mcp_warnings is jsonb written by the server; show only its strings. */
 export function warningList(raw: unknown): string[] {
   if (!Array.isArray(raw)) return []
@@ -223,10 +250,12 @@ export function emailSourceRef(raw: unknown): EmailSourceRef | null {
  * 'acknowledge_required: …', 'invalid_input:unknown_field:foo: …'). Split on
  * the FIRST ': ' (colon, space) after the code, the same rule as the MCP
  * edge function. The screen shows the human half; an unprefixed message
- * passes through.
+ * passes through. The read-only-role refusal names a table in its human
+ * half, so it gets its own sentence (lib/readOnlyRole.ts).
  */
 export function rpcErrorText(message: string | null | undefined): string {
   const m = (message ?? '').trim()
+  if (isReadOnlyRoleError(m)) return READ_ONLY_ROLE_MESSAGE
   const match = /^[a-z][a-z0-9_]*(?::\S.*?)?: (.+)$/s.exec(m)
   return match ? match[1].trim() : m
 }

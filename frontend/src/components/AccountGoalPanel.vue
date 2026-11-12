@@ -125,7 +125,7 @@ const setByLine = computed(() => {
     <div class="flex items-baseline justify-between gap-3">
       <h3 class="u-label text-ink">Goal · {{ year }}</h3>
       <button
-        v-if="!editing && goal && session.canWrite"
+        v-if="!editing && goal && session.canEditBook"
         type="button"
         class="tap-target text-ink-2 inline-flex min-w-11 items-center justify-center px-1 text-[13px] font-semibold underline underline-offset-2"
         @click="startEdit"
@@ -196,7 +196,7 @@ const setByLine = computed(() => {
           No goal set for {{ year }} — here or in the ERP.
         </template>
       </p>
-      <AppButton v-if="session.canWrite" class="mt-3" variant="secondary" @click="startEdit">
+      <AppButton v-if="session.canEditBook" class="mt-3" variant="secondary" @click="startEdit">
         Set a goal
       </AppButton>
     </template>

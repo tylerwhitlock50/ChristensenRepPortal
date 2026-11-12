@@ -1,13 +1,20 @@
 /**
- * Admin-priced and unmatched order lines (20261111170000) — the pure rules
- * the portal applies around them, unit tested in tests/unit/adminPricing.test.ts.
+ * Hand-priced ("admin-priced": price_source = 'admin') and unmatched order
+ * lines (20261111170000) — the pure rules the portal applies around them,
+ * unit tested in tests/unit/adminPricing.test.ts.
  *
- * An admin's Claude can stage a customer PO as it was sent: parts on no price
- * list, prices that are not the published price, even item numbers that match
- * no part. The database is the authority — submit_order() refuses unmatched
- * lines outright, and admin-priced ones unless an admin submits with the
- * acknowledgement; a trigger stops anyone writing those lines directly. What
- * lives here only decides what the screen SHOWS and OFFERS.
+ * An admin's or inside sales' Claude can stage a customer PO as it was sent:
+ * parts on no price list, prices that are not the published price, even item
+ * numbers that match no part. The database is the authority — submit_order()
+ * refuses unmatched lines outright, and hand-priced ones unless someone who
+ * may price orders (can_price_orders(): an admin or inside sales,
+ * 20261113090000) submits with the acknowledgement; a trigger stops anyone
+ * writing those lines directly. What lives here only decides what the screen
+ * SHOWS and OFFERS.
+ *
+ * A hand-priced order may carry the same part on two lines at different
+ * prices (10 paid and 1 free), so a line is always identified by its id,
+ * never by its part.
  */
 
 /** The line columns these rules read (a subset of OrderLineRow). */
@@ -116,16 +123,19 @@ export function blocksWriterEdit(lines: PricedLine[]): boolean {
 
 /**
  * Why Submit is not offered, in words, or '' when pricing allows it. Same
- * rules as submit_order(): unmatched lines never submit; admin-priced lines
- * need an admin (the acknowledgement is the review block's checkbox).
+ * rules as submit_order(): unmatched lines never submit; hand-priced lines
+ * need someone who may price orders — `canPriceOrders` is
+ * session.canPriceOrders, an admin or inside sales (the acknowledgement is
+ * the review block's checkbox). Who OWNS the order is a separate rule the
+ * page applies: submit_order() takes it only from its owner or an admin.
  */
-export function pricingSubmitBlock(lines: PricedLine[], isAdmin: boolean): string {
+export function pricingSubmitBlock(lines: PricedLine[], canPriceOrders: boolean): string {
   const s = pricingSummary(lines)
   if (s.unmatched > 0) {
     return `${s.unmatched} line${s.unmatched === 1 ? '' : 's'} match no part. Ask Claude to correct ${s.unmatched === 1 ? 'it' : 'them'}, or remove ${s.unmatched === 1 ? 'it' : 'them'}, before submitting.`
   }
-  if (s.adminLines > 0 && !isAdmin) {
-    return 'This order has admin-priced lines, so only an admin can submit it.'
+  if (s.adminLines > 0 && !canPriceOrders) {
+    return 'This order has hand-priced lines, so only an admin or inside sales can submit it.'
   }
   return ''
 }
