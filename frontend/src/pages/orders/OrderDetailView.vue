@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -213,10 +213,18 @@ const handTypedPricingNote = computed(
     viewerMayPrice.value,
 )
 
+/** Order details typed but not yet saved (or still saving): Submit waits for them. */
+const headerEditorBusy = ref(false)
+watch(orderId, () => {
+  headerEditorBusy.value = false
+})
+const HEADER_UNSAVED = 'Save or undo the changes under Order details first: Submit sends the saved details.'
+
 const canSubmit = computed(
   () =>
     canSubmitWithAck(order.value?.source, acknowledged.value, order.value?.is_test === true) &&
-    !pricingBlock.value,
+    !pricingBlock.value &&
+    !(showHeaderEditor.value && headerEditorBusy.value),
 )
 
 /**
@@ -257,6 +265,10 @@ const notYoursNote = computed(() => {
 async function onSubmit() {
   if (pricingBlock.value) {
     actionError.value = pricingBlock.value
+    return
+  }
+  if (showHeaderEditor.value && headerEditorBusy.value) {
+    actionError.value = HEADER_UNSAVED
     return
   }
   if (!canSubmit.value) {
@@ -431,7 +443,13 @@ const timeline = computed(() => {
       />
 
       <!-- The writer would reprice this draft: its details are edited here. -->
-      <OrderHeaderEditor v-if="showHeaderEditor" :order="order" :lines="lines" />
+      <OrderHeaderEditor
+        v-if="showHeaderEditor"
+        :key="order.id"
+        :order="order"
+        :lines="lines"
+        @busy="headerEditorBusy = $event"
+      />
 
       <!-- Claude-drafted: warnings, the source email, and the acknowledgement
            that gates Submit (right above the button, phone-first). -->
@@ -499,6 +517,13 @@ const timeline = computed(() => {
           >
             Submit
           </AppButton>
+          <p
+            v-if="showSubmit && showHeaderEditor && headerEditorBusy"
+            role="note"
+            class="text-muted w-full text-[13px]"
+          >
+            {{ HEADER_UNSAVED }}
+          </p>
         </template>
 
         <template v-if="order.status === 'submitted'">

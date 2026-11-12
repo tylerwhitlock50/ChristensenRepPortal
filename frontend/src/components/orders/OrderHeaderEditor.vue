@@ -67,11 +67,31 @@ watch(
   },
   { flush: 'sync' },
 )
+// Another order (the page can reuse this component): always start from its
+// stored values, so nothing typed for one order can be saved onto another.
+// The same order refetched: reload only while untouched.
 watch(
   () => [props.order.id, props.order.updated_at] as const,
-  () => {
-    if (!dirty.value) load(props.order)
+  ([id], prev) => {
+    if (prev && id !== prev[0]) {
+      error.value = ''
+      saved.value = false
+      load(props.order)
+    } else if (!dirty.value) {
+      load(props.order)
+    }
   },
+  { immediate: true },
+)
+
+/**
+ * Unsaved or still-saving details, for the page: Submit sends what is
+ * stored, so it waits until these are saved or undone.
+ */
+const emit = defineEmits<{ busy: [busy: boolean] }>()
+watch(
+  () => dirty.value || update.isPending.value,
+  (busy) => emit('busy', busy),
   { immediate: true },
 )
 
