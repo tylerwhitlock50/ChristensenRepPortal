@@ -9,6 +9,13 @@
   lists through each; a difference means someone edited one and not the
   other. The frontend's own rules are tested in
   frontend/tests/unit/contacts.test.ts — this file only checks the copy.
+
+  A THIRD copy, in SQL: public.order_contact_excluded
+  (20261114090000_mcp_large_order_fixes.sql) ports isBillingContact,
+  isInternalContact and tools.ts' invoice_email / statement_email rule, so
+  MCP order drafts never match a PO contact to a billing or internal
+  contact. Its parity cases are in supabase/tests/20261114_mcp_large_order.sql
+  section 4a. A rule change here needs the SQL change too.
 ============================================================================*/
 
 import * as copy from './contacts.ts'

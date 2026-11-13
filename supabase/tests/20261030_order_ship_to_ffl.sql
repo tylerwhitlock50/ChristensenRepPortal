@@ -150,8 +150,10 @@ select pg_temp.set('o1', $$ship_to_key = 'ST-OTHER|1'$$);
 select pg_temp.assert_fails(pg_temp.submit('o1'), '%not one of this account%', 'another account''s ship-to');
 
 select pg_temp.set('o1', $$ship_to_key = 'ST-CUST|CUST'$$);
-select pg_temp.assert_fails(pg_temp.submit('o1'), '%not one of this account%',
-  'the sold-to fallback row is not a ship-to (no SHIPTO_ID)');
+-- 20261114090000: the sold-to row is the account's main address, orderable
+-- only with feature.order_main_address_ship_to on (off here).
+select pg_temp.assert_fails(pg_temp.submit('o1'), '%main address cannot take an order%',
+  'the sold-to fallback row (main address) is refused while main-address orders are off');
 
 select pg_temp.set('o1', $$ship_to_key = 'ST-CUST|404'$$);
 select pg_temp.assert_fails(pg_temp.submit('o1'), '%not one of this account%', 'a ship-to that does not exist');

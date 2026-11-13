@@ -44,6 +44,7 @@ import {
   withOrdering,
 } from './orderTools.ts'
 import { getPrompt, listPrompts, PromptError } from './prompts.ts'
+import { BODY_TOO_LARGE_MESSAGE, declaredTooLarge, readBodyCapped } from './requestBody.ts'
 
 const SERVER_NAME = 'christensen-rep-portal'
 const SERVER_VERSION = '1.0.0'
@@ -319,9 +320,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
     )
   }
 
+  // After auth, as before: an unauthenticated caller cannot make this
+  // function buffer a large body (auth reads only headers).
+  if (declaredTooLarge(req)) {
+    return jsonResponse(rpcError(null, RPC.INVALID_REQUEST, BODY_TOO_LARGE_MESSAGE), 413)
+  }
   let body: unknown
   try {
-    body = await req.json()
+    const text = await readBodyCapped(req)
+    if (text === null) return jsonResponse(rpcError(null, RPC.INVALID_REQUEST, BODY_TOO_LARGE_MESSAGE), 413)
+    body = JSON.parse(text)
   } catch {
     return jsonResponse(rpcError(null, RPC.PARSE_ERROR, 'Request body must be valid JSON.'), 400)
   }
