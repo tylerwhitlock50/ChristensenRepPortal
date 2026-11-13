@@ -12,7 +12,13 @@ import { extractToken, jwtClaims, knownScopes, type McpCaller } from '../_shared
 import { describeTool, ToolError, TOOLS, type ToolDef } from './tools.ts'
 import {
   ADMIN_ORDERING_INSTRUCTIONS,
+  collapseWarnings,
   decoratePreview,
+  lineIssues,
+  alertLineIssues,
+  PRICE_EACH_RE,
+  STOCK_EACH_RE,
+  SUMMARY_MAX_ISSUE_LINES,
   draftPayload,
   forbiddenKeysIn,
   type McpOrdersSetting,
@@ -27,12 +33,13 @@ import {
   parseRpcError,
   partLabel,
   structuredDetail,
+  STATUS_COLUMNS,
   readMcpOrderListed,
   readMcpOrdersSetting,
   toolsFor,
   withOrdering,
 } from './orderTools.ts'
-import { documentDisplayName, orderDocumentPath, sanitizeDocumentName } from './orderDocuments.ts'
+import { documentDisplayName, orderDocumentPath, sanitizeDocumentName, sha256Hex } from './orderDocuments.ts'
 
 type Row = Record<string, unknown>
 
@@ -478,9 +485,71 @@ Deno.test('resolve_order_parts: forwards the items and summarises', async () => 
     p_customer_key: 'RSR GROU',
     p_items: [{ ref: 'CHR801-15025-01', description: 'EVOKE' }, { ref: '801-06145-00' }, { ref: 'NOPE' }],
   }, 'only ref/description forwarded')
-  eq(res.summary, { matched: 1, check_description: 1, ambiguous: 0, description_only: 0, unmatched: 1 }, 'summary')
+  eq(res.summary, {
+    matched: 1, check_description: 1, ambiguous: 0, description_only: 0, unmatched: 1,
+    not_searched: 0, upc_disagrees: 0, upc_not_found: 0, upc_only: 0,
+  }, 'summary')
   assert((res.guidance as string[]).some((g) => /descriptions/.test(g)), 'says to show both descriptions')
   assert(describeTool(tool('resolve_order_parts')).annotations.readOnlyHint === true, 'read-only')
+})
+
+Deno.test('resolve_order_parts: forwards a upc, a UPC-only item, and numbers as their digits', async () => {
+  const { db, rpcCalls } = fakeDb({ order_resolve_parts: ok({ items: [] }) })
+  await tool('resolve_order_parts').handler(
+    {
+      customer_key: 'SPOR SOU1',
+      items: [{ ref: '8010910900', upc: '840290543517' }, { upc: '840290545658' }, { ref: 8010910900, upc: 840290543517 }],
+    },
+    ctxFor(db),
+  )
+  eq(rpcCalls[0].params.p_items, [
+    { ref: '8010910900', upc: '840290543517' },
+    { upc: '840290545658' },
+    { ref: '8010910900', upc: '840290543517' },
+  ], 'upc forwarded; a numeric ref / upc is sent as its digits, not dropped')
+})
+
+Deno.test('resolve_order_parts: an item with no ref, upc or description is refused', async () => {
+  const { db, rpcCalls } = fakeDb({ order_resolve_parts: ok({ items: [] }) })
+  const err = await rejects(tool('resolve_order_parts').handler(
+    { customer_key: 'C1', items: [{ ref: 'A' }, { note: 'x' }] }, ctxFor(db)))
+  assert(err instanceof ToolError && /items\[1\]/.test(err.message), 'names the item')
+  eq(rpcCalls.length, 0, 'nothing sent')
+})
+
+Deno.test('resolve_order_parts: UPC disagreements, unknown UPCs and the description cap are surfaced', async () => {
+  const { db } = fakeDb({
+    order_resolve_parts: ok({
+      description_search_cap: 20,
+      items: [
+        { index: 0, ref: '8010910900', status: 'ambiguous', upc: '840290545658', upc_check: 'disagrees',
+          check_reasons: ['upc_disagrees'], candidates: [{ part_id: '801-09109-00' }, { part_id: '801-09130-00' }] },
+        { index: 1, ref: '8010910900', status: 'matched', upc: '899999999990', upc_check: 'not_found', candidates: [{ part_id: '801-09109-00' }] },
+        { index: 2, upc: '840290543517', status: 'matched', upc_check: 'upc_only', candidates: [{ part_id: '801-09109-00' }] },
+        { index: 3, ref: 'ZZZ', description: 'X', status: 'not_searched', description_search: 'skipped_over_cap', candidates: [] },
+      ],
+    }),
+  })
+  const res = (await tool('resolve_order_parts').handler(
+    { customer_key: 'C1', items: [{ ref: 'a' }, { ref: 'b' }, { upc: '840290543517' }, { ref: 'ZZZ', description: 'X' }] },
+    ctxFor(db),
+  )) as Row
+  const s = res.summary as Row
+  assert(s.upc_disagrees === 1 && s.upc_not_found === 1 && s.upc_only === 1 && s.not_searched === 1 && s.unmatched === 0,
+    `summary ${JSON.stringify(s)}`)
+  const g = (res.guidance as string[]).join(' | ')
+  assert(/UPC is a different part/.test(g), 'UPC disagreement guidance')
+  assert(/not on any part/.test(g), 'unknown UPC guidance')
+  assert(/smaller call/.test(g) && /first 20/.test(g), 'cap guidance')
+  assert(!/staged only by an admin/.test(g), 'not_searched is not called unmatched')
+})
+
+Deno.test('resolve_order_parts: the schema takes a upc and no longer requires ref', () => {
+  const schema = describeTool(tool('resolve_order_parts')).inputSchema as Row
+  const item = ((schema.properties as Row).items as Row).items as Row
+  const props = item.properties as Row
+  assert((props.upc as Row).maxLength === 20 && (props.upc as Row).type === 'string', 'upc, 20 chars')
+  assert(!(item.required as string[]).includes('ref'), 'ref optional')
 })
 
 Deno.test('forward: required inputs refused locally and logged', async () => {
@@ -538,6 +607,29 @@ Deno.test('errors: refusals become actionable text', () => {
   assert(/get_order_status|list_my_order_drafts/.test(crash.message), 'tells the model to check before retrying')
 })
 
+Deno.test('errors: possible_duplicate_erp points at the ERP order (lookup_order)', () => {
+  const msg = 'possible_duplicate_erp:EDI-00959: ERP order EDI-00959 (2026-11-12, Released, 194 lines) for this account already carries PO 215647; ask the user, then send allow_duplicate=true to draft anyway'
+  const p = parseRpcError(msg)
+  eq([p.code, p.detail], ['possible_duplicate_erp', 'EDI-00959'], 'code and the ERP order id')
+  const err = orderToolError({
+    message: msg,
+    details: '{"error":"possible_duplicate_erp","erp_orders":[{"erp_order_id":"EDI-00959","lines":194}]}',
+  })
+  assert(err.outcome === 'refused' && err.code === 'possible_duplicate_erp', 'refused')
+  assert(/lookup_order/.test(err.message) && /EDI-00959/.test(err.message), 'look the ERP order up by its id')
+  assert(/allow_duplicate: true/.test(err.message) && /Do NOT retry on your own/.test(err.message), 'ask first')
+  assert(!/get_order_status/.test(err.message), 'not get_order_status (portal ids only)')
+  assert(/"erp_orders":\[\{"erp_order_id":"EDI-00959"/.test(err.message), 'the ERP orders ride along')
+})
+
+Deno.test('instructions: both duplicate refusals and test drafts are explained', () => {
+  assert(ORDERING_INSTRUCTIONS.includes('possible_duplicate_erp'), 'names possible_duplicate_erp')
+  assert(/Test drafts are\s+checked too/.test(ORDERING_INSTRUCTIONS), 'test drafts are checked')
+  const draft = describeTool(tool('create_order_draft')).inputSchema as { properties: Record<string, { description?: string }> }
+  assert(/possible_duplicate_erp/.test(draft.properties.allow_duplicate.description ?? ''), 'allow_duplicate names the ERP refusal')
+  assert(/never blocks the real one/.test(draft.properties.is_test.description ?? ''), 'is_test: a rehearsal never blocks the real order')
+})
+
 /*============================================================================
   Logging
 ============================================================================*/
@@ -563,6 +655,15 @@ Deno.test('logging: refusal logs refused with the raw SQL text', async () => {
   assert(/allow_duplicate/.test(err.message), 'mapped')
   const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!.params
   eq([log.p_tool, log.p_outcome, log.p_error, log.p_order_id], ['update_order_draft', 'refused', 'possible_duplicate:4120: Same lines within 14 days.', 4321], 'log row')
+})
+
+Deno.test('logging: an ERP duplicate refusal logs refused with the raw SQL text', async () => {
+  const msg = 'possible_duplicate_erp:EDI-00959: ERP order EDI-00959 already carries PO 215647'
+  const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: raise(msg), mcp_log_call: ok(null) })
+  const err = await rejects(tool('create_order_draft').handler(GOOD_ARGS, ctxFor(db)))
+  assert(/lookup_order/.test(err.message), 'mapped')
+  const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!.params
+  eq([log.p_tool, log.p_outcome, log.p_error], ['create_order_draft', 'refused', msg], 'log row')
 })
 
 Deno.test('logging: an unexpected failure logs error', async () => {
@@ -661,6 +762,46 @@ Deno.test('context: contacts ranked, order keys exposed', async () => {
   eq(res.contacts.ranked.at(-1)?.name, 'Accounts Payable', 'billing last')
   eq(res.contacts.ranked.find((c) => c.name === 'Sam')?.customer_contact_key, undefined, 'rep-entered contact has no order key')
   eq(res.ship_tos[0], { ship_to_key: 'C100|1', orderable: true }, 'nulls stripped')
+})
+
+Deno.test('context: main address (20261114090000 shipto)', async () => {
+  const ctx = async (row: Row) => {
+    const { db } = fakeDb({ order_context: ok({ customer: { customer_key: 'C100' }, contacts: [], ...row }) })
+    return (await tool('get_order_context').handler({ customer_key: 'C100' }, ctxFor(db))) as {
+      note: string
+      ship_tos: Row[]
+    }
+  }
+  // Main-only account, flag on: the main address is the default.
+  const main = await ctx({
+    orderable: true, blockers: [],
+    ship_tos: [{ ship_to_key: 'C100|CUST', ship_to_id: null, kind: 'customer_address', orderable: true }],
+    default_ship_to_key: 'C100|CUST', main_address_orderable: true, ship_to_alerts: ['ship_to_main_address'],
+  })
+  assert(/main address/.test(main.note) && !/has to be added in the ERP/.test(main.note), 'main-only: ships to the main address')
+  eq(main.ship_tos[0], { ship_to_key: 'C100|CUST', kind: 'customer_address', orderable: true }, 'main row kept, null id stripped')
+  // Nothing orderable: the draft will be refused.
+  const none = await ctx({ orderable: false, blockers: ['no_orderable_ship_to'], ship_tos: [], main_address_orderable: false })
+  assert(/has to be added in the ERP/.test(none.note) && /create_order_draft will refuse/.test(none.note), 'none: will refuse')
+  // A main row is never counted as a ship-to: one ship-to + main = no question.
+  const both = await ctx({
+    orderable: true, blockers: [],
+    ship_tos: [{ ship_to_key: 'C100|1', kind: 'ship_to', orderable: true },
+               { ship_to_key: 'C100|CUST', kind: 'customer_address', orderable: true }],
+    default_ship_to_key: 'C100|1', main_address_orderable: true,
+  })
+  assert(!/Several orderable ship-tos/.test(both.note) && !/main address/.test(both.note), 'one ship-to + main: no question')
+
+  const p = parseRpcError('no_orderable_ship_to:TYLE WHIT: TYLE WHIT has no active ship-to address')
+  eq([p.code, p.detail], ['no_orderable_ship_to', 'TYLE WHIT'], 'no_orderable_ship_to parses')
+  const err = orderToolError({ message: 'no_orderable_ship_to:TYLE WHIT: TYLE WHIT has no active ship-to address' })
+  assert(err.outcome === 'refused' && /Nothing was saved/.test(err.message) && /ERP first/.test(err.message),
+    'no_orderable_ship_to: nothing saved, fix in the ERP')
+  const bad = orderToolError({ message: 'ship_to_invalid:C100|CUST: the account\'s main address cannot take an order' })
+  assert(/main address/.test(bad.message), 'ship_to_invalid mentions the main address')
+  const schema = tool('create_order_draft').inputSchema as { properties: Record<string, { description?: string }> }
+  assert(/\|CUST/.test(String(schema.properties.ship_to_key.description)), 'ship_to_key describes <customer_key>|CUST')
+  assert(/main \(sold-to\) address/.test(ORDERING_INSTRUCTIONS), 'instructions explain the main address')
 })
 
 Deno.test('preview: would_submit failure gets a portal hint', () => {
@@ -1091,11 +1232,258 @@ Deno.test('attach_order_document: a file type the bucket refuses gets no URL', a
   assert(err instanceof OrderToolError && /positive whole number/.test(err.message), 'a fractional order id is refused')
 })
 
-Deno.test('attach_order_document: the description says to use it only with a real HTTP PUT', () => {
+Deno.test('attach_order_document: the description and instructions offer the file inline first, the PUT for larger files', () => {
   const d = tool('attach_order_document').description
-  assert(/ONLY when you can make an HTTP PUT/.test(d) && /portal link/.test(d), 'only with a PUT, else the portal link')
-  assert(/Only if you can make an HTTP PUT/.test(ORDERING_INSTRUCTIONS) && /do not call it/.test(ORDERING_INSTRUCTIONS),
+  assert(/content_base64/.test(d) && /content_text/.test(d) && /5 MB/.test(d), 'inline first, 5 MB')
+  assert(/upload_url/.test(d) && /reach Storage/.test(d) && /portal link/.test(d), 'then the PUT (needs Storage), then the portal')
+  assert(!/cannot receive the file itself/.test(d), 'no longer says it cannot take the file')
+  assert(/`documents` on\s+create_order_draft/.test(ORDERING_INSTRUCTIONS) && /content_base64/.test(ORDERING_INSTRUCTIONS) &&
+    /not a retyped copy/.test(ORDERING_INSTRUCTIONS) && /reach\s+Storage/.test(ORDERING_INSTRUCTIONS) &&
+    /portal\s+link/.test(ORDERING_INSTRUCTIONS) && !/do not call it/.test(ORDERING_INSTRUCTIONS),
     'instructions agree')
+  const schema = tool('attach_order_document').inputSchema as { properties: Row; required: string[] }
+  assert('content_base64' in schema.properties && 'content_text' in schema.properties, 'schema takes the content')
+  eq(schema.required, ['order_id', 'file_name'], 'content stays optional')
+})
+
+/*----------------------------------------------------------------------------
+  Inline documents (finding 6): the file in the tool call
+----------------------------------------------------------------------------*/
+
+const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
+const MINI_PDF = new TextEncoder().encode('%PDF-1.7\n1 0 obj <<>> endobj\ntrailer <<>>\n%%EOF\n')
+const PO_CSV = 'H,215647,SPOR SOU1\nD,1,801-15005-01,2\nD,2,801-10909-00,1\n'
+
+type Upload = { name: string; body: unknown; opts: Row }
+
+/** A storage fake: list answers `listed`, upload records and answers `uploadError`. */
+function inlineStorage(
+  over: { listed?: Row[]; uploadError?: Row | null; listError?: Row | null; hashes?: Record<string, string> } = {},
+) {
+  const uploads: Upload[] = []
+  const storage = {
+    // info(): the object's own metadata, as uploadDocument wrote it (sha256).
+    info: (path: string) =>
+      Promise.resolve(
+        over.hashes && path in over.hashes
+          ? { data: { metadata: { source: 'mcp', sha256: over.hashes[path] } }, error: null }
+          : { data: null, error: { message: 'Object not found' } },
+      ),
+    list: () => Promise.resolve({ data: over.listError ? null : over.listed ?? [], error: over.listError ?? null }),
+    upload: (name: string, body: unknown, opts: Row) => {
+      uploads.push({ name, body, opts })
+      return Promise.resolve(over.uploadError ? { data: null, error: over.uploadError } : { data: { path: name }, error: null })
+    },
+    createSignedUploadUrl: () => {
+      throw new Error('the inline path never asks for an upload URL')
+    },
+  }
+  return { storage, uploads }
+}
+
+Deno.test('attach_order_document: content_base64 is stored by the call, under the caller, audited without the bytes', async () => {
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41, status: 'draft' }] })
+  const { storage, uploads } = inlineStorage()
+  const db = withStorage(fake.db, storage)
+  const out = (await tool('attach_order_document').handler(
+    { order_id: 41, file_name: 'PO 215647.pdf', content_base64: `data:application/pdf;base64,${b64(MINI_PDF)}` },
+    { db, caller: REP() },
+  )) as Row
+  eq(uploads.length, 1, 'one upload')
+  assert(/^41\/\d{13}-PO_215647\.pdf$/.test(uploads[0].name), `portal object name: ${uploads[0].name}`)
+  assert(uploads[0].body instanceof Uint8Array && (uploads[0].body as Uint8Array).length === MINI_PDF.length, 'raw bytes')
+  eq([uploads[0].opts.contentType, uploads[0].opts.upsert], ['application/pdf', false], 'declared type, no upsert')
+  eq((uploads[0].opts.metadata as Row).source, 'mcp', 'marked as sent through Claude')
+  eq([out.attached, out.name, out.size_bytes, 'upload_url' in out], [true, 'PO_215647.pdf', MINI_PDF.length, false], 'stored')
+  assert(/^[0-9a-f]{64}$/.test(String(out.sha256)) && /retyped/.test(String(out.note)), 'sha256 and the provenance note')
+  const log = fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  const args = log.params.p_args as Row
+  eq([log.params.p_outcome, args.object_name, args.bytes, args.sha256], ['ok', uploads[0].name, MINI_PDF.length, out.sha256],
+    'the audit names what was stored')
+  assert(!('content_base64' in args) && typeof args.content_base64_chars === 'number', 'only the length of the content')
+  assert(JSON.stringify(args).length < 1000, 'and stays small')
+})
+
+Deno.test('attach_order_document: content_text for a CSV; the same file again is not stored twice', async () => {
+  const bytes = new TextEncoder().encode(PO_CSV).length
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41, status: 'draft' }] })
+  const first = inlineStorage()
+  const out = (await tool('attach_order_document').handler(
+    { order_id: 41, file_name: 'po215647.csv', content_text: PO_CSV },
+    { db: withStorage(fake.db, first.storage), caller: REP() },
+  )) as Row
+  eq([first.uploads[0].opts.contentType, out.size_bytes], ['text/csv', bytes], 'text/csv, UTF-8 length')
+
+  const listed = [{ id: 'o1', name: '1700000000000-po215647.csv', created_at: 'x', metadata: { size: bytes, mimetype: 'text/csv' } }]
+  const again = inlineStorage({ listed, hashes: { '41/1700000000000-po215647.csv': String(out.sha256) } })
+  const fake2 = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41, status: 'draft' }] })
+  const res = (await tool('attach_order_document').handler(
+    { order_id: 41, file_name: 'po215647.csv', content_text: PO_CSV },
+    { db: withStorage(fake2.db, again.storage), caller: REP() },
+  )) as Row
+  eq([again.uploads.length, res.already_attached, res.object_name], [0, true, '41/1700000000000-po215647.csv'], 'a retry')
+
+  // Review fix: same name and size, different bytes (one qty 10 -> 12) is a
+  // revised PO, not a retry: it is stored. So is a same-size file whose hash
+  // can't be read (a portal upload).
+  const revised = PO_CSV.replace(/10/, '12')
+  assert(revised !== PO_CSV && new TextEncoder().encode(revised).length === bytes, 'the fixture changes one digit')
+  for (const hashes of [{ '41/1700000000000-po215647.csv': String(out.sha256) }, undefined]) {
+    const st = inlineStorage({ listed, hashes })
+    const fk = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41, status: 'draft' }] })
+    const r = (await tool('attach_order_document').handler(
+      { order_id: 41, file_name: 'po215647.csv', content_text: hashes ? revised : PO_CSV },
+      { db: withStorage(fk.db, st.storage), caller: REP() },
+    )) as Row
+    eq([st.uploads.length, r.already_attached ?? false], [1, false], hashes ? 'a revised file is stored' : 'no readable hash: stored')
+  }
+})
+
+Deno.test('attach_order_document: bad content is refused before any read; an RLS denial is a refusal', async () => {
+  const cases: [Row, RegExp, string][] = [
+    [{ file_name: 'po.pdf', content_base64: b64(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
+      /not a PDF/, 'content_mismatch'],
+    [{ file_name: 'po.pdf', content_text: '%PDF-1.7' }, /only for \.csv/, 'invalid_input'],
+    [{ file_name: 'po.pdf', content_base64: 'abc!' }, /not valid base64/, 'invalid_base64'],
+    [{ file_name: 'po.csv', content_text: 'a', content_base64: 'YQ==' }, /exactly one/, 'invalid_input'],
+  ]
+  for (const [extra, re, code] of cases) {
+    const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41 }] })
+    const { storage, uploads } = inlineStorage()
+    const err = await rejects(tool('attach_order_document').handler({ order_id: 41, ...extra }, { db: withStorage(fake.db, storage), caller: REP() }))
+    assert(err instanceof OrderToolError && err.outcome === 'refused' && err.code === code, `${code}: ${err.message}`)
+    assert(re.test(err.message) && /Nothing was attached/.test(err.message), `${code}: says what and that nothing happened`)
+    eq([uploads.length, fake.tableCalls.length], [0, 0], `${code}: nothing read or stored`)
+  }
+
+  // Storage's RLS answer: HTTP 400, the real code as a STRING statusCode.
+  const fake = fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41 }] })
+  const { storage } = inlineStorage({
+    uploadError: { statusCode: '403', status: 400, message: 'new row violates row-level security policy' },
+  })
+  const err = await rejects(tool('attach_order_document').handler(
+    { order_id: 41, file_name: 'po.csv', content_text: PO_CSV },
+    { db: withStorage(fake.db, storage), caller: REP() },
+  ))
+  assert(err instanceof OrderToolError && err.code === 'document_not_allowed', `denied: ${err.message}`)
+  eq(fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!.params.p_outcome, 'refused', 'logged as refused')
+  // The message alone is enough (statusCode may be missing).
+  const { storage: s2 } = inlineStorage({ uploadError: { message: 'new row violates row-level security policy' } })
+  const err2 = await rejects(tool('attach_order_document').handler(
+    { order_id: 41, file_name: 'po.csv', content_text: PO_CSV },
+    { db: withStorage(fakeDb({ mcp_log_call: ok(null) }, { orders: [{ id: 41 }] }).db, s2), caller: REP() },
+  ))
+  assert(err2 instanceof OrderToolError && err2.code === 'document_not_allowed', 'matched on the message')
+
+  // An order the caller cannot see: refused, nothing stored.
+  const hidden = fakeDb({ mcp_log_call: ok(null) }, { orders: [] })
+  const h = inlineStorage()
+  const err3 = await rejects(tool('attach_order_document').handler(
+    { order_id: 9, file_name: 'po.csv', content_text: PO_CSV },
+    { db: withStorage(hidden.db, h.storage), caller: REP() },
+  ))
+  assert(err3 instanceof OrderToolError && err3.code === 'order_not_found' && h.uploads.length === 0, 'order_not_found')
+})
+
+const DOC_ARGS = { ...GOOD_ARGS, idempotency_key: 'doc-key-0001' }
+
+Deno.test('create_order_draft: documents are stored after the draft is saved, never forwarded', async () => {
+  const order: string[] = []
+  const fake = fakeDb({
+    mcp_create_order_draft: (params) => (order.push('rpc'), { data: { ...PREVIEW, order_id: 41, _p: params.p }, error: null }),
+    mcp_log_call: ok(null),
+  })
+  const { storage, uploads } = inlineStorage()
+  const s = { ...storage, upload: (n: string, b: unknown, o: Row) => (order.push('upload'), storage.upload(n, b, o)) }
+  const res = (await tool('create_order_draft').handler(
+    { ...DOC_ARGS, documents: [{ file_name: 'po215647.csv', content_text: PO_CSV }] },
+    ctxFor(withStorage(fake.db, s)),
+  )) as Row
+  const call = fake.rpcCalls.find((c) => c.name === 'mcp_create_order_draft')!
+  assert(!('documents' in (call.params.p as Row)), 'documents never reach p')
+  eq(order, ['rpc', 'upload'], 'uploaded after the rpc')
+  eq(uploads[0].opts.contentType, 'text/csv', 'as text/csv')
+  const docs = res.documents as Row[]
+  eq([docs.length, docs[0].attached, docs[0].name], [1, true, 'po215647.csv'], 'reported on the preview')
+  const log = fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  const args = log.params.p_args as Row
+  assert(!JSON.stringify(args).includes('801-15005-01'), 'no document text in the audit')
+  eq(((args.documents as Row[])[0]).attached, true, 'the audit records the upload')
+})
+
+Deno.test('create_order_draft: a document that cannot be stored never blocks the draft; a replay finds it there', async () => {
+  const fake = fakeDb({ mcp_create_order_draft: ok({ ...PREVIEW, order_id: 41, warnings: ['TEST ORDER: x'] }), mcp_log_call: ok(null) })
+  const { storage } = inlineStorage({ uploadError: { statusCode: '500', message: 'storage unavailable' } })
+  const res = (await tool('create_order_draft').handler(
+    { ...DOC_ARGS, documents: [{ file_name: 'po.csv', content_text: PO_CSV }] },
+    ctxFor(withStorage(fake.db, storage)),
+  )) as Row
+  eq((res.documents as Row[])[0].attached, false, 'reported as not attached')
+  const ws = res.warnings as string[]
+  assert(ws.every((w) => typeof w === 'string') && ws.some((w) => /^document_not_attached: po\.csv: .*storage unavailable.*order_id 41/.test(w)),
+    `a string warning naming the file: ${JSON.stringify(ws)}`)
+  const log = fake.rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  eq([log.params.p_outcome, ((log.params.p_args as Row).documents as Row[])[0].attached], ['ok', false], 'the draft is ok')
+
+  const size = new TextEncoder().encode(PO_CSV).length
+  const replay = fakeDb({ mcp_create_order_draft: ok({ ...PREVIEW, order_id: 41, replayed: true }), mcp_log_call: ok(null) })
+  const again = inlineStorage({
+    listed: [{ id: 'o', name: '1700000000000-po.csv', metadata: { size } }],
+    hashes: { '41/1700000000000-po.csv': await sha256Hex(new TextEncoder().encode(PO_CSV)) },
+  })
+  const r2 = (await tool('create_order_draft').handler(
+    { ...DOC_ARGS, documents: [{ file_name: 'po.csv', content_text: PO_CSV }] },
+    ctxFor(withStorage(replay.db, again.storage)),
+  )) as Row
+  eq([again.uploads.length, (r2.documents as Row[])[0].already_attached], [0, true], 'not stored twice')
+})
+
+Deno.test('create_order_draft: bad, too many or too large documents are refused before the rpc', async () => {
+  const big = 'A'.repeat(Math.ceil((5 * 1024 * 1024 + 10) / 3) * 4)
+  const cases: [unknown, RegExp][] = [
+    [[{ file_name: 'po.pdf', content_base64: 'abc!' }], /documents\[0\] \(po\.pdf\): .*not valid base64/],
+    [Array.from({ length: 4 }, (_, i) => ({ file_name: `p${i}.csv`, content_text: 'x' })), /at most 3/],
+    [[{ file_name: 'a.csv', content_text: 'x' }, { file_name: 'b.pdf', content_base64: big }], /documents\[1\].*5 MB at most across all/],
+    [[{ file_name: 'scan.tif', content_base64: 'YQ==' }], /not a file type/],
+    [[{ file_name: 'po.csv' }], /exactly one of content_base64 or content_text/],
+    ['po.csv', /must be a list/],
+  ]
+  for (const [documents, re] of cases) {
+    const fake = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+    const err = await rejects(tool('create_order_draft').handler({ ...DOC_ARGS, documents }, ctxFor(withStorage(fake.db, inlineStorage().storage))))
+    assert(err instanceof OrderToolError && err.code === 'invalid_input' && re.test(err.message) && /Nothing was saved/.test(err.message),
+      `refused: ${err.message}`)
+    assert(!fake.rpcCalls.some((c) => c.name === 'mcp_create_order_draft'), 'the rpc was never called')
+  }
+  // A forbidden key is refused before any document is decoded.
+  const fake = fakeDb({ mcp_log_call: ok(null) })
+  const err = await rejects(tool('create_order_draft').handler(
+    { ...DOC_ARGS, ffl_number: '1-23', documents: [{ file_name: 'po.pdf', content_base64: 'abc!' }] }, ctxFor(fake.db)))
+  assert(/ffl_number/.test(err.message), 'forbidden key first')
+})
+
+Deno.test('update_order_draft: documents are refused, pointing at attach_order_document', async () => {
+  const fake = fakeDb({ mcp_update_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+  const err = await rejects(tool('update_order_draft').handler(
+    { ...GOOD_ARGS, order_id: 41, documents: [{ file_name: 'po.csv', content_text: 'x' }] }, ctxFor(fake.db)))
+  assert(err instanceof OrderToolError && err.code === 'invalid_input' && /attach_order_document \(order_id 41\)/.test(err.message),
+    err.message)
+  assert(!fake.rpcCalls.some((c) => c.name === 'mcp_update_order_draft'), 'nothing saved')
+  const upd = tool('update_order_draft').inputSchema as { properties: Row }
+  const crt = tool('create_order_draft').inputSchema as { properties: Row }
+  assert(!('documents' in upd.properties) && 'documents' in crt.properties, 'only create lists documents')
+})
+
+Deno.test('get_order_status: documents listed by name and size, never a link; a Storage failure never breaks it', async () => {
+  const tables = { orders: { id: 41, status: 'draft', source: 'mcp', po_number: '215647' }, order_lines: [], order_qc_results: [] }
+  const { storage } = inlineStorage({
+    listed: [{ id: 'o', name: '1700000000000-po.csv', created_at: '2026-11-14T10:00:00Z', metadata: { size: 49885, mimetype: 'text/csv' } }],
+  })
+  const res = (await tool('get_order_status').handler({ order_id: 41 }, ctxFor(withStorage(fakeDb({}, tables).db, storage)))) as Row
+  eq(res.documents, [{ name: 'po.csv', size_bytes: 49885, added_at: '2026-11-14T10:00:00Z' }], 'names and sizes')
+  const down = inlineStorage({ listError: { message: 'storage unavailable' } })
+  const r2 = (await tool('get_order_status').handler({ order_id: 41 }, ctxFor(withStorage(fakeDb({}, tables).db, down.storage)))) as Row
+  assert(r2.status === 'draft' && !('documents' in r2) && /storage unavailable/.test(String(r2.documents_error)), 'best effort')
 })
 
 Deno.test('list_order_documents: one signing request, per-document link errors, has_more', async () => {
@@ -1177,4 +1565,382 @@ Deno.test('list_order_documents: one signing request, per-document link errors, 
   const hidden = withStorage(fakeDb({}, { orders: [] }).db, {})
   const err = await rejects(tool('list_order_documents').handler({ order_id: 9 }, { db: hidden, caller: REP() }))
   assert(err instanceof OrderToolError && err.code === 'order_not_found', 'order_not_found')
+})
+
+/*----------------------------------------------------------------------------
+  PO contact and header fields (20261114090000, contact_header)
+----------------------------------------------------------------------------*/
+
+function thrown(fn: () => unknown): unknown {
+  try {
+    fn()
+  } catch (e) {
+    return e
+  }
+  return null
+}
+
+Deno.test('po header: contact and header fields are forwarded, numbers as text', () => {
+  const p = draftPayload({
+    ...GOOD_ARGS,
+    contact_email: ' buyer@d.test ',
+    contact_name: 'Pat Buyer',
+    contact_phone: 2085551212,
+    po_date: '2026-11-12',
+    cancel_date: '2026-12-31',
+    payment_terms: '2% 10/NET 30',
+    ship_via: 'BEST WAY',
+    vendor_number: 1167,
+    ship_to_location: 'BLDG1',
+    po_total: 833264.17,
+  }, true)
+  eq(
+    [p.contact_email, p.contact_name, p.contact_phone, p.po_date, p.cancel_date, p.payment_terms, p.ship_via,
+      p.vendor_number, p.ship_to_location, p.po_total],
+    ['buyer@d.test', 'Pat Buyer', '2085551212', '2026-11-12', '2026-12-31', '2% 10/NET 30', 'BEST WAY',
+      '1167', 'BLDG1', 833264.17],
+    'every header field, phone and vendor number as digits',
+  )
+  const plain = draftPayload({ ...GOOD_ARGS }, true)
+  for (const k of ['contact_email', 'po_date', 'po_total', 'customer_contact_key']) {
+    assert(!(k in plain), `${k} absent when not sent (kept on update)`)
+  }
+})
+
+Deno.test('po header: an explicit null is forwarded so an update can clear it', () => {
+  const p = draftPayload(
+    { ...GOOD_ARGS, payment_terms: null, po_total: null, cancel_date: null, customer_contact_key: null },
+    false,
+  )
+  eq([p.payment_terms, p.po_total, p.cancel_date, p.customer_contact_key], [null, null, null, null], 'nulls forwarded')
+  assert('payment_terms' in p && 'po_total' in p, 'as keys')
+  const err = thrown(() => draftPayload({ ...GOOD_ARGS, po_total: 'abc' }, true))
+  assert(err instanceof OrderToolError && err.code === 'invalid_input', 'po_total "abc" refused')
+})
+
+Deno.test('po header: lines forward buyer_part_number and upc; the audit keeps them', async () => {
+  const p = draftPayload({
+    ...GOOD_ARGS,
+    lines: [{ part_id: '801-09109-00', qty: 1, part_confirmed: true, buyer_part_number: 204665, upc: 840290543517 }],
+  }, true)
+  eq(
+    p.lines,
+    [{ part_id: '801-09109-00', qty: 1, part_confirmed: true, buyer_part_number: '204665', upc: '840290543517' }],
+    'numbers sent as their digits',
+  )
+  const tooLong = thrown(() =>
+    draftPayload({ ...GOOD_ARGS, lines: [{ part_id: 'X', qty: 1, upc: 12345678901234567 }] }, true)
+  )
+  assert(tooLong instanceof OrderToolError && /too long a number/.test(tooLong.message), 'a 17-digit numeric upc is refused')
+  eq(forbiddenKeysIn({ po_total: 1, lines: [{ upc: '1', buyer_part_number: '2' }] }), [], 'po_total and upc are not forbidden')
+
+  const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(PREVIEW), mcp_log_call: ok(null) })
+  await tool('create_order_draft').handler(
+    {
+      ...GOOD_ARGS,
+      contact_email: 'a@b.test',
+      lines: [{ part_id: 'X', qty: 1, part_confirmed: true, buyer_part_number: '204665', upc: '840290543517' }],
+    },
+    ctxFor(db, REP()),
+  )
+  const log = rpcCalls.find((c) => c.name === 'mcp_log_call')!
+  const line = ((log.params.p_args as Row).lines as Row[])[0]
+  eq([line.buyer_part_number, line.upc], ['204665', '840290543517'], 'audit keeps the line fields')
+  eq((log.params.p_args as Row).contact_email, 'a@b.test', 'and the header field')
+})
+
+Deno.test('po header: schemas list the fields, take null, and the descriptions name the alerts', () => {
+  for (const c of [caller(), REP()]) {
+    for (const name of ['create_order_draft', 'update_order_draft']) {
+      const schema = describeTool(toolsFor(c, setting(true), true).find((t) => t.name === name)!).inputSchema as Row
+      const props = schema.properties as Row
+      for (const k of ['contact_email', 'contact_name', 'contact_phone', 'po_date', 'cancel_date', 'payment_terms',
+        'ship_via', 'vendor_number', 'ship_to_location', 'po_total']) {
+        assert(k in props, `${name}: ${k}`)
+        const type = (props[k] as Row).type
+        assert(Array.isArray(type) && type.includes('null'), `${name}: ${k} accepts null`)
+        assert(!('format' in (props[k] as Row)), `${name}: ${k} has no format a client would enforce`)
+      }
+      assert(((props.customer_contact_key as Row).type as string[]).includes('null'), `${name}: customer_contact_key null`)
+      const line = ((props.lines as Row).items as Row).properties as Row
+      assert('buyer_part_number' in line && 'upc' in line, `${name}: line buyer_part_number and upc`)
+      eq(schema.additionalProperties, false, `${name}: still closed`)
+    }
+  }
+  const d = tool('create_order_draft').description
+  for (const a of ['contact_not_on_file', 'terms_mismatch', 'po_total_mismatch', 'cancel_date_passed']) {
+    assert(d.includes(a), `create description names ${a}`)
+  }
+  assert(/kept when left out/.test(tool('update_order_draft').description), 'update says the PO fields are kept')
+  assert(
+    /buyer_part_number/.test(ADMIN_ORDERING_INSTRUCTIONS) && /YYYY-MM-DD/.test(ADMIN_ORDERING_INSTRUCTIONS),
+    'the PO-staging instructions ask for the header fields, dates converted',
+  )
+})
+
+Deno.test('po header: get_order_status selects and compacts the new columns', async () => {
+  for (const c of ['po_cancel_date', 'po_total', 'po_contact_email', 'contact_source']) {
+    assert(STATUS_COLUMNS.includes(c), `STATUS_COLUMNS has ${c}`)
+  }
+  const { db, tableCalls } = fakeDb({}, {
+    orders: { id: 42, status: 'draft', source: 'mcp', po_number: 'PO-1', po_contact_email: 'pat@d.test', po_total: null },
+    order_lines: [{ part_id: 'X', qty: 1, upc: '840290543517', buyer_part_number: null }],
+    order_qc_results: [],
+  })
+  const res = (await tool('get_order_status').handler({ order_id: 42 }, ctxFor(db))) as Row
+  eq(res.po_contact_email, 'pat@d.test', 'header field returned')
+  assert(!('po_total' in res), 'null header field dropped')
+  const line = (res.lines as Row[])[0]
+  eq([line.upc, 'buyer_part_number' in line], ['840290543517', false], 'line upc kept, null dropped')
+  assert(tableCalls.find((t) => t.table === 'order_lines')!.columns.includes('upc'), 'order_lines selects upc')
+})
+
+Deno.test('po header: cancel_date_passed guidance', () => {
+  const err = orderToolError({ message: "cancel_date_passed: the PO's cancel date 2026-11-01 has passed" })
+  assert(/cancel date has passed/.test(err.message) && /Never clear it on your own/.test(err.message), 'hint')
+  const preview = decoratePreview({ ...PREVIEW, would_submit: { ok: false, error: 'cancel_date_passed: passed' } })
+  assert(/extended/.test(String((preview.would_submit as Row).hint)), 'would_submit hint')
+})
+
+/*============================================================================
+  Preview size (20261114090000 section 5): summary by default above 25
+  lines, trimmed lines, collapsed stock and price noise, paged status
+============================================================================*/
+
+const pad = (n: number) => String(n).padStart(4, '0')
+const DESC65 = 'RIDGELINE FFT 6.5 CREEDMOOR 22IN CARBON FIBER BARREL BLACK GRAY ST' // 65 chars
+
+/** One line shaped like live order 672's: hand-priced off list, short of stock. */
+function bigLine(i: number): Row {
+  return {
+    part_id: `P-${pad(i)}`, description: DESC65, qty: 2,
+    price_list_id: 199, price_list_name: 'Admin price (off list)', unit_price: 1450.0, discount_pct: 0,
+    effective_unit_price: 1450.0, line_total: 2900.0, expected_unit_price: null, price_source: 'admin',
+    list_unit_price: null, customer_part_ref: `80109${pad(i)}0`.slice(0, 10), customer_description: null,
+    part_unresolved: false, last_paid_price: 1450.0, last_paid_date: '2026-09-01', description_mismatch: null,
+    ats_qty: -3,
+  }
+}
+
+const HAND = 'HAND PRICING - CHECK EVERY FLAGGED LINE: ' + 'x'.repeat(440)
+const TEST_W = 'TEST ORDER: this draft was made as a test and cannot be submitted.'
+
+/** n lines as SQL returns them after section 5 (collapsed Stock, stock_short), or before it (legacy). */
+function bigPreview(n: number, legacy = false): Row {
+  const lines = Array.from({ length: n }, (_, k) => bigLine(k + 1))
+  const short = lines.slice(0, Math.max(0, n - 3)).map((l) => ({ part_id: l.part_id, ats_qty: -3, qty: 2 }))
+  const stockWarnings = legacy
+    ? short.map((p) => `Stock: ${p.part_id} has -3 available to sell; 2 ordered in all. Stock does not block the order.`)
+    : [`Stock: ${short.length} of ${n} parts are short (ordered more than available to sell; shown as available/ordered): ` +
+      short.slice(0, 10).map((p) => `${p.part_id} (-3/2)`).join(', ') + ` and ${short.length - 10} more. Stock does not block the order.`]
+  return {
+    ...PREVIEW,
+    order_id: 672,
+    portal_path: '/orders/672',
+    po_number: '215647',
+    ship_to: { ship_to_key: 'SPOR|1', ship_to_id: 'MAIN', name: 'Sports South', address: '1 Dist Way', city: 'Shreveport', state: 'LA', kind: 'ship_to', zip: '71106' },
+    admin_pricing: { lines: n, off_list: n, differs_from_list: 0, unmatched: 0, admin_value: n * 2900, below_list: 0, reason: 'distributor PO' },
+    lines,
+    total_amount: n * 2900,
+    alerts: [
+      { type: 'admin_pricing', severity: 'warning', lines: n, off_list: n, differs_from_list: 0, unmatched: 0, admin_value: n * 2900, below_list: 0, reason: 'distributor PO', message: 'Hand-priced lines: an admin, or inside sales on their own order, submits it after reviewing each flagged line.' },
+      { type: 'test_order', severity: 'hard', message: 'Test draft: it is labelled TEST in the portal and can never be submitted.' },
+    ],
+    warnings: [HAND, TEST_W, ...stockWarnings],
+    ...(legacy ? {} : { part_count: n, stock_short: short, inactive_parts: [] }),
+  }
+}
+
+const NOISE_KEYS = ['part_unresolved', 'description_mismatch', 'discount_pct', 'effective_unit_price', 'expected_unit_price',
+  'list_unit_price', 'last_paid_price', 'price_list_id', 'price_list_name', 'price_source']
+
+Deno.test('preview size: a 200-line create response is under 15,000 characters by default', async () => {
+  const { db, rpcCalls } = fakeDb({ mcp_create_order_draft: ok(bigPreview(200)), mcp_log_call: ok(null) })
+  const res = (await tool('create_order_draft').handler(GOOD_ARGS, ctxFor(db, caller()))) as Row
+  const size = JSON.stringify(res).length
+  assert(size < 15_000, `200 lines: ${size} characters`)
+  eq([res.preview_detail, (res.lines as Row[]).length, res.lines_omitted, res.issue_line_count, res.line_count],
+    ['summary', 0, 200, 0, 200], 'summary: no line has an issue, so none is listed')
+  const stock = res.stock_short as Row
+  eq([stock.count, stock.of_parts, (stock.parts as unknown[])[0]], [197, 200, ['P-0001', -3, 2]], 'stock_short tuples')
+  eq(res.line_defaults, { price_list_id: 199, price_list_name: 'Admin price (off list)', price_source: 'admin' }, 'hoisted')
+  eq([res.next, res.portal_path, res.order_id], [NEXT_STEP, '/orders/672', 672], 'next, portal path, order id kept')
+  assert(/Hand-priced lines and short stock are not listed/.test(String(res.note)), 'the note says hand pricing is not a line issue')
+  assert(!('part_count' in res) && !('inactive_parts' in res), 'SQL-only keys folded away')
+  const call = rpcCalls.find((c) => c.name === 'mcp_create_order_draft')!
+  assert(!('preview_detail' in (call.params.p as Row)), 'preview_detail never reaches the RPC')
+})
+
+Deno.test('preview size: a pre-migration 200-line preview (per-part Stock, no stock_short) is also under 15K', () => {
+  const out = decoratePreview(bigPreview(200, true))
+  const size = JSON.stringify(out).length
+  assert(size < 15_000, `legacy 200 lines: ${size} characters`)
+  const stock = (out.warnings as string[]).filter((w) => w.startsWith('Stock:'))
+  eq(stock.length, 1, 'one Stock sentence')
+  assert(/^Stock: 197 parts are short .*P-0010 \(-3\/2\) and 187 more\. Stock does not block the order\.$/.test(stock[0]), stock[0])
+  eq((out.warnings as string[]).slice(0, 2), [HAND, TEST_W], 'other warnings first, in order')
+  eq((out.stock_short as Row).count, 200, 'stock_short derived from the lines (every line here is short)')
+})
+
+Deno.test('preview summary: lines named only by upc_mismatch / buyer_part_conflict are listed (review fix)', () => {
+  const p = bigPreview(200)
+  const idx = Array.from({ length: 40 }, (_, k) => k * 5)
+  p.alerts = [
+    ...(p.alerts as Row[]),
+    { type: 'upc_mismatch', severity: 'warning', count: 40, lines: 'x'.repeat(600), line_indexes: idx },
+    { type: 'buyer_part_conflict', severity: 'warning', count: 1, lines: 'y', line_indexes: [3] },
+  ]
+  const out = decoratePreview(p)
+  eq(out.issue_line_count, 41, 'all 40 UPC lines and the customer-item line, past the 600-char text')
+  const first = (out.lines as Row[])[0]
+  assert((first.issues as string[]).includes('upc_mismatch'), `issues on line 0: ${JSON.stringify(first)}`)
+  assert(JSON.stringify(out).length < 15_000, `size: ${JSON.stringify(out).length}`)
+})
+
+Deno.test('preview size: 200 lines with 40 issues, and 200 price mismatches, stay under 15K', () => {
+  const p = bigPreview(200)
+  const lines = p.lines as Row[]
+  for (let i = 0; i < 40; i++) lines[i * 5] = { ...lines[i * 5], description_mismatch: true, customer_description: 'PO TEXT ' + DESC65 }
+  const out = decoratePreview(p)
+  assert(JSON.stringify(out).length < 15_000, `40 issues: ${JSON.stringify(out).length}`)
+  const shown = out.lines as Row[]
+  eq([shown.length, out.issue_line_count, out.lines_omitted], [SUMMARY_MAX_ISSUE_LINES, 40, 175], 'first 25 of 40 listed')
+  assert(shown.every((l) => Array.isArray(l.issues) && typeof l.line === 'number'), 'each with issues and line')
+  eq([shown[0].line, shown[1].line, shown[0].issues], [1, 6, ['description_check']], 'line numbers are positions')
+  assert(/first 25 shown/.test(String(out.note)), 'note')
+
+  // Every line with an expected price the list does not meet, in the
+  // pre-migration shape: one alert and one sentence per line.
+  const pm = bigPreview(200, true)
+  const pmLines = (pm.lines as Row[]).map((l): Row => ({
+    ...l, price_source: 'list', price_list_id: 7, price_list_name: 'Dealer', last_paid_price: null, expected_unit_price: 1400,
+  }))
+  pm.lines = pmLines
+  pm.alerts = [...(pm.alerts as Row[]), ...pmLines.map((l) => ({
+    type: 'price_mismatch', severity: 'warning', part_id: l.part_id, expected: 1400, list: 1450, effective: 1450, difference: 50, price_list: 'Dealer',
+  }))]
+  pm.warnings = [...(pm.warnings as string[]), ...pmLines.map((l) =>
+    `Price: the user expected $1,400.00 for ${l.part_id}; Dealer prices it at $1,450.00 (+$50.00 each). The draft keeps the list price: a different price is agreed outside the portal.`)]
+  const o2 = decoratePreview(pm)
+  const size = JSON.stringify(o2).length
+  assert(size < 15_000, `200 price mismatches: ${size} characters`)
+  const pmAlerts = (o2.alerts as Row[]).filter((a) => a.type === 'price_mismatch')
+  eq([pmAlerts.length, pmAlerts[0].count, (pmAlerts[0].parts as Row[]).length, pmAlerts[0].total_difference], [1, 200, 10, 20000], 'one alert')
+  const pw = (o2.warnings as string[]).filter((w) => w.startsWith('Price:'))
+  eq(pw.length, 1, 'one Price sentence')
+  assert(/^Price: on 200 lines .*P-0001 \(\$1,400\.00 expected, \$1,450\.00 here\).* and 190 more\./.test(pw[0]), pw[0])
+  eq((o2.lines as Row[]).length, SUMMARY_MAX_ISSUE_LINES, 'price_mismatch is a line issue; 25 listed')
+})
+
+Deno.test('preview: "full" trims per-line noise; 25 lines or fewer stay full by default', () => {
+  const out = decoratePreview(bigPreview(195), 'full')
+  const lines = out.lines as Row[]
+  eq(lines.length, 195, 'every line')
+  for (const k of NOISE_KEYS) assert(lines.every((l) => !(k in l)), `no line has ${k}`)
+  for (const k of ['line', 'part_id', 'qty', 'unit_price', 'line_total', 'ats_qty', 'customer_part_ref']) {
+    assert(lines.every((l) => k in l), `every line has ${k}`)
+  }
+  assert(JSON.stringify(out).length < 50_000, `full 195: ${JSON.stringify(out).length}`)
+
+  const small = decoratePreview(bigPreview(25))
+  eq([small.preview_detail, (small.lines as Row[]).length], ['full', 25], '25 lines: full by default')
+  eq(decoratePreview(bigPreview(26)).preview_detail, 'summary', '26 lines: summary')
+  eq((decoratePreview(bigPreview(30), 'full').lines as Row[]).length, 30, 'full asked for above 25')
+
+  const one = decoratePreview(PREVIEW)
+  assert(!('line_defaults' in one), 'one line: nothing hoisted')
+  eq(one.lines, [{ line: 1, part_id: 'CA-RIDGE-65', qty: 1, unit_price: 1899, line_total: 1899 }], 'one line kept whole')
+})
+
+Deno.test('preview: issues per line', () => {
+  const base = { part_id: 'A', qty: 1, unit_price: 90, effective_unit_price: 90, price_source: 'list' }
+  const none = new Set<string>()
+  eq(lineIssues({ ...base, part_unresolved: true }, none), ['unmatched'], 'unmatched')
+  eq(lineIssues({ ...base, description_mismatch: true }, none), ['description_check'], 'description')
+  eq(lineIssues({ ...base, expected_unit_price: 10, effective_unit_price: 12 }, none), ['price_mismatch'], 'price')
+  eq(lineIssues({ ...base, expected_unit_price: '90.00' }, none), [], 'an expected price met to the cent')
+  eq(lineIssues({ ...base, price_source: 'admin', list_unit_price: 100 }, none), ['differs_from_list'], 'list')
+  eq(lineIssues({ ...base, price_source: 'admin', last_paid_price: 80 }, none), ['differs_from_last_paid'], 'last paid')
+  eq(lineIssues(base, new Set(['A'])), ['inactive_part'], 'inactive')
+  eq(lineIssues(bigLine(1), none), [], 'hand-priced off list, paid before at this price, short of stock: no issue')
+  // Review fix: UPC / customer-item conflicts come from the alerts' line_indexes.
+  eq(lineIssues(base, none, ['upc_mismatch']), ['upc_mismatch'], 'flagged by an alert')
+  const m = alertLineIssues([
+    { type: 'upc_mismatch', line_indexes: [0, 2] },
+    { type: 'buyer_part_conflict', line_indexes: [2] },
+    { type: 'stock_short', line_indexes: [1] },
+  ])
+  eq([m.get(0), m.get(1), m.get(2)], [['upc_mismatch'], undefined, ['upc_mismatch', 'buyer_part_conflict']], 'indexed alerts only')
+})
+
+Deno.test('preview: stock_short derived from lines (per part) when SQL sent none; inactive_parts kept', () => {
+  const out = decoratePreview({
+    ...PREVIEW,
+    lines: [{ part_id: 'X', qty: 3, ats_qty: 5 }, { part_id: 'X', qty: 3, ats_qty: 5 }, { part_id: 'Y', qty: 1, ats_qty: 9 }],
+  })
+  eq((out.stock_short as Row).parts, [['X', 5, 6]], 'free goods: 3+3 against 5')
+  const sq = decoratePreview({ ...PREVIEW, inactive_parts: [{ part_id: 'CA-RIDGE-65', status: 'O' }], stock_short: [], part_count: 1 })
+  eq(sq.inactive_parts, [{ part_id: 'CA-RIDGE-65', status: 'O' }], 'inactive_parts passed through')
+  eq((sq.lines as Row[])[0].issues, ['inactive_part'], 'and flagged on the line')
+  assert(!('stock_short' in sq), 'nothing short: no stock_short')
+})
+
+Deno.test('collapseWarnings: legacy per-part Stock and per-line Price sentences, pinned to the SQL text', () => {
+  // The exact format strings mcp_order_preview writes (20261113090000; section 5 for up to 3).
+  const st = (p: string, a: string, q: number) => `Stock: ${p} has ${a} available to sell; ${q} ordered in all. Stock does not block the order.`
+  assert(STOCK_EACH_RE.test(st('801-09109-00', '-3', 2)) && STOCK_EACH_RE.test(st('PART WITH SPACE', 'no', 1)), 'regex')
+  assert(PRICE_EACH_RE.test('Price: the user expected $1,485.00 for CF-LH; CF Buy Group prices it at $1,566.67 (+$81.67 each). The draft keeps the list price: a different price is agreed outside the portal.'), 'price regex')
+  const three = [st('A', '1', 2), 'X', st('B', '1', 2), st('C', '1', 2)]
+  eq(collapseWarnings(three), three, '3 unchanged')
+  eq(collapseWarnings([st('A B', '1', 2), 'X', st('C', '-3', 2), st('D', 'no', 1), 'Y', st('E', '0', 4)]), [
+    'Stock: 4 parts are short (ordered more than available to sell; shown as available/ordered): A B (1/2), C (-3/2), D (no/1), E (0/4). Stock does not block the order.',
+    'X', 'Y',
+  ], '4 -> one at the first one\'s place; the same sentence SQL order_collapse_stock_warnings writes')
+  const twelve = collapseWarnings(Array.from({ length: 12 }, (_, i) => st(`P${i + 1}`, '1', 2))) as string[]
+  assert(twelve.length === 1 && / and 2 more\. Stock does not block the order\.$/.test(twelve[0]), twelve[0])
+  eq(collapseWarnings(null), null, 'non-array untouched')
+})
+
+Deno.test('forward: preview_detail is a schema field, never forwarded; update honours it', async () => {
+  for (const name of ['create_order_draft', 'update_order_draft']) {
+    const schema = tool(name).inputSchema as { properties: Record<string, { enum?: string[] }> }
+    eq(schema.properties.preview_detail?.enum, ['summary', 'full'], `${name} takes preview_detail`)
+  }
+  const { db, rpcCalls } = fakeDb({ mcp_update_order_draft: ok(bigPreview(10)), mcp_log_call: ok(null) })
+  const { idempotency_key: _k, ...upd } = GOOD_ARGS
+  const res = (await tool('update_order_draft').handler({ ...upd, order_id: 672, preview_detail: 'summary' }, ctxFor(db))) as Row
+  const call = rpcCalls.find((c) => c.name === 'mcp_update_order_draft')!
+  assert(!('preview_detail' in (call.params.p as Row)), 'not in p')
+  eq([res.preview_detail, (res.lines as Row[]).length, res.lines_omitted], ['summary', 0, 10], 'summary asked for on 10 lines')
+  eq(decoratePreview(bigPreview(10)).preview_detail, 'full', 'no detail: full at 10 lines')
+})
+
+Deno.test('get_order_status: lines paged and trimmed, stored warnings collapsed', async () => {
+  const lines = Array.from({ length: 120 }, (_, k) => {
+    const { price_list_name: _n, ats_qty: _a, last_paid_date: _d, ...l } = bigLine(k + 1)
+    return l
+  })
+  const legacy = Array.from({ length: 120 }, (_, k) =>
+    `Stock: P-${pad(k + 1)} has -3 available to sell; 2 ordered in all. Stock does not block the order.`)
+  const tables = {
+    orders: { id: 672, status: 'draft', source: 'mcp', po_number: '215647', mcp_warnings: [HAND, ...legacy] },
+    order_lines: lines,
+    order_qc_results: [],
+  }
+  const first = fakeDb({}, tables)
+  const a = (await tool('get_order_status').handler({ order_id: 672 }, ctxFor(first.db))) as Row
+  eq([(a.lines as Row[]).length, a.line_count, a.line_offset, a.has_more, a.next_line_offset, (a.lines as Row[])[0].line],
+    [50, 120, 0, true, 50, 1], 'first page of 50')
+  eq((a.mcp_warnings as string[]).length, 2, 'stored Stock sentences collapsed to one, HAND PRICING kept')
+  eq(a.line_defaults, { price_list_id: 199, price_source: 'admin' }, 'line_defaults order-wide')
+  for (const k of NOISE_KEYS) assert((a.lines as Row[]).every((l) => !(k in l)), `no line has ${k}`)
+  assert(first.tableCalls.find((t) => t.table === 'order_lines')!.columns.includes('expected_unit_price:mcp_expected_unit_price'),
+    'expected price aliased')
+
+  const b = (await tool('get_order_status').handler({ order_id: 672, line_offset: 100 }, ctxFor(fakeDb({}, tables).db))) as Row
+  eq([(b.lines as Row[]).length, b.has_more, 'next_line_offset' in b, (b.lines as Row[])[0].line], [20, false, false, 101], 'last page')
+  const c = (await tool('get_order_status').handler({ order_id: 672, line_limit: 500 }, ctxFor(fakeDb({}, tables).db))) as Row
+  eq((c.lines as Row[]).length, 120, 'line_limit capped at 300, so all 120 here')
+  const schema = tool('get_order_status').inputSchema as { properties: Record<string, unknown> }
+  assert('line_offset' in schema.properties && 'line_limit' in schema.properties, 'schema takes line_offset / line_limit')
 })
