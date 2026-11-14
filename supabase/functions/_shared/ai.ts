@@ -14,9 +14,11 @@
 
 import { HttpError } from './supabase.ts'
 
-export const MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-5-mini'
+export const MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-6-luna'
+// 'low', not 'minimal': gpt-6-luna 400s on 'minimal' (gpt-5-mini's floor).
+// OpenAI's GPT-6 migration guide says to start a 'minimal' caller at 'low'.
 export const REASONING_EFFORT =
-  Deno.env.get('OPENAI_REASONING_EFFORT') ?? 'minimal'
+  Deno.env.get('OPENAI_REASONING_EFFORT') ?? 'low'
 const MAX_COMPLETION_TOKENS = 2000
 const OPENAI_TIMEOUT_MS = 60_000
 
