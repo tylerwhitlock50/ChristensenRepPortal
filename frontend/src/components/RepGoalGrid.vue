@@ -13,16 +13,16 @@ import { ref } from 'vue'
 import DataGrid from '@/components/DataGrid.vue'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import {
   currentGoalYear,
   useRepGoalAttainment,
   type RepGoalAttainment,
 } from '@/composables/useAccountGoals'
 import { count, money } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 import type { ColumnDef } from '@tanstack/vue-table'
 
 const year = currentGoalYear()
@@ -30,6 +30,8 @@ const reps = useRepGoalAttainment()
 
 const search = ref('')
 const visibleRows = ref<RepGoalAttainment[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
 
 function rowId(row: RepGoalAttainment) {
   return row.user_id ?? row.full_name ?? ''
@@ -63,34 +65,73 @@ const columns: ColumnDef<RepGoalAttainment, any>[] = [
   },
 ]
 
-function onExport() {
-  const csvColumns: CsvColumn<RepGoalAttainment>[] = [
-    { key: 'full_name', header: 'Rep' },
-    { key: 'assigned_accounts', header: 'Assigned Accounts' },
-    { key: 'accounts_with_goal', header: 'Accounts With Goal' },
-    { key: 'target_total', header: `${year} Goal Total` },
-    { key: 'revenue_total', header: `${year} Revenue To Date` },
-    { key: 'attainment_pct', header: 'Percent Of Goal' },
-    { key: 'expected_pct', header: 'Percent Expected By Now' },
-    { key: 'accounts_behind', header: 'Accounts Behind Pace' },
-    { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
-  ]
-  exportCsv('rep-goal-attainment', visibleRows.value, csvColumns)
+/* ---- Download: the rows on screen, in screen order. */
+
+/**
+ * The view's percents are 0–100; Excel's % format wants a fraction. A rep
+ * with no goals is blank, as the screen shows '—' rather than 0%.
+ */
+function goalFraction(row: RepGoalAttainment, pct: number | null): number | null {
+  return row.accounts_with_goal > 0 ? (pct ?? 0) / 100 : null
 }
+
+const exportColumns: ExportColumn<RepGoalAttainment>[] = [
+  { key: 'full_name', header: 'Rep' },
+  { key: 'accounts_with_goal', header: 'Goals set', type: 'integer' },
+  { key: 'assigned_accounts', header: 'Assigned accounts', type: 'integer' },
+  { key: 'target_total', header: `${year} target`, type: 'money' },
+  { key: 'revenue_total', header: 'Actual (invoiced)', type: 'money' },
+  {
+    key: 'attainment_pct',
+    header: '% of goal',
+    type: 'percent',
+    format: (row) => goalFraction(row, row.attainment_pct),
+  },
+  {
+    key: 'expected_pct',
+    header: 'Expected by now %',
+    type: 'percent',
+    format: (row) => goalFraction(row, row.expected_pct),
+  },
+  {
+    // The progress bar's on-track state, in words.
+    key: 'on_pace',
+    header: 'On pace',
+    format: (row) =>
+      row.accounts_with_goal > 0
+        ? (row.attainment_pct ?? 0) >= (row.expected_pct ?? 0)
+          ? 'Yes'
+          : 'No'
+        : null,
+  },
+  { key: 'accounts_behind', header: 'Accounts behind pace', type: 'integer' },
+  { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
+]
+
+const EXPORT_DESCRIPTION =
+  `Each rep's ${year} account goals added up, against revenue invoiced so far. ` +
+  'Expected by now = where those goals should be today on pace (seasonal where the ' +
+  'account has last-year history); Accounts behind pace counts accounts under it.'
 </script>
 
 <template>
   <AppCard>
     <template #header>
-      <div>
+      <div class="min-w-0">
         <h2 class="u-label text-ink">Goals by rep · {{ year }}</h2>
         <p class="text-muted mt-1 text-[13px]">
           Rep-entered goals, against revenue booked so far
         </p>
       </div>
-      <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-        Export CSV
-      </AppButton>
+      <ExportMenu
+        :rows="visibleRows"
+        :columns="exportColumns"
+        :title="`Goals by rep — ${year}`"
+        :filename="`rep-goal-attainment-${year}`"
+        :description="EXPORT_DESCRIPTION"
+        :details="gridFilters"
+        sheet-name="Goals by rep"
+      />
     </template>
 
     <AsyncState
@@ -114,6 +155,7 @@ function onExport() {
         :get-row-id="rowId"
         min-width="44rem"
         @rows-change="visibleRows = $event"
+        @filters-change="gridFilters = $event"
       >
         <template #cell-full_name="{ row }">
           <span class="text-ink font-semibold">{{ row.full_name ?? '—' }}</span>

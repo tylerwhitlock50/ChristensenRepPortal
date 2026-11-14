@@ -9,13 +9,15 @@ import {
   useGlobalProductSales,
   type GlobalSkuRow,
 } from '@/composables/useIntel'
+import { useDataFreshness } from '@/composables/useDataFreshness'
 import DataGrid from '@/components/DataGrid.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
-import { count, share } from '@/lib/format'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
+import type { ExportColumn } from '@/lib/xlsx'
+import { exportTimestamp } from '@/lib/download'
+import { count, share, shortDate } from '@/lib/format'
 
 /**
  * Global intel — company-wide best sellers, top chamberings, family mix.
@@ -68,23 +70,51 @@ const columns: ColumnDef<GlobalSkuRow, any>[] = [
 ]
 
 const visible = ref<GlobalSkuRow[]>([])
-const csvColumns: CsvColumn<GlobalSkuRow>[] = [
-  { key: 'part_id', header: 'SKU' },
+/** The grid's search box, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
+/* A window with no sales unmounts the grid, and `visible` keeps the last
+   window's rows: nothing on screen then, so nothing to download. */
+const exportRows = computed(() => (rows.value.length ? visible.value : []))
+const exportColumns: ExportColumn<GlobalSkuRow>[] = [
+  { key: 'part_id', header: 'SKU', type: 'text' },
   { key: 'part_description', header: 'Description' },
-  { key: 'product_code', header: 'Product code' },
+  // "Product line", the name the other tabs' files and Tableau's Family use.
+  { key: 'product_code', header: 'Product line', type: 'text' },
   { key: 'product_family', header: 'Family' },
   { key: 'chambering', header: 'Chambering' },
-  { key: 'qty', header: 'Units' },
+  { key: 'barrel_length', header: 'Barrel', type: 'text' },
+  { key: 'qty', header: 'Units', type: 'number' },
+  // unitShare() is already a 0–1 fraction, which is what 'percent' wants.
   {
-    key: 'unit_share_pct',
-    header: 'Unit share %',
-    format: (r) => {
-      const s = unitShare(r.qty)
-      return s == null ? null : Number((s * 100).toFixed(2))
-    },
+    key: 'unit_share',
+    header: 'Mix (share of units)',
+    type: 'percent',
+    format: (r) => unitShare(r.qty),
   },
-  { key: 'account_count', header: 'Dealer count' },
+  { key: 'account_count', header: 'Dealers', type: 'integer' },
 ]
+
+/* What the downloaded sheet says about itself: the window, the toggles,
+   and what "Mix" is a share of. */
+const { loadedAt, dataThrough } = useDataFreshness()
+const exportTitle = computed(() => `Company best sellers — last ${months.value} months`)
+const exportFilenamePrefix = computed(() => `global-best-sellers-${months.value}m`)
+const exportDescription = computed(
+  () =>
+    'Company-wide units invoiced by SKU, every territory aggregated — no dollars, no ' +
+    `account detail. Mix is each SKU's share of all ${gunsOnly.value ? 'gun ' : ''}units ` +
+    'invoiced in the window, including SKUs the dealer filter or search hides.',
+)
+const exportDetails = computed(() => [
+  dataThrough.value && `Invoiced through ${shortDate(dataThrough.value)}`,
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  `Window: last ${months.value} months`,
+  gunsOnly.value ? 'Guns only (parts and accessories hidden)' : 'Guns, parts and accessories',
+  excludeSmus.value
+    ? `${BEST_SELLER_MIN_DEALERS}+ dealers only (SMUs and dealer exclusives hidden)`
+    : `Includes SKUs bought by fewer than ${BEST_SELLER_MIN_DEALERS} dealers`,
+  ...gridFilters.value,
+])
 </script>
 
 <template>
@@ -168,27 +198,32 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
 
       <AppCard :padded="false" class="mt-4">
         <template #header>
-          <h2 class="u-label text-ink">Best sellers</h2>
-          <label
-            class="tap-target ml-auto flex items-center gap-2"
-            :title="`Hide SKUs bought by fewer than ${BEST_SELLER_MIN_DEALERS} dealers (SMUs / dealer exclusives)`"
-          >
-            <input
-              v-model="excludeSmus"
-              type="checkbox"
-              class="size-5 shrink-0 rounded border-line-2"
+          <h2 class="u-label text-ink min-w-0 truncate">Best sellers</h2>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <label
+              class="tap-target flex items-center gap-2"
+              :title="`Hide SKUs bought by fewer than ${BEST_SELLER_MIN_DEALERS} dealers (SMUs / dealer exclusives)`"
+            >
+              <input
+                v-model="excludeSmus"
+                type="checkbox"
+                class="size-5 shrink-0 rounded border-line-2"
+              />
+              <span class="text-ink-2 text-sm font-medium">
+                {{ BEST_SELLER_MIN_DEALERS }}+ dealers
+              </span>
+            </label>
+            <ExportMenu
+              :rows="exportRows"
+              :columns="exportColumns"
+              :title="exportTitle"
+              :filename="exportFilenamePrefix"
+              :description="exportDescription"
+              :details="exportDetails"
+              sheet-name="Best sellers"
+              :disabled="query.isPlaceholderData.value"
             />
-            <span class="text-ink-2 text-sm font-medium">
-              {{ BEST_SELLER_MIN_DEALERS }}+ dealers
-            </span>
-          </label>
-          <AppButton
-            variant="ghost"
-            :disabled="visible.length === 0"
-            @click="exportCsv('global-best-sellers', visible, csvColumns)"
-          >
-            Export CSV
-          </AppButton>
+          </div>
         </template>
         <DataGrid
           :columns="columns"
@@ -200,6 +235,7 @@ const csvColumns: CsvColumn<GlobalSkuRow>[] = [
           :get-row-id="(r: GlobalSkuRow) => r.part_key"
           class="p-3"
           @rows-change="visible = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-qty="{ row }">
             <span class="tabular-nums">{{ count(row.qty) }}</span>

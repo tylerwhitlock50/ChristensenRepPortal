@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { pivotSkuYears, useSkuSalesByAccount } from '@/composables/useIntel'
+import { computed, ref, toRef, watch } from 'vue'
+import { pivotSkuYears, useSkuSalesByAccount, type SkuPivotRow } from '@/composables/useIntel'
+import { useAccount } from '@/composables/useAccounts'
 import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import { cardHintState } from '@/components/ui/cardHint'
 import { count, money } from '@/lib/format'
+import type { ExportColumn } from '@/lib/xlsx'
 
 /**
  * What this account buys, by SKU — this year against last, top sellers
@@ -57,10 +60,66 @@ const hint = computed(() =>
     ? 'This year vs last'
     : (cardHintState(query, pivoted.value.length) ?? `${pivoted.value.length} SKUs`),
 )
+
+/* ---- download ------------------------------------------------------------
+   Every SKU in the list, not the 8-row preview: "Show all" only decides how
+   much the phone draws, and a rep downloading wants the whole history. Same
+   columns as the Sales by SKU page's "By account" sheet.
+------------------------------------------------------------------------- */
+
+/* The account's NAME for the sheet title — the page header's query
+   (vue-query dedupes it). The key stands in until it arrives. */
+const account = useAccount(toRef(props, 'customerKey'))
+const accountName = computed(() => account.data.value?.customer_name || props.customerKey)
+const accountLine = computed(() => {
+  const id = account.data.value?.customer_id
+  return id && id !== accountName.value
+    ? `Account: ${id} — ${accountName.value}`
+    : `Account: ${accountName.value}`
+})
+
+/* Product line only when the data carries it (null before 20261027090500). */
+const hasProductLine = computed(() => pivoted.value.some((p) => p.product_code))
+const exportColumns = computed<ExportColumn<SkuPivotRow>[]>(() => [
+  { key: 'part_id', header: 'SKU', type: 'text' },
+  { key: 'part_description', header: 'Description' },
+  { key: 'product_family', header: 'Family' },
+  ...(hasProductLine.value
+    ? [{ key: 'product_code', header: 'Product line' } as ExportColumn<SkuPivotRow>]
+    : []),
+  { key: 'chambering', header: 'Chambering' },
+  { key: 'upc', header: 'UPC', type: 'text' },
+  { key: 'qtyThisYear', header: `Units ${yearNow} to date`, type: 'number' },
+  { key: 'revenueThisYear', header: `Revenue ${yearNow} to date`, type: 'money' },
+  { key: 'qtyLastYear', header: `Units all of ${yearNow - 1}`, type: 'number' },
+  { key: 'revenueLastYear', header: `Revenue all of ${yearNow - 1}`, type: 'money' },
+  { key: 'lastInvoiceDate', header: 'Last invoice', type: 'date' },
+])
+const EXPORT_DESCRIPTION =
+  `Invoiced units and revenue by SKU, top sellers first. ${yearNow} is year to ` +
+  `date; ${yearNow - 1} is the whole calendar year, not the same period.`
+const exportDetails = computed(() => [
+  accountLine.value,
+  'SKUs invoiced to this account in the last four years',
+  !expanded.value &&
+    pivoted.value.length > PREVIEW &&
+    `All ${count(pivoted.value.length)} SKUs (the card previews the top ${PREVIEW})`,
+])
 </script>
 
 <template>
   <AppCollapsibleCard ref="card" title="Sales by SKU" :hint="hint" :padded="false">
+    <template #actions>
+      <ExportMenu
+        :rows="pivoted"
+        :columns="exportColumns"
+        :title="`Sales by SKU — ${accountName}`"
+        :filename="`sku-sales-${customerKey}`"
+        :description="EXPORT_DESCRIPTION"
+        :details="exportDetails"
+        sheet-name="Sales by SKU"
+      />
+    </template>
     <AsyncState
       :loading="query.isPending.value"
       :error="query.error.value"

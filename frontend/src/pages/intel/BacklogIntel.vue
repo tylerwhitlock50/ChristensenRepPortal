@@ -6,14 +6,16 @@ import {
   useTerritoryBacklog,
   type BacklogSkuRow,
 } from '@/composables/useIntel'
+import { useDataFreshness } from '@/composables/useDataFreshness'
 import DataGrid from '@/components/DataGrid.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import ProductLink from '@/components/ui/ProductLink.vue'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
-import { count, isoDate, money } from '@/lib/format'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
+import type { ExportColumn } from '@/lib/xlsx'
+import { exportTimestamp } from '@/lib/download'
+import { count, isoDate, money, shortDate } from '@/lib/format'
 
 /**
  * Backlog by SKU by account — everything the territory is still owed. Free
@@ -162,23 +164,73 @@ const columns = computed(() =>
 )
 
 const visible = ref<BacklogSkuRow[]>([])
-const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
-  { key: 'customer_key', header: 'Customer key' },
-  { key: 'customer_id', header: 'Account ID' },
+/** The grid's search box + column filters, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
+/* A reload that comes back empty unmounts the grid, and `visible` keeps
+   the rows it last emitted: nothing on screen then, so nothing to download. */
+const exportRows = computed(() => (rows.value.length ? visible.value : []))
+const exportColumns = computed<ExportColumn<BacklogSkuRow>[]>(() => [
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
+  { key: 'customer_id', header: 'Account ID', type: 'text' },
   { key: 'customer_name', header: 'Account' },
-  { key: 'assigned_sales_rep_id', header: 'Rep code' },
-  { key: 'assigned_sales_rep_name', header: 'Rep' },
-  { key: 'part_id', header: 'SKU' },
+  // Same rule as the grid's Rep column: a single rep's book would be their
+  // own name on every row.
+  ...(multiRep.value
+    ? ([
+        { key: 'assigned_sales_rep_id', header: 'Rep code', type: 'text' },
+        { key: 'assigned_sales_rep_name', header: 'Rep' },
+      ] as ExportColumn<BacklogSkuRow>[])
+    : []),
+  { key: 'part_id', header: 'SKU', type: 'text' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
-  ...(showProductLine.value ? [{ key: 'product_code', header: 'Product line' }] : []),
+  ...(showProductLine.value
+    ? [{ key: 'product_code', header: 'Product line' } as ExportColumn<BacklogSkuRow>]
+    : []),
   { key: 'chambering', header: 'Chambering' },
-  { key: 'backlog_qty', header: 'Backlog qty' },
-  { key: 'backlog_amount', header: 'Backlog value' },
-  { key: 'open_line_count', header: 'Open lines' },
-  { key: 'earliest_desired_ship_date', header: 'Est. production date' },
-  { key: 'earliest_promise_date', header: 'Earliest promise' },
-  { key: 'latest_order_date', header: 'Latest order' },
+  // The grid's own headers; the sheet's title and description say it is backlog.
+  { key: 'backlog_qty', header: 'Qty', type: 'number' },
+  { key: 'backlog_amount', header: 'Value', type: 'money' },
+  { key: 'open_line_count', header: 'Open lines', type: 'integer' },
+  { key: 'earliest_desired_ship_date', header: 'Est. production', type: 'date' },
+  { key: 'earliest_promise_date', header: 'Promise', type: 'date' },
+  { key: 'latest_order_date', header: 'Latest order', type: 'date' },
+])
+
+/* What the downloaded sheet says about itself: whose backlog, how fresh,
+   and every dropdown and grid filter that narrowed it. */
+const { loadedAt, ordersThrough } = useDataFreshness()
+const pickedRep = computed(() =>
+  multiRep.value && repKey.value ? reps.value.find((r) => r.key === repKey.value) : undefined,
+)
+const pickedAccount = computed(() =>
+  accountKey.value ? accounts.value.find((a) => a.key === accountKey.value) : undefined,
+)
+const exportTitle = computed(() => {
+  if (accountKey.value) {
+    return `Backlog by SKU — ${pickedAccount.value?.name || pickedAccount.value?.id || accountKey.value}`
+  }
+  if (pickedRep.value) return `Backlog by SKU — ${pickedRep.value.name}`
+  return 'Backlog by SKU — open orders by account'
+})
+const exportFilenamePrefix = computed(() => {
+  if (accountKey.value) return `backlog-by-sku-${accountKey.value}`
+  if (pickedRep.value) {
+    return `backlog-by-sku-rep-${pickedRep.value.key === NO_REP ? 'none' : pickedRep.value.key}`
+  }
+  return 'backlog-by-sku'
+})
+const EXPORT_DESCRIPTION =
+  "Every open order line's unshipped quantity and value (Firmed and Hold included), " +
+  'by account and SKU: what the accounts are still owed, not yet shipped or invoiced.'
+const exportDetails = computed(() => [
+  ordersThrough.value && `Orders through ${shortDate(ordersThrough.value)}`,
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  multiRep.value && `Rep: ${pickedRep.value?.name ?? 'All reps'}`,
+  pickedAccount.value
+    ? `Account: ${pickedAccount.value.id}${pickedAccount.value.name ? ` — ${pickedAccount.value.name}` : ''}`
+    : 'Account: All accounts',
+  ...gridFilters.value,
 ])
 </script>
 
@@ -212,14 +264,16 @@ const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
 
       <AppCard :padded="false" class="mt-4">
         <template #header>
-          <h2 class="u-label text-ink">Backlog by SKU</h2>
-          <AppButton
-            variant="ghost"
-            :disabled="visible.length === 0"
-            @click="exportCsv('backlog', visible, csvColumns)"
-          >
-            Export CSV
-          </AppButton>
+          <h2 class="u-label text-ink min-w-0 truncate">Backlog by SKU</h2>
+          <ExportMenu
+            :rows="exportRows"
+            :columns="exportColumns"
+            :title="exportTitle"
+            :filename="exportFilenamePrefix"
+            :description="EXPORT_DESCRIPTION"
+            :details="exportDetails"
+            sheet-name="Backlog by SKU"
+          />
         </template>
         <div class="flex flex-col gap-2 p-3 pb-0 sm:flex-row">
           <label class="block w-full sm:max-w-xs">
@@ -257,6 +311,7 @@ const csvColumns = computed<CsvColumn<BacklogSkuRow>[]>(() => [
           :get-row-id="(r: BacklogSkuRow) => `${r.customer_key}:${r.part_key}`"
           class="p-3"
           @rows-change="visible = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-account="{ row }">
             <RouterLink

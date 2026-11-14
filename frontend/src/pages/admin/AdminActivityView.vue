@@ -22,13 +22,13 @@ import { useProfiles } from '@/composables/useAdminUsers'
 import { useAccountNames } from '@/composables/useAccounts'
 import DataGrid from '@/components/DataGrid.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import { ACTION_LABELS, type ActionType } from '@/types/domain'
 import { count, daysAgo, shortDate } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 
 const activity = useRepActivity()
 const rows = computed(() => activity.data.value ?? [])
@@ -60,6 +60,8 @@ const filteredRows = computed(() =>
     : rows.value,
 )
 const visibleRows = ref<RepActivity[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
 
 function byDateNullsFirst(a: Row<RepActivity>, b: Row<RepActivity>, columnId: string) {
   const av = a.getValue<string | null>(columnId)
@@ -80,22 +82,69 @@ const columns: ColumnDef<RepActivity, any>[] = [
   { id: 'overdue_missions', accessorFn: (r) => r.overdue_missions ?? 0, header: 'Overdue' },
 ]
 
-function onExport() {
-  const csvColumns: CsvColumn<RepActivity>[] = [
-    { key: 'full_name', header: 'Rep' },
-    { key: 'email', header: 'Email' },
-    { key: 'vendor_id', header: 'Rep Group (Vendor)' },
-    { key: 'sales_rep_key', header: 'Rep Code' },
-    { key: 'last_login_at', header: 'Last Active' },
-    { key: 'logins_30d', header: 'Sessions Last 30 Days' },
-    { key: 'actions_30d', header: 'Actions Last 30 Days' },
-    { key: 'last_action_date', header: 'Last Action Date' },
-    { key: 'open_missions', header: 'Open Missions' },
-    { key: 'overdue_missions', header: 'Overdue Missions' },
-    { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
-  ]
-  exportCsv('rep-activity', visibleRows.value, csvColumns)
-}
+/* ---- Download: the rows on screen, and the rep-group pick + search. ---- */
+const exportColumns: ExportColumn<RepActivity>[] = [
+  { key: 'full_name', header: 'Rep' },
+  { key: 'email', header: 'Email' },
+  { key: 'vendor_id', header: 'Rep group', type: 'text' },
+  { key: 'sales_rep_key', header: 'Rep code', type: 'text' },
+  // Blank when the rep has never opened the portal ("never" on screen).
+  { key: 'last_login_at', header: 'Last active', type: 'datetime' },
+  {
+    key: 'last_active_ago',
+    header: 'Last active (ago)',
+    format: (row) => daysAgo(row.last_login_at),
+  },
+  {
+    key: 'logins_30d',
+    header: 'Sessions 30d',
+    type: 'integer',
+    format: (row) => row.logins_30d ?? 0,
+  },
+  {
+    key: 'actions_30d',
+    header: 'Actions 30d',
+    type: 'integer',
+    format: (row) => row.actions_30d ?? 0,
+  },
+  { key: 'last_action_date', header: 'Last action date', type: 'date' },
+  {
+    key: 'open_missions',
+    header: 'Open missions',
+    type: 'integer',
+    format: (row) => row.open_missions ?? 0,
+  },
+  {
+    key: 'overdue_missions',
+    header: 'Overdue missions',
+    type: 'integer',
+    format: (row) => row.overdue_missions ?? 0,
+  },
+  { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
+]
+
+/** The picked rep group in words; the select's '(no rep group)' bucket reads plainly. */
+const vendorLabel = computed(() =>
+  vendorFilter.value === '(no rep group)' ? 'No rep group' : vendorFilter.value,
+)
+const exportTitle = computed(() =>
+  vendorLabel.value ? `Portal activity by rep — ${vendorLabel.value}` : 'Portal activity by rep',
+)
+const exportFilenamePrefix = computed(() => {
+  const group = vendorFilter.value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return group ? `rep-activity-${group}` : 'rep-activity'
+})
+const EXPORT_DESCRIPTION =
+  'Sessions = times the rep opened the portal (a sign-in, or coming back on a saved ' +
+  'session; at most one per four hours). Actions = work logged in the portal. Both ' +
+  'cover the last 30 days.'
+const exportDetails = computed(() => [
+  vendorLabel.value ? `Rep group: ${vendorLabel.value}` : 'All rep groups',
+  ...gridFilters.value,
+])
 
 /* ---- recent stream ------------------------------------------------------ */
 const WINDOWS = [7, 30, 90] as const
@@ -223,21 +272,27 @@ const stream = computed(() => {
     <!-- Per-rep grid -->
     <AppCard>
       <template #header>
-        <div>
+        <div class="min-w-0">
           <h2 class="u-label text-ink">By rep</h2>
           <p class="text-muted mt-1 text-[13px]">
             {{ visibleRows.length }} {{ visibleRows.length === 1 ? 'rep' : 'reps' }}
           </p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center justify-end gap-2">
           <label class="sr-only" for="vendor-filter">Filter by rep group</label>
           <select id="vendor-filter" v-model="vendorFilter" class="field max-w-48">
             <option value="">All rep groups</option>
             <option v-for="v in vendorOptions" :key="v" :value="v">{{ v }}</option>
           </select>
-          <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-            Export CSV
-          </AppButton>
+          <ExportMenu
+            :rows="visibleRows"
+            :columns="exportColumns"
+            :title="exportTitle"
+            :filename="exportFilenamePrefix"
+            :description="EXPORT_DESCRIPTION"
+            :details="exportDetails"
+            sheet-name="Activity by rep"
+          />
         </div>
       </template>
 
@@ -260,6 +315,7 @@ const stream = computed(() => {
           :get-row-id="(row: RepActivity) => row.user_id ?? ''"
           min-width="52rem"
           @rows-change="visibleRows = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-full_name="{ row }">
             <span class="text-ink font-semibold">{{ row.full_name ?? '—' }}</span>

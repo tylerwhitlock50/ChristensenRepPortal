@@ -6,17 +6,22 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCollapsibleCard from '@/components/ui/AppCollapsibleCard.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import { cardHintState } from '@/components/ui/cardHint'
 import { count, humanize, money, shortDate } from '@/lib/format'
 import { trackingList, upsTrackUrl } from '@/lib/tracking'
 import { shippedValue } from '@/lib/shippedValue'
 import { dealerPo } from '@/lib/portalPo'
+import type { ExportColumn } from '@/lib/xlsx'
+import { useAccount } from '@/composables/useAccounts'
 import {
   useAccountOrderHeaders,
   useAccountOrderLines,
   useAccountShipmentHeaders,
   useAccountShipmentLines,
   useAccountSummary,
+  type AccountOrderHeaderRow,
+  type AccountShipmentHeaderRow,
 } from '@/composables/useAccountMetrics'
 
 /**
@@ -166,11 +171,14 @@ const shipments = computed(() =>
  * What the collapsed headers say. Both lists come back newest first, so row 0
  * is the latest — "12 · latest Jul 9" tells a rep whether there is anything
  * recent in here before they spend a tap on it. A full first page with more
- * behind it reads "20+", not "20": the count is what is loaded.
+ * behind it reads "20+", not "20": the count is what is loaded. The short
+ * hintDate, not shortDate: with the download button beside the open header,
+ * a phone has only so much room before "Recent orders" and "Recent
+ * shipments" both truncate to "RECENT…".
  */
 function withLatest(rows: { length: number }, latest: string | null, more: boolean): string {
   const n = `${rows.length}${more ? '+' : ''}`
-  return latest ? `${n} · latest ${shortDate(latest)}` : n
+  return latest ? `${n} · latest ${hintDate(latest)}` : n
 }
 
 /** "Oct 8", or "Mar 2024" when it was not this year: a collapsed header has
@@ -226,6 +234,102 @@ const shipmentsHint = computed(() =>
         shipmentsQuery.hasNextPage.value,
       )),
 )
+
+/* ---- downloads -----------------------------------------------------------
+   Each card's download is exactly its list on screen: the loaded pages,
+   narrowed by that card's search box, newest first. A paged list that just
+   stops reads as the whole history, so the sheet says when older rows exist
+   that were never loaded — the same promise the footer count makes.
+------------------------------------------------------------------------- */
+
+/* The account's NAME for the sheet titles — the page header's query
+   (vue-query dedupes it). The key stands in until it arrives. */
+const account = useAccount(customerKey)
+const accountName = computed(
+  () => account.data.value?.customer_name || customerKey.value,
+)
+const accountLine = computed(() => {
+  const id = account.data.value?.customer_id
+  return id && id !== accountName.value
+    ? `Account: ${id} — ${accountName.value}`
+    : `Account: ${accountName.value}`
+})
+
+/** The Status cell as the list shows it: an open order's unshipped pieces,
+    otherwise its state. */
+function orderStatus(row: AccountOrderHeaderRow): string {
+  return row.open_line_count > 0
+    ? `Open ${count(row.backlog_qty)}`
+    : humanize(row.order_state ?? row.order_status_desc)
+}
+function shipmentStatus(row: AccountShipmentHeaderRow): string {
+  return row.actual_delivery_date
+    ? `Delivered ${shortDate(row.actual_delivery_date)}`
+    : humanize(row.shipment_state ?? row.shipper_status_desc)
+}
+
+const orderExportColumns: ExportColumn<AccountOrderHeaderRow>[] = [
+  { key: 'order_id', header: 'Order', type: 'text' },
+  { key: 'order_date', header: 'Ordered', type: 'date' },
+  // Not a PORTAL- reference: that is no PO at all (lib/portalPo.ts).
+  {
+    key: 'customer_po_number',
+    header: 'Their PO',
+    type: 'text',
+    format: (r) => dealerPo(r.customer_po_number),
+  },
+  { key: 'line_count', header: 'Lines', type: 'integer' },
+  { key: 'order_qty', header: 'Qty', type: 'number' },
+  { key: 'bookings', header: 'Value', type: 'money' },
+  { key: 'status', header: 'Status', type: 'text', format: orderStatus },
+  { key: 'open_line_count', header: 'Open lines', type: 'integer' },
+  { key: 'backlog_qty', header: 'Open qty', type: 'number' },
+  { key: 'backlog_amount', header: 'Open value', type: 'money' },
+  { key: 'next_promise_date', header: 'Next promise', type: 'date' },
+]
+const shipmentExportColumns: ExportColumn<AccountShipmentHeaderRow>[] = [
+  { key: 'packlist_id', header: 'Packlist', type: 'text' },
+  { key: 'ship_date', header: 'Shipped', type: 'date' },
+  { key: 'order_ids', header: 'Orders', type: 'text' },
+  { key: 'tracking_number', header: 'Tracking', type: 'text' },
+  { key: 'ship_via', header: 'Ship via' },
+  { key: 'line_count', header: 'Lines', type: 'integer' },
+  { key: 'shipped_qty', header: 'Qty', type: 'number' },
+  {
+    key: 'shipped_value',
+    header: 'Shipped value',
+    type: 'money',
+    format: (r) => shippedValue(r),
+  },
+  { key: 'status', header: 'Status', type: 'text', format: shipmentStatus },
+  { key: 'actual_delivery_date', header: 'Delivered', type: 'date' },
+]
+
+const ORDERS_EXPORT_DESCRIPTION =
+  'Value is what was ordered (bookings), not invoiced revenue; open qty and ' +
+  'open value are the part of each order that has not shipped yet.'
+const SHIPMENTS_EXPORT_DESCRIPTION =
+  'Shipped value is the packlist value at net price: what shipped, which is ' +
+  'not revenue until it is invoiced.'
+
+const ordersExportDetails = computed(() => {
+  const term = orderSearch.value.trim()
+  return [
+    accountLine.value,
+    term && `Search: “${term}” (order #, PO # or status)`,
+    ordersQuery.hasNextPage.value &&
+      `Newest ${count(allOrders.value.length)} orders loaded; load older orders in the portal to include them`,
+  ]
+})
+const shipmentsExportDetails = computed(() => {
+  const term = shipmentSearch.value.trim()
+  return [
+    accountLine.value,
+    term && `Search: “${term}” (packlist #, order # or tracking #)`,
+    shipmentsQuery.hasNextPage.value &&
+      `Newest ${count(allShipments.value.length)} shipments loaded; load older shipments in the portal to include them`,
+  ]
+})
 
 /* ---- drill-in modals ---------------------------------------------------- */
 
@@ -306,6 +410,17 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
        instead of the whole card getting clipped at the phone edge. -->
   <div class="grid grid-cols-1 gap-4">
     <AppCollapsibleCard ref="ordersCardRef" title="Recent orders" :hint="ordersHint">
+      <template #actions>
+        <ExportMenu
+          :rows="orders"
+          :columns="orderExportColumns"
+          :title="`Recent orders — ${accountName}`"
+          :filename="`orders-${customerKey}`"
+          :description="ORDERS_EXPORT_DESCRIPTION"
+          :details="ordersExportDetails"
+          sheet-name="Orders"
+        />
+      </template>
       <AsyncState
         :loading="ordersQuery.isPending.value"
         :error="ordersQuery.error.value"
@@ -468,6 +583,17 @@ defineExpose({ expandOrders, expandShipments, openOrder, scrollToShipments })
       title="Recent shipments"
       :hint="shipmentsHint"
     >
+      <template #actions>
+        <ExportMenu
+          :rows="shipments"
+          :columns="shipmentExportColumns"
+          :title="`Recent shipments — ${accountName}`"
+          :filename="`shipments-${customerKey}`"
+          :description="SHIPMENTS_EXPORT_DESCRIPTION"
+          :details="shipmentsExportDetails"
+          sheet-name="Shipments"
+        />
+      </template>
       <AsyncState
         :loading="shipmentsQuery.isPending.value"
         :error="shipmentsQuery.error.value"

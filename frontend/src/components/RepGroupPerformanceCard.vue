@@ -15,9 +15,9 @@
 import { computed, ref } from 'vue'
 import DataGrid from '@/components/DataGrid.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
 import {
   attainmentPct,
@@ -26,14 +26,21 @@ import {
   yoyPct,
   type RepGroupRow,
 } from '@/composables/useAdminReports'
+import { useDataFreshness } from '@/composables/useDataFreshness'
+import { exportTimestamp } from '@/lib/download'
 import { count, money, shortDate } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 import type { ColumnDef } from '@tanstack/vue-table'
 
 const query = useRepGroupPerformance()
 
 const search = ref('')
 const visibleRows = ref<RepGroupRow[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
+
+/** The page's FreshnessStamp (AdminReportsView), for the downloaded file. */
+const { loadedAt, dataThrough, ordersThrough } = useDataFreshness()
 
 const rows = computed(() => query.data.value ?? [])
 
@@ -114,54 +121,93 @@ const columns: ColumnDef<RepGroupRow, any>[] = [
   { id: 'lapsed_accounts', accessorFn: (row) => row.lapsed_accounts, header: 'Lapsed' },
 ]
 
-function onExport() {
-  const csvColumns: CsvColumn<RepGroupRow>[] = [
-    { key: 'rep_group_id', header: 'Rep Group' },
-    { key: 'rep_count', header: 'ERP Reps' },
-    { key: 'rep_names', header: 'Rep Names' },
-    { key: 'portal_users', header: 'Portal Users' },
-    { key: 'portal_user_names', header: 'Portal User Names' },
-    { key: 'accounts', header: 'Accounts' },
-    { key: 'buying_accounts', header: 'Accounts With Revenue YTD' },
-    { key: 'lapsed_accounts', header: 'Lapsed Accounts' },
-    { key: 'revenue_ytd', header: 'Revenue YTD' },
-    { key: 'revenue_prior_ytd', header: 'Revenue Prior YTD' },
-    {
-      key: 'yoy_pct',
-      header: 'Revenue YoY Percent',
-      format: (row) => yoy(row)?.toFixed(1) ?? '',
-    },
-    { key: 'revenue_trailing_12m', header: 'Revenue Trailing 12m' },
-    { key: 'bookings_ytd', header: 'Booked YTD' },
-    { key: 'open_order_value', header: 'Open Order Value' },
-    { key: 'backlog_amount', header: 'Past Promise Amount' },
-    { key: 'goal_total', header: 'Goal Total' },
-    {
-      key: 'attainment_pct',
-      header: 'Percent Of Goal',
-      format: (row) => attainment(row)?.toFixed(1) ?? '',
-    },
-    { key: 'contacted_30d', header: 'Accounts Contacted In 30 Days' },
-    { key: 'contacted_90d', header: 'Accounts Contacted In 90 Days' },
-    { key: 'last_invoice_date', header: 'Last Invoice Date' },
-  ]
-  exportCsv('rep-group-performance', visibleRows.value, csvColumns)
+/* ---- Download: the rows on screen, in screen order. */
+
+/** yoyPct / attainmentPct / coveragePct are 0–100; Excel's % wants a fraction. */
+function fraction(pct: number | null): number | null {
+  return pct == null ? null : pct / 100
 }
+
+const exportColumns: ExportColumn<RepGroupRow>[] = [
+  { key: 'rep_group_id', header: 'Rep group', type: 'text' },
+  { key: 'rep_count', header: 'ERP reps', type: 'integer' },
+  { key: 'rep_names', header: 'Rep names' },
+  { key: 'portal_users', header: 'Portal users', type: 'integer' },
+  { key: 'portal_user_names', header: 'Portal user names' },
+  { key: 'accounts', header: 'Accounts', type: 'integer' },
+  { key: 'buying_accounts', header: 'Buying accounts (revenue YTD)', type: 'integer' },
+  { key: 'revenue_ytd', header: 'Revenue YTD', type: 'money' },
+  { key: 'revenue_trailing_12m', header: 'Revenue trailing 12m', type: 'money' },
+  {
+    key: 'yoy_pct',
+    header: 'YoY %',
+    type: 'percent',
+    // As the screen: "new" when there is no prior-year base to compare to.
+    format: (row) => {
+      const pct = yoy(row)
+      if (pct == null) return row.revenue_ytd > 0 ? 'new' : null
+      return pct / 100
+    },
+  },
+  { key: 'revenue_prior_ytd', header: 'Revenue prior YTD', type: 'money' },
+  { key: 'bookings_ytd', header: 'Booked YTD', type: 'money' },
+  { key: 'backlog_amount', header: 'Past promise', type: 'money' },
+  { key: 'open_order_value', header: 'Open order value', type: 'money' },
+  { key: 'goal_total', header: 'Goal total', type: 'money' },
+  {
+    key: 'attainment_pct',
+    header: '% of goal',
+    type: 'percent',
+    format: (row) => fraction(attainment(row)),
+  },
+  {
+    key: 'coverage_pct',
+    header: 'Contacted 30d %',
+    type: 'percent',
+    format: (row) => fraction(coveragePct(row)),
+  },
+  { key: 'contacted_30d', header: 'Accounts contacted in 30 days', type: 'integer' },
+  { key: 'contacted_90d', header: 'Accounts contacted in 90 days', type: 'integer' },
+  { key: 'lapsed_accounts', header: 'Lapsed', type: 'integer' },
+  { key: 'last_invoice_date', header: 'Last invoice', type: 'date' },
+]
+
+const EXPORT_DESCRIPTION =
+  'Whole-agency totals over active external accounts. Revenue = invoiced; Booked = ' +
+  'orders written; Past promise = open order value already past its promise date (not ' +
+  'the whole open book); Lapsed = bought last year, not this. Accounts whose rep has ' +
+  'no rep group are under “(No rep group)”.'
+
+const exportDetails = computed(() => [
+  dataThrough.value && `Invoiced through ${shortDate(dataThrough.value)}`,
+  ordersThrough.value &&
+    ordersThrough.value !== dataThrough.value &&
+    `Orders through ${shortDate(ordersThrough.value)}`,
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  `Goal pace marker: ${Math.round(expectedPct.value)}% of the year`,
+  ...gridFilters.value,
+])
 </script>
 
 <template>
   <AppCard>
     <template #header>
-      <div>
+      <div class="min-w-0">
         <h2 class="u-label text-ink">Rep groups</h2>
         <p class="text-muted mt-1 text-[13px]">
           Whole-agency totals · year to date, pace marker at
           {{ Math.round(expectedPct) }}% of the year
         </p>
       </div>
-      <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-        Export CSV
-      </AppButton>
+      <ExportMenu
+        :rows="visibleRows"
+        :columns="exportColumns"
+        title="Rep groups — year to date"
+        filename="rep-group-performance"
+        :description="EXPORT_DESCRIPTION"
+        :details="exportDetails"
+        sheet-name="Rep groups"
+      />
     </template>
 
     <AsyncState
@@ -186,6 +232,7 @@ function onExport() {
         :get-row-id="rowId"
         min-width="56rem"
         @rows-change="visibleRows = $event"
+        @filters-change="gridFilters = $event"
       >
         <template #cell-rep_group_id="{ row }">
           <!-- Into the group's Agency page: its reps and its book, as the ERP

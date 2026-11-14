@@ -17,12 +17,13 @@ import AccountPicker from '@/components/AccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import SkuProspectsSheet from '@/components/SkuProspectsSheet.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import ProductLink from '@/components/ui/ProductLink.vue'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
+import type { ExportColumn } from '@/lib/xlsx'
+import { exportTimestamp } from '@/lib/download'
 import { clockStamp, count } from '@/lib/format'
 import { isAtsStale, newestLoadedAt } from '@/lib/stockFreshness'
 import { useFeatureFlags } from '@/composables/useAppSettings'
@@ -269,8 +270,10 @@ function availableText(qty: number): string {
 }
 
 const visible = ref<AtsRow[]>([])
-const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
-  { key: 'part_id', header: 'SKU' },
+/** The grid's own search + column filters, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
+const exportColumns = computed<ExportColumn<AtsRow>[]>(() => [
+  { key: 'part_id', header: 'SKU', type: 'text' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
   ...(showProductLine.value
@@ -280,12 +283,58 @@ const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
       ]
     : []),
   { key: 'chambering', header: 'Chambering' },
-  { key: 'barrel_length', header: 'Barrel' },
-  { key: 'upc', header: 'UPC' },
-  { key: 'ats_qty', header: 'Available qty' },
-  { key: 'on_hand_qty', header: 'On hand' },
-  { key: 'committed_qty', header: 'Committed' },
-  { key: 'backlog_qty', header: 'Backlog' },
+  { key: 'barrel_length', header: 'Barrel', type: 'text' },
+  // Text on purpose: a UPC is an identifier, and Excel would show a number
+  // as 8.4E+11.
+  { key: 'upc', header: 'UPC', type: 'text' },
+  { key: 'ats_qty', header: 'Available qty', type: 'number' },
+  { key: 'on_hand_qty', header: 'On hand', type: 'number' },
+  { key: 'committed_qty', header: 'Committed', type: 'number' },
+  { key: 'backlog_qty', header: 'Backlog', type: 'number' },
+])
+
+/* The account pick only narrows the rows once that account's history has
+   loaded (gapKeys). While it loads, and after it fails, `rows` is the whole
+   catalog: the file must not be labeled as one dealer's list then. */
+const accountFilterApplied = computed(() => !!gapAccountKey.value && gapKeys.value !== null)
+/** Picked, still loading: the grid is about to change under the rep. */
+const accountFilterLoading = computed(
+  () => !!gapAccountKey.value && gapKeys.value === null && filterQuery.value.isPending.value,
+)
+
+/* What the downloaded sheet says about itself: title, what the numbers
+   mean, which stock load it is, and every toggle that narrowed it. */
+const exportTitle = computed(() =>
+  accountFilterApplied.value
+    ? gapMode.value === 'new'
+      ? `In stock — new to ${gapAccountName.value}`
+      : `In stock — reorders for ${gapAccountName.value}`
+    : 'In stock — available to sell',
+)
+const exportFilenamePrefix = computed(() =>
+  accountFilterApplied.value
+    ? `in-stock-${gapMode.value === 'new' ? 'new-to' : 'reorders'}-${gapAccountKey.value}`
+    : 'in-stock',
+)
+const EXPORT_DESCRIPTION =
+  'Company-wide availability by SKU. Available = sellable on-hand stock minus open ' +
+  'customer orders; a negative number means oversold.'
+const exportDetails = computed(() => [
+  stockAsOf.value ? `Stock as of ${exportTimestamp(new Date(stockAsOf.value))}` : null,
+  // The page turns its stamp ember and warns; the file must say it too.
+  stockStale.value &&
+    'Stock is not updating (no load for over 45 minutes): check before you promise stock',
+  inStockOnly.value ? 'In stock only (out-of-stock SKUs hidden)' : 'Includes out-of-stock SKUs',
+  gunsOnly.value
+    ? 'Guns only (parts, accessories and barreled actions hidden)'
+    : 'Guns, parts and accessories',
+  accountFilterApplied.value
+    ? gapMode.value === 'new'
+      ? `Account: ${gapAccountName.value} — top in-stock suggestions they have never bought`
+      : `Account: ${gapAccountName.value} — in-stock items they have bought before`
+    : gapAccountKey.value &&
+      `Account filter not applied (${gapAccountName.value}'s history did not load): whole catalog`,
+  ...gridFilters.value,
 ])
 </script>
 
@@ -352,13 +401,16 @@ const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
       <AppCard :padded="false" class="mt-4">
         <template #header>
           <h2 class="u-label text-ink">Available to sell</h2>
-          <AppButton
-            variant="ghost"
-            :disabled="visible.length === 0"
-            @click="exportCsv(gapAccountKey ? `ats-${gapMode === 'new' ? 'gaps' : 'reorders'}-${gapAccountKey}` : 'ats-list', visible, csvColumns)"
-          >
-            Export CSV
-          </AppButton>
+          <ExportMenu
+            :rows="visible"
+            :columns="exportColumns"
+            :title="exportTitle"
+            :filename="exportFilenamePrefix"
+            :description="EXPORT_DESCRIPTION"
+            :details="exportDetails"
+            sheet-name="In stock"
+            :disabled="accountFilterLoading"
+          />
         </template>
 
         <div class="border-line space-y-2 border-b p-3">
@@ -453,6 +505,7 @@ const csvColumns = computed<CsvColumn<AtsRow>[]>(() => [
           :get-row-id="(r: AtsRow) => r.part_key"
           class="p-3"
           @rows-change="visible = $event"
+          @filters-change="gridFilters = $event"
         >
           <!-- The picture lives on the website — the family page. -->
           <template #cell-part_id="{ row }">

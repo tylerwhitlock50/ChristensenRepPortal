@@ -16,9 +16,9 @@
 import { computed, ref } from 'vue'
 import DataGrid from '@/components/DataGrid.vue'
 import ChannelMixChart from '@/components/ChannelMixChart.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import {
   attainmentPct,
   rollUpChannels,
@@ -28,8 +28,10 @@ import {
   yoyPct,
   type ChannelRow,
 } from '@/composables/useAdminReports'
+import { useDataFreshness } from '@/composables/useDataFreshness'
+import { exportTimestamp } from '@/lib/download'
 import { count, money, share, shortDate } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 import type { ColumnDef } from '@tanstack/vue-table'
 
 const GRAINS = [
@@ -43,6 +45,11 @@ const query = useChannelPerformance()
 const grain = ref<Grain>('channel')
 const search = ref('')
 const visibleRows = ref<ChannelRow[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
+
+/** The page's FreshnessStamp (AdminReportsView), for the downloaded file. */
+const { loadedAt, dataThrough, ordersThrough } = useDataFreshness()
 
 const subChannelRows = computed(() => query.data.value ?? [])
 
@@ -142,45 +149,78 @@ const columns = computed<ColumnDef<ChannelRow, any>[]>(() => [
   },
 ])
 
-function onExport() {
-  const csvColumns: CsvColumn<ChannelRow>[] = [
-    { key: 'channel', header: 'Channel' },
-    ...(grain.value === 'sub_channel'
-      ? [{ key: 'sub_channel', header: 'Sub-channel' } as CsvColumn<ChannelRow>]
-      : []),
-    { key: 'accounts', header: 'Accounts' },
-    { key: 'buying_accounts', header: 'Accounts With Revenue YTD' },
-    { key: 'lapsed_accounts', header: 'Lapsed Accounts' },
-    { key: 'new_accounts', header: 'Accounts Opened This Year' },
-    { key: 'revenue_ytd', header: 'Revenue YTD' },
-    { key: 'revenue_prior_ytd', header: 'Revenue Prior YTD' },
-    {
-      key: 'yoy_pct',
-      header: 'Revenue YoY Percent',
-      format: (row) => yoy(row)?.toFixed(1) ?? '',
+/* ---- Download: the rows on screen, at the grain on screen. */
+const exportColumns = computed<ExportColumn<ChannelRow>[]>(() => [
+  { key: 'channel', header: 'Channel' },
+  ...(grain.value === 'sub_channel'
+    ? [{ key: 'sub_channel', header: 'Sub-channel' } as ExportColumn<ChannelRow>]
+    : []),
+  { key: 'accounts', header: 'Accounts', type: 'integer' },
+  { key: 'buying_accounts', header: 'Buying accounts (revenue YTD)', type: 'integer' },
+  { key: 'new_accounts', header: 'Accounts opened this year', type: 'integer' },
+  { key: 'revenue_ytd', header: 'Revenue YTD', type: 'money' },
+  {
+    // shareOf() is already a fraction, against the whole book (bookTotal).
+    key: 'share_of_revenue',
+    header: 'Share of company revenue YTD %',
+    type: 'percent',
+    format: (row) => shareOf(row.revenue_ytd, bookTotal.value.revenue_ytd),
+  },
+  { key: 'revenue_trailing_12m', header: 'Revenue trailing 12m', type: 'money' },
+  {
+    key: 'yoy_pct',
+    header: 'YoY %',
+    type: 'percent',
+    // yoyPct is 0–100; "new" as on screen when there is no prior-year base.
+    format: (row) => {
+      const pct = yoy(row)
+      if (pct == null) return row.revenue_ytd > 0 ? 'new' : null
+      return pct / 100
     },
-    {
-      key: 'share_of_revenue',
-      header: 'Share Of Company Revenue YTD',
-      format: (row) => {
-        const s = shareOf(row.revenue_ytd, bookTotal.value.revenue_ytd)
-        return s == null ? '' : (s * 100).toFixed(1)
-      },
+  },
+  { key: 'revenue_prior_ytd', header: 'Revenue prior YTD', type: 'money' },
+  { key: 'bookings_ytd', header: 'Booked YTD', type: 'money' },
+  { key: 'backlog_amount', header: 'Past promise', type: 'money' },
+  { key: 'open_order_value', header: 'Open order value', type: 'money' },
+  { key: 'goal_total', header: 'Goal total', type: 'money' },
+  {
+    key: 'attainment_pct',
+    header: '% of goal',
+    type: 'percent',
+    format: (row) => {
+      const pct = attainment(row)
+      return pct == null ? null : pct / 100
     },
-    { key: 'revenue_trailing_12m', header: 'Revenue Trailing 12m' },
-    { key: 'bookings_ytd', header: 'Booked YTD' },
-    { key: 'open_order_value', header: 'Open Order Value' },
-    { key: 'backlog_amount', header: 'Past Promise Amount' },
-    { key: 'goal_total', header: 'Goal Total' },
-    {
-      key: 'attainment_pct',
-      header: 'Percent Of Goal',
-      format: (row) => attainment(row)?.toFixed(1) ?? '',
-    },
-    { key: 'last_invoice_date', header: 'Last Invoice Date' },
-  ]
-  exportCsv(`channel-performance-${grain.value}`, visibleRows.value, csvColumns)
-}
+  },
+  { key: 'lapsed_accounts', header: 'Lapsed', type: 'integer' },
+  { key: 'last_invoice_date', header: 'Last invoice', type: 'date' },
+])
+
+const exportTitle = computed(() =>
+  grain.value === 'channel'
+    ? 'Channels — year to date, by channel'
+    : 'Channels — year to date, by sub-channel',
+)
+const exportFilenamePrefix = computed(() =>
+  grain.value === 'channel' ? 'channel-performance-channel' : 'channel-performance-sub-channel',
+)
+const EXPORT_DESCRIPTION =
+  'Active external accounts by reporting channel. Revenue = invoiced; Booked = orders ' +
+  'written; Past promise = open order value already past its promise date; Lapsed = ' +
+  'bought last year, not this. Share is of the whole company’s revenue YTD, not just ' +
+  'these rows.'
+const exportDetails = computed(() => [
+  dataThrough.value && `Invoiced through ${shortDate(dataThrough.value)}`,
+  ordersThrough.value &&
+    ordersThrough.value !== dataThrough.value &&
+    `Orders through ${shortDate(ordersThrough.value)}`,
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  grain.value === 'channel'
+    ? 'Grain: Channel (sub-channels added up)'
+    : 'Grain: Sub-channel',
+  `Company revenue YTD (the share denominator): ${money(bookTotal.value.revenue_ytd)}`,
+  ...gridFilters.value,
+])
 
 /** Same segmented-control styling as CoverageGrid. */
 function toggleClass(on: boolean) {
@@ -193,15 +233,21 @@ function toggleClass(on: boolean) {
 <template>
   <AppCard>
     <template #header>
-      <div>
+      <div class="min-w-0">
         <h2 class="u-label text-ink">Channels</h2>
         <p class="text-muted mt-1 text-[13px]">
           Active external accounts by reporting group · year to date
         </p>
       </div>
-      <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-        Export CSV
-      </AppButton>
+      <ExportMenu
+        :rows="visibleRows"
+        :columns="exportColumns"
+        :title="exportTitle"
+        :filename="exportFilenamePrefix"
+        :description="EXPORT_DESCRIPTION"
+        :details="exportDetails"
+        sheet-name="Channels"
+      />
     </template>
 
     <div class="space-y-4">
@@ -245,6 +291,7 @@ function toggleClass(on: boolean) {
           :get-row-id="rowId"
           min-width="52rem"
           @rows-change="visibleRows = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-label="{ row }">
             <span class="text-ink font-semibold">{{ label(row) }}</span>

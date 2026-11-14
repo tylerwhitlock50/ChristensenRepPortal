@@ -8,18 +8,20 @@
 import { ref } from 'vue'
 import DataGrid from '@/components/DataGrid.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import { useRepExecution, type RepSummary } from '@/composables/useAdmin'
 import { count, daysAgo, shortDate } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 import type { ColumnDef, Row } from '@tanstack/vue-table'
 
 const reps = useRepExecution()
 
 const search = ref('')
 const visibleRows = ref<RepSummary[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
 
 function rowId(row: RepSummary) {
   return row.user_id ?? row.full_name ?? ''
@@ -65,33 +67,45 @@ const columns: ColumnDef<RepSummary, any>[] = [
   },
 ]
 
-function onExport() {
-  const csvColumns: CsvColumn<RepSummary>[] = [
-    { key: 'full_name', header: 'Rep' },
-    { key: 'assigned_accounts', header: 'Assigned Accounts' },
-    { key: 'open_recommendations', header: 'Open Recommendations' },
-    { key: 'overdue_recommendations', header: 'Overdue Recommendations' },
-    { key: 'actions_last_30d', header: 'Actions Last 30 Days' },
-    { key: 'last_action_date', header: 'Last Action Date' },
-    { key: 'last_login_at', header: 'Last Active' },
-    { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
-  ]
-  exportCsv('rep-execution', visibleRows.value, csvColumns)
-}
+/* ---- Download: the rows on screen, in screen order. */
+const exportColumns: ExportColumn<RepSummary>[] = [
+  { key: 'full_name', header: 'Rep' },
+  { key: 'rep_group_vendor_id', header: 'Rep group', type: 'text' },
+  { key: 'assigned_accounts', header: 'Accounts', type: 'integer' },
+  { key: 'open_recommendations', header: 'Open recommendations', type: 'integer' },
+  { key: 'overdue_recommendations', header: 'Overdue recommendations', type: 'integer' },
+  { key: 'actions_last_30d', header: 'Actions last 30 days', type: 'integer' },
+  { key: 'last_action_date', header: 'Last action', type: 'date' },
+  // Blank = never signed in (the screen's "never").
+  { key: 'last_login_at', header: 'Last active', type: 'datetime' },
+  { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
+]
+
+const EXPORT_TITLE = 'Rep execution — recommendations and activity by rep'
+const EXPORT_DESCRIPTION =
+  "Open = recommendations still open on the rep's accounts; Overdue = open and past " +
+  'their due date; Actions = activities the rep logged in the last 30 days; ' +
+  'Last active = last sign-in to the portal.'
 </script>
 
 <template>
   <AppCard>
     <template #header>
-      <div>
+      <div class="min-w-0">
         <h2 class="u-label text-ink">By rep</h2>
         <p class="text-muted mt-1 text-[13px]">
           {{ visibleRows.length }} {{ visibleRows.length === 1 ? 'rep' : 'reps' }}
         </p>
       </div>
-      <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-        Export CSV
-      </AppButton>
+      <ExportMenu
+        :rows="visibleRows"
+        :columns="exportColumns"
+        :title="EXPORT_TITLE"
+        filename="rep-execution"
+        :description="EXPORT_DESCRIPTION"
+        :details="gridFilters"
+        sheet-name="Rep execution"
+      />
     </template>
 
     <AsyncState
@@ -115,6 +129,7 @@ function onExport() {
         :get-row-id="rowId"
         min-width="40rem"
         @rows-change="visibleRows = $event"
+        @filters-change="gridFilters = $event"
       >
         <template #cell-full_name="{ row }">
           <span class="text-ink font-semibold">{{ row.full_name ?? '—' }}</span>

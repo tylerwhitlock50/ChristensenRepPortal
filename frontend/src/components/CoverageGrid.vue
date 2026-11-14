@@ -16,12 +16,12 @@ import { computed, ref } from 'vue'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
 import DataGrid from '@/components/DataGrid.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import { useCoverage, type Coverage } from '@/composables/useAdmin'
-import { daysAgo, shortDate } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import { count, daysAgo, shortDate } from '@/lib/format'
+import type { ExportColumn } from '@/lib/xlsx'
 import type { ColumnDef } from '@tanstack/vue-table'
 
 const COVERAGE_WINDOWS = [30, 60, 90] as const
@@ -88,9 +88,11 @@ const coveragePct = computed(() =>
 
 /**
  * What the grid is actually showing, after its own global filter and sort.
- * Export writes this, so the CSV always matches the screen.
+ * The download writes this, so the file always matches the screen.
  */
 const visibleRows = ref<CoverageRow[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
 
 /** An account can appear once per rep who can see it, so key on both. */
 function rowId(row: CoverageRow) {
@@ -118,20 +120,54 @@ const columns: ColumnDef<CoverageRow, any>[] = [
   { id: 'contacted', accessorKey: 'contacted', header: 'Contacted' },
 ]
 
-function onExport() {
-  const csvColumns: CsvColumn<CoverageRow>[] = [
-    { key: 'customer_key', header: 'Customer Key' },
-    { key: 'rep_name', header: 'Rep' },
-    { key: 'last_contact_date', header: 'Last Contact Date' },
-    { key: 'days_since', header: 'Days Since Contact' },
-    {
-      key: 'contacted',
-      header: `Contacted In ${windowDays.value} Days`,
-      format: (row) => (row.contacted ? 'Yes' : 'No'),
-    },
+/* ---- Download: the rows on screen, and every control that narrowed them. */
+const exportColumns = computed<ExportColumn<CoverageRow>[]>(() => [
+  { key: 'customer_key', header: 'Account', type: 'text' },
+  { key: 'rep_name', header: 'Rep' },
+  // Blank when the rep has never logged a contact on the account.
+  { key: 'last_contact_date', header: 'Last contact', type: 'date' },
+  { key: 'days_since', header: 'Days since contact', type: 'integer' },
+  {
+    key: 'contacted',
+    header: `Contacted in ${windowDays.value} days`,
+    format: (row) => (row.contacted ? 'Yes' : 'No'),
+  },
+])
+
+const exportTitle = computed(() => {
+  const what = untouchedOnly.value
+    ? `Untouched accounts (no contact in ${windowDays.value} days)`
+    : `Coverage, last ${windowDays.value} days`
+  return repFilter.value ? `${what} — ${repFilter.value}` : what
+})
+
+const exportFilenamePrefix = computed(() => {
+  const base = `${untouchedOnly.value ? 'untouched' : 'coverage'}-${windowDays.value}d`
+  if (!repFilter.value) return base
+  const rep = repFilter.value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return rep ? `${base}-${rep}` : base
+})
+
+const EXPORT_DESCRIPTION =
+  'One row per account per rep who can see it, so a shared account appears once for ' +
+  'each rep. Contacted = that rep logged an activity on the account inside the window.'
+
+const exportDetails = computed(() => {
+  const shown = visibleRows.value
+  const reached = shown.filter((r) => r.contacted).length
+  return [
+    `Window: last ${windowDays.value} days`,
+    repFilter.value ? `Rep: ${repFilter.value}` : 'All reps',
+    untouchedOnly.value
+      ? `Untouched only (accounts contacted in the last ${windowDays.value} days hidden)`
+      : shown.length > 0 &&
+        `${count(reached)} of ${count(shown.length)} rows contacted (${Math.round((reached / shown.length) * 100)}%)`,
+    ...gridFilters.value,
   ]
-  exportCsv('coverage', visibleRows.value, csvColumns)
-}
+})
 
 /** Selected/unselected for the segmented controls. */
 function toggleClass(on: boolean) {
@@ -144,16 +180,22 @@ function toggleClass(on: boolean) {
 <template>
   <AppCard :padded="true">
     <template #header>
-      <div>
+      <div class="min-w-0">
         <h2 class="u-label text-ink">Coverage</h2>
         <p class="text-muted mt-1 text-[13px]">
           {{ contactedCount }} of {{ filteredRows.length }} contacted in
           {{ windowDays }} days · {{ coveragePct }}%
         </p>
       </div>
-      <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-        Export CSV
-      </AppButton>
+      <ExportMenu
+        :rows="visibleRows"
+        :columns="exportColumns"
+        :title="exportTitle"
+        :filename="exportFilenamePrefix"
+        :description="EXPORT_DESCRIPTION"
+        :details="exportDetails"
+        sheet-name="Coverage"
+      />
     </template>
 
     <div class="space-y-4">
@@ -215,6 +257,7 @@ function toggleClass(on: boolean) {
           :get-row-id="rowId"
           min-width="38rem"
           @rows-change="visibleRows = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-customer_key="{ row }">
             <RouterLink

@@ -28,6 +28,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import {
   MISSION_SCOPE_LABELS,
   MISSION_SCOPES,
@@ -35,7 +36,7 @@ import {
   type MissionScope,
 } from '@/types/domain'
 import { count, shortDate } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 
 /* ---- composer state ----------------------------------------------------- */
 const composing = ref(false)
@@ -140,6 +141,8 @@ async function runCreate() {
 /* ---- batches grid ------------------------------------------------------- */
 const batches = useMissionBatches()
 const visibleBatches = ref<MissionBatchProgress[]>([])
+/** The grid's own filters, in words (DataGrid filtersChange). */
+const batchFilters = ref<string[]>([])
 
 function pctDone(row: MissionBatchProgress): number {
   const total = row.total ?? 0
@@ -162,6 +165,51 @@ const batchColumns: ColumnDef<MissionBatchProgress, any>[] = [
   { id: 'detail', header: '', enableSorting: false, accessorFn: () => '' },
 ]
 
+/** Closed + dismissed: what the Done column counts. */
+const doneCount = (row: MissionBatchProgress) => (row.closed_count ?? 0) + (row.dismissed_count ?? 0)
+
+/* ---- Download: every batch on screen, with the counts behind Done. ------ */
+const batchExportColumns: ExportColumn<MissionBatchProgress>[] = [
+  { key: 'batch_id', header: 'Batch #', type: 'text' },
+  { key: 'title', header: 'Mission' },
+  {
+    key: 'requires_visit',
+    header: 'Visit required',
+    format: (row) => (row.requires_visit ? 'Yes' : 'No'),
+  },
+  { key: 'scope', header: 'Scope', format: (row) => scopeLabel(row) },
+  { key: 'due_date', header: 'Due', type: 'date' },
+  { key: 'total', header: 'Accounts', type: 'integer', format: (row) => row.total ?? 0 },
+  // pctDone() is the whole percent the screen shows; Excel wants a fraction.
+  { key: 'done', header: 'Done', type: 'percent', format: (row) => pctDone(row) / 100 },
+  { key: 'done_count', header: 'Done (accounts)', type: 'integer', format: doneCount },
+  { key: 'open_count', header: 'Open', type: 'integer', format: (row) => row.open_count ?? 0 },
+  { key: 'acted_count', header: 'Acted', type: 'integer', format: (row) => row.acted_count ?? 0 },
+  {
+    key: 'closed_count',
+    header: 'Closed',
+    type: 'integer',
+    format: (row) => row.closed_count ?? 0,
+  },
+  {
+    key: 'dismissed_count',
+    header: 'Dismissed',
+    type: 'integer',
+    format: (row) => row.dismissed_count ?? 0,
+  },
+  {
+    key: 'overdue_count',
+    header: 'Overdue',
+    type: 'integer',
+    format: (row) => row.overdue_count ?? 0,
+  },
+  { key: 'description', header: 'Why (shown to the rep)' },
+  { key: 'created_at', header: 'Created', type: 'datetime' },
+]
+const BATCH_EXPORT_DESCRIPTION =
+  'One row per mission batch. Done = closed or dismissed, as a share of the accounts in the ' +
+  'batch; Overdue = still open or acted on, past the due date.'
+
 /* ---- drill-down --------------------------------------------------------- */
 const openBatchId = ref<number | null>(null)
 const openBatch = computed(
@@ -169,6 +217,8 @@ const openBatch = computed(
 )
 const detail = useMissionDetail(openBatchId)
 const visibleDetail = ref<MissionDetail[]>([])
+/** The detail grid's own search, in words (DataGrid filtersChange). */
+const detailFilters = ref<string[]>([])
 
 const detailColumns: ColumnDef<MissionDetail, any>[] = [
   { id: 'customer_name', accessorFn: (r) => r.customer_name ?? r.customer_key ?? '', header: 'Account' },
@@ -178,19 +228,57 @@ const detailColumns: ColumnDef<MissionDetail, any>[] = [
   { id: 'outcome', accessorFn: (r) => r.outcome ?? '', header: 'Outcome' },
 ]
 
-function exportDetail() {
-  const columns: CsvColumn<MissionDetail>[] = [
-    { key: 'customer_key', header: 'Customer Key' },
-    { key: 'customer_name', header: 'Account' },
-    { key: 'rep_names', header: 'Rep' },
-    { key: 'status', header: 'Status' },
-    { key: 'due_date', header: 'Due Date' },
-    { key: 'outcome', header: 'Outcome' },
-    { key: 'outcome_note', header: 'Outcome Note' },
-    { key: 'closed_at', header: 'Closed At' },
-  ]
-  exportCsv(`mission-${openBatchId.value}`, visibleDetail.value, columns)
+/** The status badge's words: anything not closed, dismissed or acted reads Open. */
+function statusLabel(status: string | null): string {
+  if (status === 'closed') return 'Closed'
+  if (status === 'dismissed') return 'Dismissed'
+  if (status === 'acted') return 'Acted'
+  return 'Open'
 }
+
+/* ---- Download: the batch's accounts on screen, and the batch it is. ----- */
+const detailExportColumns: ExportColumn<MissionDetail>[] = [
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
+  {
+    key: 'customer_name',
+    header: 'Account',
+    format: (row) => row.customer_name ?? row.customer_key,
+  },
+  { key: 'rep_names', header: 'Rep' },
+  { key: 'status', header: 'Status', format: (row) => statusLabel(row.status) },
+  { key: 'priority', header: 'Priority' },
+  { key: 'due_date', header: 'Due', type: 'date' },
+  { key: 'outcome', header: 'Outcome' },
+  { key: 'outcome_note', header: 'Outcome note' },
+  { key: 'closed_at', header: 'Closed at', type: 'datetime' },
+]
+const detailExportTitle = computed(() =>
+  openBatch.value?.title ? `Mission — ${openBatch.value.title}` : 'Mission batch detail',
+)
+const detailExportFilename = computed(() => `mission-${openBatchId.value}`)
+/**
+ * The sheet's scope line: a rep-scoped batch stores the rep code, so name the
+ * rep beside it ("One rep: Jane Smith (JSMITH)"). Falls back to the code.
+ */
+function exportScopeLabel(row: MissionBatchProgress): string {
+  if (row.scope_type !== 'rep' || !row.scope_value) return scopeLabel(row)
+  const name = (reps.data.value ?? []).find((r) => r.sales_rep_key === row.scope_value)
+    ?.sales_rep_name
+  return name
+    ? `${MISSION_SCOPE_LABELS.rep}: ${name} (${row.scope_value})`
+    : scopeLabel(row)
+}
+const detailExportDetails = computed(() => {
+  const b = openBatch.value
+  if (!b) return [...detailFilters.value]
+  return [
+    `Scope: ${exportScopeLabel(b)}`,
+    b.due_date && `Due ${shortDate(b.due_date)}`,
+    b.requires_visit && 'A visit survey is required to close each mission',
+    `${pctDone(b)}% done (${count(doneCount(b))} of ${count(b.total)} closed or dismissed)`,
+    ...detailFilters.value,
+  ]
+})
 </script>
 
 <template>
@@ -395,13 +483,22 @@ function exportDetail() {
     <!-- Batches -->
     <AppCard>
       <template #header>
-        <div>
+        <div class="min-w-0">
           <h2 class="u-label text-ink">Mission progress</h2>
           <p class="text-muted mt-1 text-[13px]">
             {{ visibleBatches.length }}
             {{ visibleBatches.length === 1 ? 'batch' : 'batches' }}
           </p>
         </div>
+        <ExportMenu
+          :rows="visibleBatches"
+          :columns="batchExportColumns"
+          title="Mission progress"
+          filename="mission-progress"
+          :description="BATCH_EXPORT_DESCRIPTION"
+          :details="batchFilters"
+          sheet-name="Mission progress"
+        />
       </template>
 
       <AsyncState
@@ -421,6 +518,7 @@ function exportDetail() {
           :get-row-id="(row: MissionBatchProgress) => String(row.batch_id)"
           min-width="48rem"
           @rows-change="visibleBatches = $event"
+          @filters-change="batchFilters = $event"
         >
           <template #cell-title="{ row }">
             <span class="text-ink font-semibold">{{ row.title }}</span>
@@ -495,16 +593,21 @@ function exportDetail() {
     <!-- Drill-down: every account in the batch, who owns it, where it stands -->
     <AppCard v-if="openBatchId != null">
       <template #header>
-        <div>
+        <div class="min-w-0">
           <h2 class="u-label text-ink">{{ openBatch?.title ?? 'Batch detail' }}</h2>
           <p class="text-muted mt-1 text-[13px]">
             {{ visibleDetail.length }}
             {{ visibleDetail.length === 1 ? 'account' : 'accounts' }}
           </p>
         </div>
-        <AppButton variant="ghost" :disabled="!visibleDetail.length" @click="exportDetail">
-          Export CSV
-        </AppButton>
+        <ExportMenu
+          :rows="visibleDetail"
+          :columns="detailExportColumns"
+          :title="detailExportTitle"
+          :filename="detailExportFilename"
+          :details="detailExportDetails"
+          sheet-name="Mission detail"
+        />
       </template>
 
       <AsyncState
@@ -526,6 +629,7 @@ function exportDetail() {
           :get-row-id="(row: MissionDetail) => String(row.id)"
           min-width="44rem"
           @rows-change="visibleDetail = $event"
+          @filters-change="detailFilters = $event"
         >
           <template #cell-customer_name="{ row }">
             <RouterLink

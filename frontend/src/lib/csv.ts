@@ -1,5 +1,7 @@
 /**
- * CSV export — the "small CSV helper" half of TECH_STACK §2.4.
+ * CSV export — the "small CSV helper" half of TECH_STACK §2.4. The download
+ * button (components/ui/ExportMenu.vue) builds its CSV with toCsv() +
+ * downloadCsv(); lib/xlsx.ts is its Excel half.
  *
  * Dependency-free on purpose: this is the file that has to be obviously correct
  * when the untouched-accounts list lands in a sales manager's inbox. No date-fns,
@@ -16,6 +18,8 @@
  *  3. A UTF-8 BOM, because Excel on Windows otherwise reads the file as the
  *     system codepage and mangles every accented dealer name.
  */
+
+import { downloadBlob } from './download'
 
 /** Anything a cell can hold before it becomes text. */
 export type CsvValue = string | number | boolean | Date | null | undefined
@@ -98,45 +102,11 @@ export function toCsv<T>(
   return options.bom ? CSV_BOM + body : body
 }
 
-/**
- * Hand the file to the browser. The object URL is revoked on the next tick —
- * revoking synchronously after `.click()` cancels the download in Safari.
- */
+/** Hand the file to the browser (lib/download.ts), BOM added if missing. */
 export function downloadCsv(filename: string, csv: string): void {
   const name = filename.toLowerCase().endsWith('.csv') ? filename : `${filename}.csv`
   const withBom = csv.startsWith(CSV_BOM) ? csv : CSV_BOM + csv
-
-  const blob = new Blob([withBom], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-
-  try {
-    const link = document.createElement('a')
-    link.href = url
-    link.download = name
-    link.rel = 'noopener'
-    link.style.display = 'none'
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 0)
-  }
-}
-
-/** `coverage` → `coverage-2026-07-31.csv`, in the user's local date. */
-export function csvFilename(prefix: string, date: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-  return `${prefix}-${stamp}.csv`
-}
-
-/** Build + download in one call — the shape every export button wants. */
-export function exportCsv<T>(
-  prefix: string,
-  rows: readonly T[],
-  columns: readonly CsvColumn<T>[],
-): void {
-  downloadCsv(csvFilename(prefix), toCsv(rows, columns))
+  downloadBlob(name, new Blob([withBom], { type: 'text/csv;charset=utf-8;' }))
 }
 
 /**
