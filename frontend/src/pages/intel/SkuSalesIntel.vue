@@ -8,6 +8,8 @@ import {
   useTerritorySkuSales,
   type SkuPivotRow,
 } from '@/composables/useIntel'
+import { useDataFreshness } from '@/composables/useDataFreshness'
+import { useTerritoryAccounts } from '@/composables/useOverview'
 import TerritoryAccountPicker from './TerritoryAccountPicker.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import SkuProspectsSheet from '@/components/SkuProspectsSheet.vue'
@@ -16,7 +18,9 @@ import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import ProductLink from '@/components/ui/ProductLink.vue'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
+import type { ExportColumn } from '@/lib/xlsx'
+import { exportTimestamp } from '@/lib/download'
 import { count, money, shortDate } from '@/lib/format'
 
 /**
@@ -113,24 +117,59 @@ const columns = computed<ColumnDef<SkuPivotRow, any>[]>(() => [
 
 /** What's on screen is what exports — DataGrid emits its visible rows. */
 const visible = ref<SkuPivotRow[]>([])
-const csvColumns = computed<CsvColumn<SkuPivotRow>[]>(() => [
-  { key: 'part_id', header: 'SKU' },
+/** The grid's search box + column filters, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
+/* The grid unmounts while a new account loads, for "By account" with no
+   pick, and for an empty scope, and `visible` keeps the last rows it
+   emitted. Nothing on screen then, so nothing to download. */
+const exportRows = computed(() => (pivoted.value.length ? visible.value : []))
+const exportColumns = computed<ExportColumn<SkuPivotRow>[]>(() => [
+  { key: 'part_id', header: 'SKU', type: 'text' },
   { key: 'part_description', header: 'Description' },
   { key: 'product_family', header: 'Family' },
-  ...(showProductLine.value ? [{ key: 'product_code', header: 'Product line' }] : []),
+  ...(showProductLine.value
+    ? [{ key: 'product_code', header: 'Product line' } as ExportColumn<SkuPivotRow>]
+    : []),
   { key: 'chambering', header: 'Chambering' },
-  { key: 'upc', header: 'UPC' },
-  { key: 'qtyThisYear', header: `Qty ${yearNow} to date` },
-  { key: 'revenueThisYear', header: `Revenue ${yearNow} to date` },
-  { key: 'qtyLastYear', header: `Qty all of ${yearNow - 1}` },
-  { key: 'revenueLastYear', header: `Revenue all of ${yearNow - 1}` },
-  { key: 'lastInvoiceDate', header: 'Last invoice' },
+  { key: 'upc', header: 'UPC', type: 'text' },
+  // The grid's wording, with "Rev" spelled out.
+  { key: 'qtyThisYear', header: `Qty ${yearNow} so far`, type: 'number' },
+  { key: 'revenueThisYear', header: `Revenue ${yearNow} so far`, type: 'money' },
+  { key: 'qtyLastYear', header: `Qty all ${yearNow - 1}`, type: 'number' },
+  { key: 'revenueLastYear', header: `Revenue all ${yearNow - 1}`, type: 'money' },
+  { key: 'lastInvoiceDate', header: 'Last invoice', type: 'date' },
 ])
-function onExport() {
-  const prefix =
-    mode.value === 'territory' ? 'sku-sales-territory' : `sku-sales-${accountKey.value}`
-  exportCsv(prefix, visible.value, csvColumns.value)
-}
+
+/* The account's NAME for the sheet's title. The picker reads the same
+   cached book; gated on "By account" so My territory still costs nothing. */
+const book = useTerritoryAccounts(() => mode.value === 'account')
+const accountName = computed(() => {
+  const a = (book.data.value ?? []).find((x) => x.customer_key === accountKey.value)
+  return a?.customer_name || accountKey.value
+})
+
+/* What the downloaded sheet says about itself: whose sales, how fresh, the
+   year caveat, and every grid filter that narrowed it. */
+const { loadedAt, dataThrough } = useDataFreshness()
+const exportTitle = computed(() =>
+  mode.value === 'territory'
+    ? 'Sales by SKU — my territory'
+    : `Sales by SKU — ${accountName.value}`,
+)
+const exportFilenamePrefix = computed(() =>
+  mode.value === 'territory' ? 'sku-sales-territory' : `sku-sales-${accountKey.value}`,
+)
+const EXPORT_DESCRIPTION =
+  `Invoiced units and revenue by SKU. ${yearNow} is year to date; ${yearNow - 1} is ` +
+  'the whole calendar year, not the same period.'
+const exportDetails = computed(() => [
+  dataThrough.value && `Invoiced through ${shortDate(dataThrough.value)}`,
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  mode.value === 'territory'
+    ? 'Scope: my territory (every account in the book, rolled up per SKU)'
+    : `Account: ${accountName.value}`,
+  ...gridFilters.value,
+])
 </script>
 
 <template>
@@ -163,14 +202,16 @@ function onExport() {
         class="order-last w-full sm:order-none sm:w-auto sm:min-w-0 sm:max-w-sm sm:flex-1"
       />
 
-      <AppButton
-        variant="ghost"
+      <ExportMenu
         class="ml-auto"
-        :disabled="visible.length === 0"
-        @click="onExport"
-      >
-        Export CSV
-      </AppButton>
+        :rows="exportRows"
+        :columns="exportColumns"
+        :title="exportTitle"
+        :filename="exportFilenamePrefix"
+        :description="EXPORT_DESCRIPTION"
+        :details="exportDetails"
+        sheet-name="Sales by SKU"
+      />
     </div>
 
     <!--
@@ -225,6 +266,7 @@ function onExport() {
             :get-row-id="(r: SkuPivotRow) => r.part_key"
             class="p-3"
             @rows-change="visible = $event"
+            @filters-change="gridFilters = $event"
           >
             <!-- The picture lives on the website: the family page has the
                  photography the ERP doesn't. -->

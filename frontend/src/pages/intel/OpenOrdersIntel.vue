@@ -2,13 +2,15 @@
 import { computed, reactive, shallowRef } from 'vue'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useOpenOrderLines } from '@/composables/useBookLists'
+import { useDataFreshness } from '@/composables/useDataFreshness'
 import BookListCard from '@/components/BookListCard.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import type { CsvColumn } from '@/lib/csv'
-import { count, isoDate, money } from '@/lib/format'
+import { exportTimestamp } from '@/lib/download'
+import type { ExportColumn } from '@/lib/xlsx'
+import { count, isoDate, money, shortDate } from '@/lib/format'
 import {
   DEFAULT_OPEN_ORDER_FILTERS,
   distinctOptions,
@@ -126,34 +128,79 @@ const columns = computed<ColumnDef<OpenOrderLine, any>[]>(() => [
 ])
 
 const yesNo = (v: boolean) => (v ? 'Yes' : 'No')
-const csvColumns: CsvColumn<OpenOrderLine>[] = [
-  { key: 'customer_key', header: 'Customer key' },
-  { key: 'customer_id', header: 'Account ID' },
+/* The download (Excel and CSV): the screen's columns plus what the row
+   carries that helps in a spreadsheet. Ids are text so Excel keeps them as
+   typed; the discount stays a whole percent (10 = 10%), as the ERP has it. */
+const exportColumns: ExportColumn<OpenOrderLine>[] = [
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
+  { key: 'customer_id', header: 'Account ID', type: 'text' },
   { key: 'customer_name', header: 'Account' },
   { key: 'assigned_sales_rep_name', header: 'Rep' },
-  { key: 'order_id', header: 'Order #' },
-  { key: 'line_num', header: 'Line' },
-  { key: 'order_date', header: 'Order date' },
-  { key: 'customer_po_number', header: 'PO' },
+  { key: 'order_id', header: 'Order #', type: 'text' },
+  { key: 'line_num', header: 'Line', type: 'integer' },
+  { key: 'order_date', header: 'Order date', type: 'date' },
+  { key: 'customer_po_number', header: 'PO', type: 'text' },
+  { key: 'desired_ship_date', header: 'Want date', type: 'date' },
+  { key: 'promise_date', header: 'Promise', type: 'date' },
   { key: 'status', header: 'Status', format: (r) => orderStatusLabel(r.order_status, r.order_status_desc) },
-  { key: 'desired_ship_date', header: 'Want date' },
-  { key: 'promise_date', header: 'Promise date' },
-  { key: 'part_id', header: 'Part' },
+  { key: 'part_id', header: 'Part', type: 'text' },
   { key: 'part_description', header: 'Description' },
-  { key: 'product_code', header: 'Product line' },
+  { key: 'product_code', header: 'Product line', type: 'text' },
   { key: 'product_family', header: 'Family' },
-  { key: 'upc', header: 'UPC' },
-  { key: 'program_code', header: 'Program' },
-  { key: 'unit_price', header: 'Unit price' },
-  { key: 'trade_discount_pct', header: 'Discount %' },
-  { key: 'backlog_qty', header: 'Open qty' },
-  { key: 'backlog_amount', header: 'Open $' },
+  { key: 'upc', header: 'UPC', type: 'text' },
+  { key: 'program_code', header: 'Program', type: 'text' },
+  { key: 'unit_price', header: 'Unit price', type: 'money' },
+  { key: 'trade_discount_pct', header: 'Discount %', type: 'number' },
+  { key: 'backlog_qty', header: 'Open qty', type: 'number' },
+  { key: 'backlog_amount', header: 'Open $', type: 'money' },
   { key: 'credit_status', header: 'Credit status' },
   { key: 'is_past_want', header: 'Past want date', format: (r) => yesNo(r.is_past_want) },
   { key: 'is_past_promise', header: 'Past promise', format: (r) => yesNo(r.is_past_promise) },
   { key: 'is_rma', header: 'RMA / warranty', format: (r) => yesNo(r.is_rma) },
   { key: 'is_non_part', header: 'Discount / credit line', format: (r) => yesNo(r.is_non_part) },
 ]
+
+/* ---- what the downloaded sheet says about itself ---------------------- */
+const { loadedAt, ordersThrough } = useDataFreshness()
+
+const accountName = computed(() => {
+  if (!filters.account) return ''
+  const r = all.value.find((x) => x.customer_key === filters.account)
+  return r?.customer_name || r?.customer_id || filters.account
+})
+const accountLabel = computed(
+  () => accountOptions.value.find((o) => o.value === filters.account)?.label || accountName.value,
+)
+const repName = computed(() =>
+  filters.rep ? repOptions.value.find((o) => o.value === filters.rep)?.label || filters.rep : '',
+)
+
+/** Picking an account (or a rep) makes the sheet that account's list. */
+const exportTitle = computed(() => {
+  const scope = accountName.value || repName.value
+  return scope ? `Open orders — ${scope}` : 'Open orders — all accounts'
+})
+const exportFilenamePrefix = computed(() =>
+  filters.account
+    ? `open-orders-${filters.account}`
+    : filters.rep
+      ? `open-orders-rep-${repName.value}`
+      : 'open-orders',
+)
+const EXPORT_DESCRIPTION =
+  'Every open order line (Released, Firmed or Hold). Open $ is the unshipped value of the ' +
+  'line — owed on open orders, not yet invoiced revenue.'
+const exportDetails = computed(() => [
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  ordersThrough.value && `Orders through ${shortDate(ordersThrough.value)}`,
+  filters.account && `Account: ${accountLabel.value}`,
+  filters.rep && `Rep: ${repName.value}`,
+  filters.productLine && `Product line: ${filters.productLine}`,
+  filters.status && `Status: ${filters.status}`,
+  filters.pastWantOnly && 'Only lines past their want date',
+  filters.hideRma ? 'RMA / warranty lines hidden' : 'Includes RMA / warranty lines',
+  filters.hideNonPart ? 'Discount / credit lines hidden' : 'Includes discount / credit lines',
+])
 
 const accountLink = (r: OpenOrderLine) => ({
   name: 'account',
@@ -236,8 +283,11 @@ const chip = (on: boolean) =>
         title="Open order lines"
         :rows="filtered"
         :columns="columns"
-        :csv-columns="csvColumns"
-        csv-prefix="open-orders"
+        :export-columns="exportColumns"
+        :export-filename="exportFilenamePrefix"
+        :export-title="exportTitle"
+        :export-description="EXPORT_DESCRIPTION"
+        :export-details="exportDetails"
         :totals="totalsFor"
         :get-row-id="(r: OpenOrderLine) => `${r.order_id}:${r.line_num}`"
         search-placeholder="PO, order #, part or description…"

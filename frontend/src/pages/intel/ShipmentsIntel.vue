@@ -4,11 +4,13 @@ import { useNow } from '@vueuse/core'
 import { parseISO } from 'date-fns'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useBookShipments } from '@/composables/useBookLists'
+import { useDataFreshness } from '@/composables/useDataFreshness'
 import BookListCard from '@/components/BookListCard.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import type { CsvColumn } from '@/lib/csv'
+import { exportTimestamp } from '@/lib/download'
+import type { ExportColumn } from '@/lib/xlsx'
 import { count, humanize, isoDate, money, shortDate } from '@/lib/format'
 import { trackingList, upsTrackUrl } from '@/lib/tracking'
 import {
@@ -175,55 +177,112 @@ const packlistColumns = computed<ColumnDef<PacklistRow, any>[]>(() => [
   { id: 'ship_to', header: 'Ship-to', accessorFn: (r) => shipToText(r) },
 ])
 
-/* ---- CSV ---------------------------------------------------------------- */
-const lineCsv: CsvColumn<BookShipmentLine>[] = [
-  { key: 'ship_date', header: 'Ship date' },
-  { key: 'customer_key', header: 'Customer key' },
+/* ---- the download (Excel and CSV) -------------------------------------
+   The screen's columns plus what the row carries that helps in a
+   spreadsheet. Packlist, order, PO, invoice and tracking numbers are text so
+   Excel keeps them as typed; the discount stays a whole percent (10 = 10%),
+   as the ERP has it. Ship-to is split into name, city and state so it sorts. */
+/** What the Invoice column says: the ERP status, or "Not invoiced yet". */
+const invoiceStatusText = (r: BookShipmentLine) =>
+  r.invoice_id ? (r.invoice_status ? humanize(r.invoice_status) : null) : 'Not invoiced yet'
+
+const lineExport: ExportColumn<BookShipmentLine>[] = [
+  { key: 'ship_date', header: 'Shipped', type: 'date' },
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
   { key: 'customer_name', header: 'Account' },
   { key: 'assigned_sales_rep_name', header: 'Rep' },
-  { key: 'packlist_id', header: 'Packlist' },
-  { key: 'line_num', header: 'Packlist line' },
-  { key: 'order_id', header: 'Order #' },
-  { key: 'order_line_no', header: 'Order line' },
-  { key: 'customer_po_number', header: 'PO' },
-  { key: 'part_id', header: 'Part' },
+  { key: 'packlist_id', header: 'Packlist', type: 'text' },
+  { key: 'line_num', header: 'Packlist line', type: 'integer' },
+  { key: 'order_id', header: 'Order #', type: 'text' },
+  { key: 'order_line_no', header: 'Order line', type: 'integer' },
+  { key: 'customer_po_number', header: 'PO', type: 'text' },
+  { key: 'part_id', header: 'Part', type: 'text' },
   { key: 'part_description', header: 'Description' },
-  { key: 'product_code', header: 'Product line' },
-  { key: 'shipped_qty', header: 'Qty' },
-  { key: 'unit_price', header: 'Unit price' },
-  { key: 'trade_discount_pct', header: 'Discount %' },
-  { key: 'shipped_value', header: 'Shipped value' },
-  { key: 'invoice_id', header: 'Invoice #' },
-  { key: 'invoice_status', header: 'Invoice status' },
+  { key: 'product_code', header: 'Product line', type: 'text' },
+  { key: 'shipped_qty', header: 'Qty', type: 'number' },
+  { key: 'unit_price', header: 'Unit price', type: 'money' },
+  { key: 'trade_discount_pct', header: 'Discount %', type: 'number' },
+  { key: 'shipped_value', header: 'Shipped value', type: 'money' },
+  { key: 'invoice_id', header: 'Invoice', type: 'text' },
+  { key: 'invoice_status', header: 'Invoice status', format: invoiceStatusText },
   { key: 'ship_via', header: 'Ship via' },
-  { key: 'tracking_number', header: 'Tracking' },
+  { key: 'tracking_number', header: 'Tracking', type: 'text' },
   { key: 'ship_to_name', header: 'Ship-to' },
   { key: 'ship_to_city', header: 'Ship-to city' },
-  { key: 'ship_to_state', header: 'Ship-to state' },
+  { key: 'ship_to_state', header: 'Ship-to state', type: 'text' },
 ]
-const packlistCsv: CsvColumn<PacklistRow>[] = [
-  { key: 'ship_date', header: 'Ship date' },
-  { key: 'customer_key', header: 'Customer key' },
+const packlistExport: ExportColumn<PacklistRow>[] = [
+  { key: 'ship_date', header: 'Shipped', type: 'date' },
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
   { key: 'customer_name', header: 'Account' },
   { key: 'assigned_sales_rep_name', header: 'Rep' },
-  { key: 'packlist_id', header: 'Packlist' },
-  { key: 'order_ids', header: 'Orders' },
-  { key: 'customer_po_numbers', header: 'PO' },
-  { key: 'product_codes', header: 'Product lines' },
-  { key: 'line_count', header: 'Lines' },
-  { key: 'shipped_qty', header: 'Qty' },
-  { key: 'shipped_value', header: 'Shipped value' },
-  { key: 'invoice_ids', header: 'Invoices' },
-  { key: 'uninvoiced_lines', header: 'Lines not invoiced yet' },
+  { key: 'packlist_id', header: 'Packlist', type: 'text' },
+  { key: 'order_ids', header: 'Orders', type: 'text' },
+  { key: 'customer_po_numbers', header: 'PO', type: 'text' },
+  { key: 'product_codes', header: 'Product lines', type: 'text' },
+  { key: 'line_count', header: 'Lines', type: 'integer' },
+  { key: 'shipped_qty', header: 'Qty', type: 'number' },
+  { key: 'shipped_value', header: 'Shipped value', type: 'money' },
+  { key: 'invoice_ids', header: 'Invoice', type: 'text' },
+  { key: 'uninvoiced_lines', header: 'Lines not invoiced yet', type: 'integer' },
   { key: 'ship_via', header: 'Ship via' },
-  { key: 'tracking_numbers', header: 'Tracking' },
+  { key: 'tracking_numbers', header: 'Tracking', type: 'text' },
   { key: 'ship_to_name', header: 'Ship-to' },
   { key: 'ship_to_city', header: 'Ship-to city' },
-  { key: 'ship_to_state', header: 'Ship-to state' },
+  { key: 'ship_to_state', header: 'Ship-to state', type: 'text' },
 ]
-const csvPrefix = computed(
-  () => `shipments-${grain.value === 'line' ? 'lines' : 'packlists'}-${range.value.from}-to-${range.value.to}`,
+
+/* ---- what the downloaded sheet says about itself ---------------------- */
+const { loadedAt, dataThrough } = useDataFreshness()
+
+const accountName = computed(() =>
+  filters.account
+    ? accountOptions.value.find((o) => o.value === filters.account)?.label || filters.account
+    : '',
 )
+const presetLabel = computed(
+  () => SHIPMENT_PRESETS.find((p) => p.value === preset.value)?.label ?? '',
+)
+
+/** "Shipment lines — Scheels, Jan 1, 2026 – Nov 14, 2026". */
+const exportTitle = computed(() => {
+  const what = grain.value === 'line' ? 'Shipment lines' : 'Packlists'
+  const scope = accountName.value || filters.rep
+  return [scope ? `${what} — ${scope}` : `${what} — all accounts`, rangeText.value]
+    .filter(Boolean)
+    .join(', ')
+})
+const exportFilenamePrefix = computed(() => {
+  const scope = filters.account || (filters.rep ? `rep-${filters.rep}` : '')
+  return [
+    'shipments',
+    grain.value === 'line' ? 'lines' : 'packlists',
+    scope,
+    `${range.value.from}-to-${range.value.to}`,
+  ]
+    .filter(Boolean)
+    .join('-')
+})
+const exportDescription = computed(
+  () =>
+    (grain.value === 'packlist' ? 'One row per packlist, rolled up from its lines. ' : '') +
+    'Shipped value is the packlist value (qty × price net of trade discount), not invoiced ' +
+    'revenue; the invoice columns show which lines have been billed.',
+)
+const exportDetails = computed(() => [
+  loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+  dataThrough.value && `Invoiced through ${shortDate(dataThrough.value)}`,
+  rangeText.value &&
+    (preset.value === 'custom'
+      ? `Shipped ${rangeText.value}`
+      : `Shipped ${rangeText.value} (${presetLabel.value})`),
+  filters.account && `Account: ${accountName.value}`,
+  filters.rep && `Rep: ${filters.rep}`,
+  filters.productLine &&
+    (grain.value === 'packlist'
+      ? `Product line: ${filters.productLine} (packlist totals count only those lines)`
+      : `Product line: ${filters.productLine}`),
+])
 
 const accountLink = (customerKey: string) => ({ name: 'account', params: { customerKey } })
 
@@ -355,8 +414,11 @@ const chip = (on: boolean) => (on ? 'bg-ink text-canvas' : 'text-muted')
           title="Shipment lines"
           :rows="filteredLines"
           :columns="lineColumns"
-          :csv-columns="lineCsv"
-          :csv-prefix="csvPrefix"
+          :export-columns="lineExport"
+          :export-filename="exportFilenamePrefix"
+          :export-title="exportTitle"
+          :export-description="exportDescription"
+          :export-details="exportDetails"
           :totals="totalsFor"
           :get-row-id="(r: BookShipmentLine) => `${r.packlist_id}:${r.line_num}`"
           search-placeholder="PO, order #, packlist, part or tracking…"
@@ -463,8 +525,11 @@ const chip = (on: boolean) => (on ? 'bg-ink text-canvas' : 'text-muted')
           title="Packlists"
           :rows="packlists"
           :columns="packlistColumns"
-          :csv-columns="packlistCsv"
-          :csv-prefix="csvPrefix"
+          :export-columns="packlistExport"
+          :export-filename="exportFilenamePrefix"
+          :export-title="exportTitle"
+          :export-description="exportDescription"
+          :export-details="exportDetails"
           :totals="totalsFor"
           :get-row-id="(r: PacklistRow) => r.key"
           search-placeholder="PO, order #, packlist or tracking…"

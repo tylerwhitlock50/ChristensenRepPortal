@@ -26,6 +26,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ColumnDef } from '@tanstack/vue-table'
 import { useSessionStore } from '@/stores/session'
+import { useDataFreshness } from '@/composables/useDataFreshness'
 import {
   activeWithin,
   agencyTotals,
@@ -33,11 +34,14 @@ import {
   goalProgress,
   monthlySeriesRows,
   portalState,
+  NO_REP_LABEL,
   rollUpAgencyChannels,
   useAgencyActivity,
   useAgencyLargeOrders,
   useAgencyRepPerformance,
   useAgencySalesByMonth,
+  type AgencyChannelLine,
+  type AgencyLargeOrder,
   type AgencyRepLine,
 } from '@/composables/useAgency'
 import { shareOf, useRepGroupPerformance, yoyPct } from '@/composables/useAdminReports'
@@ -47,11 +51,12 @@ import FreshnessStamp from '@/components/FreshnessStamp.vue'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
 import RevenueYearChart from '@/components/RevenueYearChart.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import StatTile from '@/components/ui/StatTile.vue'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import { exportTimestamp } from '@/lib/download'
+import type { ExportColumn } from '@/lib/xlsx'
 import { count, daysAgo, money, share, shortDate } from '@/lib/format'
 
 const session = useSessionStore()
@@ -172,6 +177,8 @@ const withoutLogin = computed(
 /* ---- reps table ---------------------------------------------------------- */
 const search = ref('')
 const visibleLines = ref<AgencyRepLine[]>([])
+/** The grid's search box, in words (DataGrid filtersChange). */
+const repGridFilters = ref<string[]>([])
 
 function yoy(row: AgencyRepLine) {
   return yoyPct(row.revenue_ytd, row.revenue_prior_ytd)
@@ -261,40 +268,141 @@ function portalCell(
   return row.portal ? pick(row.portal) : null
 }
 
-function onExport() {
-  const csvColumns: CsvColumn<AgencyRepLine>[] = [
-    { key: 'name', header: 'Rep' },
-    { key: 'sales_rep_key', header: 'Rep Code' },
-    { key: 'is_principal', header: 'Principal', format: (r) => (r.is_principal ? 'Yes' : '') },
-    { key: 'accounts', header: 'Accounts' },
-    { key: 'buying_accounts', header: 'Accounts With Revenue YTD' },
-    { key: 'lapsed_accounts', header: 'Lapsed Accounts' },
-    { key: 'new_accounts', header: 'New Accounts This Year' },
-    { key: 'revenue_ytd', header: 'Revenue YTD' },
-    { key: 'revenue_prior_ytd', header: 'Revenue Prior YTD' },
-    { key: 'yoy_pct', header: 'Revenue YoY Percent', format: (r) => yoy(r)?.toFixed(1) ?? '' },
-    { key: 'revenue_trailing_12m', header: 'Revenue Trailing 12m' },
-    { key: 'bookings_ytd', header: 'Booked YTD' },
-    { key: 'open_order_value', header: 'Open Order Value' },
-    { key: 'backlog_amount', header: 'Past Promise Amount' },
-    { key: 'goal_total', header: 'Goal Total' },
-    { key: 'goal_revenue_ytd', header: 'Revenue YTD On Goal Accounts' },
-    { key: 'goal_expected', header: 'Expected By Today (Seasonal)' },
-    {
-      key: 'attainment_pct',
-      header: 'Percent Of Goal',
-      format: (r) => attainment(r)?.toFixed(1) ?? '',
-    },
-    { key: 'workable_accounts', header: 'Accounts Being Worked' },
-    { key: 'contacted_30d', header: 'Worked Accounts Contacted In 30 Days' },
-    { key: 'last_login', header: 'Last Active', format: (r) => portalCell(r, (p) => p.last_login_at) },
-    { key: 'logins_30d', header: 'App Opens 30 Days', format: (r) => portalCell(r, (p) => p.logins_30d) },
-    { key: 'active_days_30d', header: 'Active Days 30 Days', format: (r) => portalCell(r, (p) => p.active_days_30d) },
-    { key: 'actions_30d', header: 'Actions Logged 30 Days', format: (r) => portalCell(r, (p) => p.actions_30d) },
-    { key: 'visits_30d', header: 'Visits Logged 30 Days', format: (r) => portalCell(r, (p) => p.visits_30d) },
-  ]
-  exportCsv(`agency-reps-${agencyName.value || 'agency'}`, visibleLines.value, csvColumns)
+/** A 0–100 whole percent → the fraction Excel's percent format wants. */
+function pctFraction(pct: number | null | undefined): number | null {
+  return pct == null || !Number.isFinite(pct) ? null : pct / 100
 }
+
+/** YoY as the screen shows it: a fraction, 'new' with no sales last year, else blank. */
+function yoyCell(current: number, prior: number): number | string | null {
+  const pct = yoyPct(current, prior)
+  if (pct == null) return current > 0 ? 'new' : null
+  return pct / 100
+}
+
+/** The "Last active" column's state, in the screen's words. */
+function portalStatus(row: AgencyRepLine): string {
+  switch (portalState(row, activityLoaded.value)) {
+    case 'unknown':
+      return 'not loaded'
+    case 'none':
+      return row.sales_rep_key ? 'No portal login' : ''
+    case 'deactivated':
+      return 'Login deactivated'
+    case 'never':
+      return 'Never signed in'
+    case 'active':
+      return 'Active'
+  }
+}
+
+const repExportColumns: ExportColumn<AgencyRepLine>[] = [
+  { key: 'name', header: 'Rep' },
+  { key: 'sales_rep_key', header: 'Rep Code', type: 'text' },
+  { key: 'is_principal', header: 'Principal', format: (r) => (r.is_principal ? 'Yes' : 'No') },
+  { key: 'accounts', header: 'Accounts', type: 'integer' },
+  { key: 'buying_accounts', header: 'Accounts With Revenue YTD', type: 'integer' },
+  { key: 'lapsed_accounts', header: 'Lapsed Accounts', type: 'integer' },
+  { key: 'new_accounts', header: 'New Accounts This Year', type: 'integer' },
+  { key: 'revenue_ytd', header: 'Revenue YTD', type: 'money' },
+  { key: 'revenue_prior_ytd', header: 'Revenue Prior YTD', type: 'money' },
+  {
+    key: 'yoy_pct',
+    header: 'Revenue YoY',
+    type: 'percent',
+    format: (r) => (noBook(r) ? null : yoyCell(r.revenue_ytd, r.revenue_prior_ytd)),
+  },
+  { key: 'revenue_trailing_12m', header: 'Revenue Trailing 12m', type: 'money' },
+  { key: 'bookings_ytd', header: 'Booked YTD', type: 'money' },
+  { key: 'open_order_value', header: 'Open Order Value', type: 'money' },
+  { key: 'backlog_amount', header: 'Past Promise Amount', type: 'money' },
+  { key: 'goal_total', header: 'Goal Total', type: 'money' },
+  { key: 'goal_revenue_ytd', header: 'Revenue YTD On Goal Accounts', type: 'money' },
+  { key: 'goal_expected', header: 'Expected By Today (Seasonal)', type: 'money' },
+  {
+    key: 'attainment_pct',
+    header: 'Percent Of Goal',
+    type: 'percent',
+    format: (r) => pctFraction(attainment(r)),
+  },
+  { key: 'workable_accounts', header: 'Accounts Being Worked', type: 'integer' },
+  { key: 'contacted_30d', header: 'Worked Accounts Contacted In 30 Days', type: 'integer' },
+  {
+    key: 'coverage_pct',
+    header: 'Contacted 30 Days (% Of Worked)',
+    type: 'percent',
+    format: (r) => pctFraction(coveragePct(r)),
+  },
+  { key: 'portal_status', header: 'Portal Login', format: (r) => portalStatus(r) },
+  {
+    key: 'last_login',
+    header: 'Last Active',
+    type: 'datetime',
+    format: (r) => portalCell(r, (p) => p.last_login_at),
+  },
+  {
+    key: 'logins_30d',
+    header: 'App Opens 30 Days',
+    type: 'integer',
+    format: (r) => portalCell(r, (p) => p.logins_30d),
+  },
+  {
+    key: 'active_days_30d',
+    header: 'Active Days 30 Days',
+    type: 'integer',
+    format: (r) => portalCell(r, (p) => p.active_days_30d),
+  },
+  {
+    key: 'actions_30d',
+    header: 'Actions Logged 30 Days',
+    type: 'integer',
+    format: (r) => portalCell(r, (p) => p.actions_30d),
+  },
+  {
+    key: 'visits_30d',
+    header: 'Visits Logged 30 Days',
+    type: 'integer',
+    format: (r) => portalCell(r, (p) => p.visits_30d),
+  },
+]
+
+/* What each downloaded sheet says about itself: the page's freshness stamp
+   (FreshnessStamp: invoiced through · orders through · loaded), whose book
+   it is, and every picker that narrowed it. */
+const { loadedAt, dataThrough, ordersThrough } = useDataFreshness()
+const invoicedThroughLine = computed(
+  () => dataThrough.value && `Invoiced through ${shortDate(dataThrough.value)}`,
+)
+const ordersThroughLine = computed(
+  () => ordersThrough.value && `Orders through ${shortDate(ordersThrough.value)}`,
+)
+const loadedLine = computed(
+  () => loadedAt.value && `Data loaded ${exportTimestamp(new Date(loadedAt.value))}`,
+)
+/** The admin door reads the ERP's assignment, not the principal's screen. */
+const adminScopeLine = adminView
+  ? "The agency's book as the ERP assigns it; a principal's own account grants and revokes are not applied"
+  : null
+const agencyLabel = computed(() => agencyName.value || 'Agency')
+const agencyKey = computed(() => agencyName.value || 'agency')
+
+const repExportTitle = computed(
+  () => `${adminView ? 'Agency reps' : 'Your reps'} — ${agencyLabel.value}`,
+)
+const REP_EXPORT_DESCRIPTION =
+  'Year to date, active external accounts. Revenue is invoiced; booked is orders placed. ' +
+  'Goal pace is seasonal, each account against its own last year; portal use is over the last 30 days.'
+const repExportDetails = computed(() => [
+  invoicedThroughLine.value,
+  ordersThrough.value !== dataThrough.value && ordersThroughLine.value,
+  loadedLine.value,
+  adminScopeLine,
+  !!activity.error.value &&
+    (activityLoaded.value
+      ? "Portal activity couldn't refresh: the portal columns are the last copy loaded"
+      : "Portal activity didn't load: the portal columns read \"not loaded\""),
+  ...repGridFilters.value,
+])
 
 /* ---- one rep or the whole agency, for the chart and the channel mix ------ */
 /** '' = the whole agency; otherwise a line id from buildRepLines(). */
@@ -340,6 +448,73 @@ const channelTotal = computed(() => agencyTotals(channels.value).revenue_ytd)
 const WINDOWS = [7, 30, 90] as const
 const orderDays = ref<number>(30)
 const largeOrders = useAgencyLargeOrders(vendor, orderDays, ready)
+
+const largeOrderRows = computed(() => largeOrders.data.value ?? [])
+const largeOrderExportColumns: ExportColumn<AgencyLargeOrder>[] = [
+  { key: 'customer_name', header: 'Account', format: (o) => o.customer_name || o.customer_key },
+  { key: 'customer_id', header: 'Account ID', type: 'text' },
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
+  { key: 'sales_rep_name', header: 'Rep', format: (o) => o.sales_rep_name || NO_REP_LABEL },
+  { key: 'sales_rep_key', header: 'Rep code', type: 'text' },
+  { key: 'order_date', header: 'Order date', type: 'date' },
+  { key: 'order_id', header: 'Order #', type: 'text' },
+  { key: 'amount', header: 'Amount', type: 'money' },
+  { key: 'line_count', header: 'Lines', type: 'integer' },
+  { key: 'has_open_lines', header: 'Open lines', format: (o) => (o.has_open_lines ? 'Yes' : 'No') },
+]
+const largeOrderExportTitle = computed(
+  () => `Largest orders, last ${orderDays.value} days — ${agencyLabel.value}`,
+)
+const LARGE_ORDER_EXPORT_DESCRIPTION =
+  'The biggest orders placed across the agency in the window, by order value (bookings, ' +
+  'not yet invoiced revenue). Cancelled orders are left out.'
+const largeOrderExportDetails = computed(() => [
+  ordersThroughLine.value,
+  loadedLine.value,
+  adminScopeLine,
+  `Window: orders placed in the last ${orderDays.value} days`,
+])
+
+/* ---- channel mix export -------------------------------------------------- */
+const channelExportColumns = computed<ExportColumn<AgencyChannelLine>[]>(() => [
+  { key: 'channel', header: 'Channel' },
+  { key: 'accounts', header: 'Accounts', type: 'integer' },
+  { key: 'buying_accounts', header: 'Buying accounts', type: 'integer' },
+  { key: 'lapsed_accounts', header: 'Lapsed accounts', type: 'integer' },
+  { key: 'revenue_ytd', header: 'Revenue YTD', type: 'money' },
+  { key: 'revenue_prior_ytd', header: 'Revenue prior YTD', type: 'money' },
+  {
+    key: 'yoy_pct',
+    header: 'YoY',
+    type: 'percent',
+    format: (c) => yoyCell(c.revenue_ytd, c.revenue_prior_ytd),
+  },
+  {
+    key: 'share',
+    header: 'Share of year',
+    type: 'percent',
+    format: (c) => shareOf(c.revenue_ytd, channelTotal.value),
+  },
+])
+const channelExportTitle = computed(() =>
+  channelRep.value
+    ? `Channels — ${repName(channelRep.value)} (${agencyLabel.value})`
+    : `Channels — ${agencyLabel.value}`,
+)
+const channelExportFilename = computed(() =>
+  channelRep.value
+    ? `agency-channels-${agencyKey.value}-${repKeyOf(channelRep.value) ?? 'no-rep'}`
+    : `agency-channels-${agencyKey.value}`,
+)
+const CHANNEL_EXPORT_DESCRIPTION =
+  'Year to date by sales channel, active external accounts. Revenue is invoiced; share is ' +
+  "each channel's part of the revenue on this sheet."
+const channelExportDetails = computed(() => [
+  invoicedThroughLine.value,
+  loadedLine.value,
+  adminScopeLine,
+  `Rep: ${channelRep.value ? repName(channelRep.value) : 'All reps'}`,
+])
 
 /* ---- empty states -------------------------------------------------------- */
 /** Decided by the book. The principal is always in their own activity list,
@@ -473,16 +648,22 @@ const emptyBody = computed(() =>
       <!-- 2 · Every rep -->
       <AppCard class="mt-5">
         <template #header>
-          <div>
+          <div class="min-w-0">
             <h2 class="u-label text-ink">{{ adminView ? 'Reps' : 'Your reps' }}</h2>
             <p class="text-muted mt-1 text-[13px]">
               Year to date · goal pace is seasonal, each account against its own
               last year · portal use over 30 days
             </p>
           </div>
-          <AppButton variant="ghost" :disabled="!visibleLines.length" @click="onExport">
-            Export CSV
-          </AppButton>
+          <ExportMenu
+            :rows="visibleLines"
+            :columns="repExportColumns"
+            :title="repExportTitle"
+            :filename="`agency-reps-${agencyKey}`"
+            :description="REP_EXPORT_DESCRIPTION"
+            :details="repExportDetails"
+            sheet-name="Reps"
+          />
         </template>
 
         <!-- Nothing loaded: say so, loudly. A failed refresh over activity that
@@ -516,6 +697,7 @@ const emptyBody = computed(() =>
           :get-row-id="(row: AgencyRepLine) => row.id"
           min-width="62rem"
           @rows-change="visibleLines = $event"
+          @filters-change="repGridFilters = $event"
         >
           <template #cell-name="{ row }">
             <span class="text-ink font-semibold">{{ row.name }}</span>
@@ -713,24 +895,35 @@ const emptyBody = computed(() =>
         <!-- 4 · The big orders, and whose they are -->
         <AppCard :padded="false">
           <template #header>
-            <div>
+            <div class="min-w-0">
               <h2 class="u-label text-ink">Largest orders</h2>
               <p class="text-muted mt-1 text-[13px]">
                 Biggest placed in the last {{ orderDays }} days, cancelled left out
               </p>
             </div>
-            <div class="border-line flex border" role="group" aria-label="Order window">
-              <button
-                v-for="d in WINDOWS"
-                :key="d"
-                type="button"
-                class="tap-target font-label min-w-11 px-3 text-[13px] font-semibold tracking-[0.12em] uppercase"
-                :class="orderDays === d ? 'bg-ink text-canvas' : 'text-muted'"
-                :aria-pressed="orderDays === d"
-                @click="orderDays = d"
-              >
-                {{ d }}d
-              </button>
+            <div class="flex flex-wrap items-center justify-end gap-2">
+              <div class="border-line flex border" role="group" aria-label="Order window">
+                <button
+                  v-for="d in WINDOWS"
+                  :key="d"
+                  type="button"
+                  class="tap-target font-label min-w-11 px-3 text-[13px] font-semibold tracking-[0.12em] uppercase"
+                  :class="orderDays === d ? 'bg-ink text-canvas' : 'text-muted'"
+                  :aria-pressed="orderDays === d"
+                  @click="orderDays = d"
+                >
+                  {{ d }}d
+                </button>
+              </div>
+              <ExportMenu
+                :rows="largeOrderRows"
+                :columns="largeOrderExportColumns"
+                :title="largeOrderExportTitle"
+                :filename="`agency-largest-orders-${agencyKey}-${orderDays}d`"
+                :description="LARGE_ORDER_EXPORT_DESCRIPTION"
+                :details="largeOrderExportDetails"
+                sheet-name="Largest orders"
+              />
             </div>
           </template>
           <div :class="largeOrders.data.value?.length ? '' : 'p-4'">
@@ -777,19 +970,30 @@ const emptyBody = computed(() =>
       <!-- 5 · Channel mix, whole agency or one rep -->
       <AppCard class="mt-5" :padded="false">
         <template #header>
-          <div>
+          <div class="min-w-0">
             <h2 class="u-label text-ink">Channels</h2>
             <p class="text-muted mt-1 text-[13px]">
               Where {{ channelRep ? repName(channelRep) + '\'s' : 'the agency\'s' }} year
               is coming from
             </p>
           </div>
-          <div>
-            <label class="sr-only" for="channel-rep">Show one rep</label>
-            <select id="channel-rep" v-model="channelRep" class="field max-w-48">
-              <option value="">All reps</option>
-              <option v-for="r in repChoices" :key="r.id" :value="r.id">{{ r.name }}</option>
-            </select>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <div>
+              <label class="sr-only" for="channel-rep">Show one rep</label>
+              <select id="channel-rep" v-model="channelRep" class="field max-w-48">
+                <option value="">All reps</option>
+                <option v-for="r in repChoices" :key="r.id" :value="r.id">{{ r.name }}</option>
+              </select>
+            </div>
+            <ExportMenu
+              :rows="channels"
+              :columns="channelExportColumns"
+              :title="channelExportTitle"
+              :filename="channelExportFilename"
+              :description="CHANNEL_EXPORT_DESCRIPTION"
+              :details="channelExportDetails"
+              sheet-name="Channels"
+            />
           </div>
         </template>
         <p v-if="channels.length === 0" class="text-muted p-4 text-[15px]">

@@ -29,7 +29,8 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
 import DataGrid from '@/components/DataGrid.vue'
 import GoalProgressBar from '@/components/GoalProgressBar.vue'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
+import type { ExportColumn } from '@/lib/xlsx'
 import { count as fmtCount, humanize, money, shortDate } from '@/lib/format'
 import { formatAddress, MAX_ROUTE_STOPS, multiStopRouteUrl } from '@/lib/maps'
 
@@ -176,23 +177,68 @@ const tableColumns: ColumnDef<AccountTableRow, any>[] = [
 ]
 
 const tableVisible = ref<AccountTableRow[]>([])
-const tableCsvColumns: CsvColumn<AccountTableRow>[] = [
-  { key: 'customer_key', header: 'Customer key' },
+/** The grid's search + Rep filter, in words (DataGrid filtersChange). */
+const tableGridFilters = ref<string[]>([])
+/* An empty result unmounts the grid and `tableVisible` keeps what it last
+   emitted: nothing on screen then, so nothing to download. */
+const tableExportRows = computed(() => (tableRows.value.length ? tableVisible.value : []))
+
+/** A 0–100 whole percent → the fraction Excel's percent format wants. */
+function pctFraction(value: number | null | undefined): number | null {
+  return value == null || !Number.isFinite(value) ? null : value / 100
+}
+
+const tableExportColumns: ExportColumn<AccountTableRow>[] = [
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
   { key: 'customer_name', header: 'Account' },
   { key: 'sold_to_city', header: 'City' },
   { key: 'sold_to_state', header: 'State' },
   { key: 'assigned_sales_rep_name', header: 'Rep' },
-  { key: 'revenue_ytd', header: 'YTD revenue' },
-  { key: 'revenue_prior_ytd', header: 'PYTD revenue' },
-  { key: 'revenue_prior_full', header: 'PY revenue' },
-  { key: 'bookings_ytd', header: 'YTD orders' },
-  { key: 'bookings_prior_ytd', header: 'PYTD orders' },
-  { key: 'open_order_value', header: 'Open order value' },
-  { key: 'open_order_count', header: 'Open order count' },
-  { key: 'goal_amount', header: 'Goal' },
-  { key: 'attainment_pct', header: '% of goal' },
-  { key: 'last_order_date', header: 'Last order' },
+  { key: 'revenue_ytd', header: 'YTD revenue', type: 'money' },
+  { key: 'revenue_prior_ytd', header: 'PYTD revenue', type: 'money' },
+  { key: 'revenue_prior_full', header: 'PY revenue', type: 'money' },
+  { key: 'bookings_ytd', header: 'YTD orders', type: 'money' },
+  { key: 'bookings_prior_ytd', header: 'PYTD orders', type: 'money' },
+  { key: 'open_order_value', header: 'Open orders', type: 'money' },
+  { key: 'open_order_count', header: 'Open order count', type: 'integer' },
+  { key: 'goal_amount', header: 'Goal', type: 'money' },
+  {
+    key: 'attainment_pct',
+    header: '% of goal',
+    type: 'percent',
+    format: (r) => pctFraction(r.attainment_pct),
+  },
+  // The screen shows behind-pace attainment in ember; the file says it.
+  {
+    key: 'on_track',
+    header: 'On goal pace',
+    format: (r) => (r.on_track == null ? null : r.on_track ? 'Yes' : 'No'),
+  },
+  {
+    key: 'pct_of_pytd',
+    header: '% of PYTD',
+    type: 'percent',
+    format: (r) => pctFraction(pctOfPytd(r)),
+  },
+  { key: 'last_order_date', header: 'Last order', type: 'date' },
 ]
+
+const tableExportTitle = computed(() =>
+  goalMode.value ? `Accounts behind goal — ${goalYear}` : 'Accounts — revenue and orders',
+)
+const tableExportFilename = computed(() =>
+  goalMode.value ? `accounts-behind-goal-${goalYear}` : 'accounts',
+)
+const TABLE_EXPORT_DESCRIPTION =
+  'Revenue is invoiced (shipped and billed); orders are bookings (placed). YTD is this year ' +
+  'to date, PYTD the same days last year, PY all of last year. Internal customers are left out.'
+const tableExportDetails = computed(() => [
+  activeOnly.value
+    ? 'Active accounts only (inactive and deactivated hidden)'
+    : 'Includes inactive and deactivated accounts',
+  goalMode.value && `Behind goal: accounts with a ${goalYear} goal that are behind pace`,
+  ...tableGridFilters.value,
+])
 
 function pct(value: number | null | undefined): string {
   // The finite check matters: attainment against a zero-ish goal upstream
@@ -558,13 +604,19 @@ function goalAmounts(g: AccountGoalProgress): string {
           </template>
           <template v-else>Revenue is invoiced; orders are bookings.</template>
         </p>
-        <AppButton
-          variant="ghost"
-          :disabled="tableVisible.length === 0"
-          @click="exportCsv('accounts', tableVisible, tableCsvColumns)"
-        >
-          Export CSV
-        </AppButton>
+        <!-- Disabled while "Active only" is refetching: keepPreviousData
+             keeps the old list on screen, and the file would carry it under
+             the new toggle's label. -->
+        <ExportMenu
+          :rows="tableExportRows"
+          :disabled="tableQuery.isPlaceholderData.value"
+          :columns="tableExportColumns"
+          :title="tableExportTitle"
+          :filename="tableExportFilename"
+          :description="TABLE_EXPORT_DESCRIPTION"
+          :details="tableExportDetails"
+          sheet-name="Accounts"
+        />
       </div>
 
       <div class="border-line bg-surface border p-3">
@@ -576,6 +628,7 @@ function goalAmounts(g: AccountGoalProgress): string {
           :get-row-id="(r: AccountTableRow) => r.customer_key"
           min-width="72rem"
           @rows-change="tableVisible = $event"
+          @filters-change="tableGridFilters = $event"
         >
           <template #cell-account="{ row }">
             <RouterLink

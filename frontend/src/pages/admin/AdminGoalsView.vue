@@ -9,19 +9,21 @@
 import { computed, ref } from 'vue'
 import DataGrid from '@/components/DataGrid.vue'
 import AppBadge from '@/components/ui/AppBadge.vue'
-import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import StatTile from '@/components/ui/StatTile.vue'
 import { useRepGoals, type RepGoalRow } from '@/composables/useAdmin'
 import { count, money } from '@/lib/format'
-import { exportCsv, type CsvColumn } from '@/lib/csv'
+import type { ExportColumn } from '@/lib/xlsx'
 import type { ColumnDef } from '@tanstack/vue-table'
 
 const goals = useRepGoals()
 
 const search = ref('')
 const visibleRows = ref<RepGoalRow[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
 
 const rows = computed(() => goals.data.value ?? [])
 const periodYear = computed(() => rows.value[0]?.period_year ?? new Date().getFullYear())
@@ -87,22 +89,49 @@ function rowId(row: RepGoalRow) {
   return row.user_id
 }
 
-function onExport() {
-  const csvColumns: CsvColumn<RepGoalRow>[] = [
-    { key: 'full_name', header: 'Rep' },
-    { key: 'assigned_accounts', header: 'Assigned Accounts' },
-    { key: 'accounts_with_goal', header: 'Accounts With Goal' },
-    { key: 'goal_total', header: 'Goal' },
-    { key: 'crm_goal_total', header: 'Goal (CRM-entered)' },
-    { key: 'erp_goal_total', header: 'Goal (ERP fallback)' },
-    { key: 'shipped_ytd', header: 'Revenue YTD' },
-    { key: 'shipped_pct', header: 'Revenue % of Goal' },
-    { key: 'booked_ytd', header: 'Sold YTD' },
-    { key: 'booked_pct', header: 'Sold % of Goal' },
-    { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
-  ]
-  exportCsv(`rep-goals-${periodYear.value}`, visibleRows.value, csvColumns)
-}
+/* ---- Download: the rows on screen, and the grid's search. --------------
+   shipped_pct / booked_pct are 0–100 whole percents; Excel's percent format
+   wants a fraction. Blank (not 0%) for a rep with no goal, as on screen. */
+const asFraction = (pctValue: number | null) => (pctValue == null ? null : pctValue / 100)
+
+const exportColumns: ExportColumn<RepGoalRow>[] = [
+  { key: 'full_name', header: 'Rep' },
+  { key: 'assigned_accounts', header: 'Assigned accounts', type: 'integer' },
+  { key: 'accounts_with_goal', header: 'Accounts with goal', type: 'integer' },
+  { key: 'goal_total', header: 'Goal', type: 'money' },
+  { key: 'crm_goal_total', header: 'Goal (CRM-entered)', type: 'money' },
+  { key: 'erp_goal_total', header: 'Goal (ERP fallback)', type: 'money' },
+  { key: 'shipped_ytd', header: 'Revenue YTD', type: 'money' },
+  {
+    key: 'shipped_pct',
+    header: 'Revenue % of goal',
+    type: 'percent',
+    format: (row) => asFraction(row.shipped_pct),
+  },
+  {
+    key: 'behind_pace',
+    header: 'Behind pace',
+    format: (row) => (behindPace(row) ? 'Yes' : 'No'),
+  },
+  { key: 'booked_ytd', header: 'Sold YTD', type: 'money' },
+  {
+    key: 'booked_pct',
+    header: 'Sold % of goal',
+    type: 'percent',
+    format: (row) => asFraction(row.booked_pct),
+  },
+  { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
+]
+
+const exportTitle = computed(() => `Reps vs goal — ${periodYear.value}`)
+const exportFilenamePrefix = computed(() => `rep-goals-${periodYear.value}`)
+const EXPORT_DESCRIPTION =
+  "Goal is the CRM target where one exists, else the ERP yearly goal, summed over the rep's " +
+  'accounts. Revenue = invoiced this year; Sold = orders written this year (canceled excluded).'
+const exportDetails = computed(() => [
+  `${Math.round(yearElapsedPct.value)}% of the year gone — Behind pace = revenue % of goal below that`,
+  ...gridFilters.value,
+])
 </script>
 
 <template>
@@ -134,16 +163,22 @@ function onExport() {
 
     <AppCard>
       <template #header>
-        <div>
+        <div class="min-w-0">
           <h2 class="u-label text-ink">By rep</h2>
           <p class="text-muted mt-1 text-[13px]">
             {{ visibleRows.length }} {{ visibleRows.length === 1 ? 'rep' : 'reps' }} ·
             goal is the CRM target where one exists, else the ERP yearly goal
           </p>
         </div>
-        <AppButton variant="ghost" :disabled="!visibleRows.length" @click="onExport">
-          Export CSV
-        </AppButton>
+        <ExportMenu
+          :rows="visibleRows"
+          :columns="exportColumns"
+          :title="exportTitle"
+          :filename="exportFilenamePrefix"
+          :description="EXPORT_DESCRIPTION"
+          :details="exportDetails"
+          sheet-name="Reps vs goal"
+        />
       </template>
 
       <AsyncState
@@ -167,6 +202,7 @@ function onExport() {
           :get-row-id="rowId"
           min-width="56rem"
           @rows-change="visibleRows = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-full_name="{ row }">
             <span class="text-ink font-semibold">{{ row.full_name ?? '—' }}</span>

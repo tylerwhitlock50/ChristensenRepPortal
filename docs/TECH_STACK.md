@@ -151,6 +151,13 @@ a small CSV helper (see `packages/shared` — the export shape should be shared
 with the P1 activity export anyway). That hour is the entire delta, and it buys
 an unconstrained field UI on the screens reps actually live in.
 
+*Since November 2026* every report grid carries one download button in its
+corner (`components/ui/ExportMenu.vue`): Excel (.xlsx) with a title, the
+download time, the filters that narrowed the rows and a frozen, filterable
+header, or the plain CSV. The .xlsx writer (`lib/xlsx.ts`) is dependency-free
+for the same reason the CSV helper is (exceljs is ~1 MB; SheetJS is no longer
+published to npm) and is loaded on the first tap, not with the page.
+
 **Guardrail:** shadcn-vue components are *copied into the repo*, not imported.
 Copy them in as they're needed and treat them as project code from that moment
 — don't build a speculative component library up front. If a component starts

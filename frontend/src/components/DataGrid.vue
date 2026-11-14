@@ -21,7 +21,7 @@
  * Sorting, filtering and the rows emitted for CSV export still cover every
  * row; only what is drawn is capped.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import AppButton from '@/components/ui/AppButton.vue'
 import {
@@ -95,6 +95,12 @@ const emit = defineEmits<{
   'update:globalFilter': [value: string]
   /** Sorted + filtered rows, in display order. This is what CSV export uses. */
   rowsChange: [rows: T[]]
+  /**
+   * The grid's own active filters in words — `Search: “creedmoor”`,
+   * `Family: EVOKE` — so an export's title block can say what narrowed the
+   * rows (ExportMenu `details`). Empty when nothing is filtered.
+   */
+  filtersChange: [labels: string[]]
 }>()
 
 const sorting = ref<SortingState>(
@@ -297,6 +303,35 @@ function clearColumnFilters() {
   columnFilters.value = []
 }
 
+/** See the `filtersChange` emit. Header text, not column ids. */
+const filterLabels = computed(() => {
+  const labels: string[] = []
+  const term = filter.value.trim()
+  if (term) labels.push(`Search: “${term}”`)
+  for (const f of columnFilters.value) {
+    const column = table.getColumn(f.id)
+    const name = column ? headerLabel(column) : f.id
+    const value = String(f.value ?? '').trim()
+    if (!value) continue
+    labels.push(
+      column && filterKind(column) === 'text' ? `${name} contains “${value}”` : `${name}: ${value}`,
+    )
+  }
+  return labels
+})
+
+watch(filterLabels, (value) => emit('filtersChange', value), { immediate: true })
+
+/* A grid that leaves the screen (AsyncState swapping in a skeleton, an
+   error or an empty state; a v-if) takes its rows with it. Say so, or the
+   page's `visible` ref keeps the last rows and a download button outside
+   the grid exports them under whatever the page now shows. Remounting
+   emits the real rows again (both watchers are immediate). */
+onBeforeUnmount(() => {
+  emit('rowsChange', [])
+  emit('filtersChange', [])
+})
+
 function onMobileSort(event: Event) {
   const id = (event.target as HTMLSelectElement).value
   sorting.value = id ? [{ id, desc: activeSort.value?.desc ?? false }] : []
@@ -308,7 +343,7 @@ function flipSortDirection() {
   sorting.value = [{ id: current.id, desc: !current.desc }]
 }
 
-defineExpose({ table, visibleRows })
+defineExpose({ table, visibleRows, filterLabels })
 </script>
 
 <template>

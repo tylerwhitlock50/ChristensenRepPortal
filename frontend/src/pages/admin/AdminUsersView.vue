@@ -27,6 +27,7 @@ import AppBadge from '@/components/ui/AppBadge.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import AsyncState from '@/components/ui/AsyncState.vue'
+import ExportMenu from '@/components/ui/ExportMenu.vue'
 import ViewAsCard from '@/components/admin/ViewAsCard.vue'
 import BroadcastEmailCard from '@/components/admin/BroadcastEmailCard.vue'
 import { ROLES, type Role } from '@/types/domain'
@@ -37,8 +38,10 @@ import {
   notSignedIn,
   reminderMailto,
   type NotSignedInMode,
+  type NotSignedInRow,
 } from '@/lib/adoption'
 import { tableauArticleUrl } from '@/lib/helpLinks'
+import type { ExportColumn } from '@/lib/xlsx'
 
 const MIN_PASSWORD_LENGTH = 12
 
@@ -66,12 +69,21 @@ const pokeMode = ref<NotSignedInMode>('never')
 const notSignedInRows = computed(() =>
   notSignedIn(profiles.data.value ?? [], lastLoginByUser.value, pokeMode.value),
 )
+/**
+ * The list only shows once both reads have data (the AsyncState has-data
+ * condition below). Before sign-ins land, lastLoginByUser is empty and every
+ * active rep would read "never", so Copy emails and the download wait too.
+ */
+const notSignedInReady = computed(
+  () => profiles.data.value !== undefined && activity.data.value !== undefined,
+)
+const notSignedInShown = computed(() => (notSignedInReady.value ? notSignedInRows.value : []))
 const portalUrl = window.location.origin
 const senderName = computed(() => session.profile?.full_name ?? '')
 const copiedEmails = ref(false)
 
 async function copyEmails() {
-  const text = emailList(notSignedInRows.value)
+  const text = emailList(notSignedInShown.value)
   if (!text) return
   try {
     await navigator.clipboard.writeText(text)
@@ -82,10 +94,39 @@ async function copyEmails() {
   }
 }
 
+/* Download: the chase list as listed, so it can go into a mail merge or a
+   follow-up sheet. Blank "Last signed in" = never. */
+const notSignedInColumns: ExportColumn<NotSignedInRow>[] = [
+  { key: 'full_name', header: 'Name', format: (rep) => rep.full_name || rep.email },
+  { key: 'email', header: 'Email' },
+  { key: 'last_login_at', header: 'Last signed in', type: 'datetime' },
+  {
+    key: 'last_signed_in_ago',
+    header: 'Last signed in (ago)',
+    format: (rep) => (rep.last_login_at ? daysAgo(rep.last_login_at) : 'Never signed in'),
+  },
+]
+const notSignedInTitle = computed(() =>
+  pokeMode.value === 'never'
+    ? 'Reps who have never signed in'
+    : `Reps not signed in for ${NOT_SIGNED_IN_DAYS}+ days`,
+)
+const notSignedInFilename = computed(() =>
+  pokeMode.value === 'never' ? 'reps-never-signed-in' : `reps-not-signed-in-${NOT_SIGNED_IN_DAYS}d`,
+)
+const notSignedInDetails = computed(() => [
+  pokeMode.value === 'never'
+    ? 'Showing: never signed in'
+    : `Showing: not signed in for ${NOT_SIGNED_IN_DAYS} days or more (includes never)`,
+  'Active reps with a portal account only (admins and inside sales are not listed)',
+])
+
 /* ---- grid --------------------------------------------------------------- */
 const search = ref('')
 type UserRow = AdminProfile & { last_login_at: string | null }
 const visibleRows = ref<UserRow[]>([])
+/** The grid's own search, in words (DataGrid filtersChange). */
+const gridFilters = ref<string[]>([])
 
 /**
  * The newest sign-in rides on the row, not in a lookup the accessor reads:
@@ -116,6 +157,30 @@ const columns: ColumnDef<UserRow, any>[] = [
   { id: 'last_login', accessorKey: 'last_login_at', header: 'Last active', sortDescFirst: true },
   { id: 'manage', header: '', enableSorting: false, accessorFn: () => '' },
 ]
+
+/* ---- Download: the users on screen, and the grid's search. ------------- */
+const userExportColumns: ExportColumn<UserRow>[] = [
+  { key: 'full_name', header: 'Name' },
+  { key: 'email', header: 'Email' },
+  { key: 'role', header: 'Role' },
+  { key: 'sales_rep_key', header: 'Rep code', type: 'text' },
+  { key: 'rep_group_vendor_id', header: 'Rep group', type: 'text' },
+  { key: 'active', header: 'Active', format: (row) => (row.active ? 'Yes' : 'No') },
+  // Blank when the user has never opened the portal ("never" on screen).
+  // Sign-ins come from v_rep_activity, which covers reps only, so for
+  // admins and inside sales the file says so instead of a false "never".
+  { key: 'last_login_at', header: 'Last active', type: 'datetime' },
+  {
+    key: 'last_active_ago',
+    header: 'Last active (ago)',
+    format: (row) =>
+      row.role !== 'rep' && !row.last_login_at ? 'Not tracked' : daysAgo(row.last_login_at),
+  },
+  { key: 'created_at', header: 'Account created', type: 'datetime' },
+]
+const USER_EXPORT_DESCRIPTION =
+  'Everyone with a portal login. Last active = the newest time they opened the portal ' +
+  '(a sign-in, or coming back on a saved session); it is tracked for reps only.'
 
 /* ---- create panel ------------------------------------------------------- */
 const creating = ref(false)
@@ -713,7 +778,7 @@ async function setActive(active: boolean) {
     <!-- Reps with an account who are not using it — the poke -->
     <AppCard>
       <template #header>
-        <div>
+        <div class="min-w-0">
           <h2 class="u-label text-ink">Not signed in yet</h2>
           <p class="text-muted mt-1 text-[13px]">
             Active reps who
@@ -721,7 +786,7 @@ async function setActive(active: boolean) {
             Draft a reminder from your own mail client — the portal sends nothing.
           </p>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex flex-wrap items-center justify-end gap-2">
           <div class="border-line flex border" role="group" aria-label="Which reps to list">
             <button
               type="button"
@@ -744,18 +809,26 @@ async function setActive(active: boolean) {
           </div>
           <AppButton
             variant="ghost"
-            :disabled="notSignedInRows.length === 0"
+            :disabled="notSignedInShown.length === 0"
             @click="copyEmails"
           >
             {{ copiedEmails ? 'Copied' : 'Copy emails' }}
           </AppButton>
+          <ExportMenu
+            :rows="notSignedInShown"
+            :columns="notSignedInColumns"
+            :title="notSignedInTitle"
+            :filename="notSignedInFilename"
+            :details="notSignedInDetails"
+            sheet-name="Not signed in"
+          />
         </div>
       </template>
 
       <AsyncState
         :loading="profiles.isPending.value || activity.isPending.value"
         :error="profiles.error.value ?? activity.error.value"
-        :has-data="profiles.data.value !== undefined && activity.data.value !== undefined"
+        :has-data="notSignedInReady"
         :empty="notSignedInRows.length === 0"
         empty-title="Everyone's in"
         :empty-body="
@@ -798,12 +871,21 @@ async function setActive(active: boolean) {
     <!-- The grid -->
     <AppCard>
       <template #header>
-        <div>
+        <div class="min-w-0">
           <h2 class="u-label text-ink">All users</h2>
           <p class="text-muted mt-1 text-[13px]">
             {{ visibleRows.length }} {{ visibleRows.length === 1 ? 'user' : 'users' }}
           </p>
         </div>
+        <ExportMenu
+          :rows="visibleRows"
+          :columns="userExportColumns"
+          title="Portal users"
+          filename="portal-users"
+          :description="USER_EXPORT_DESCRIPTION"
+          :details="gridFilters"
+          sheet-name="Portal users"
+        />
       </template>
 
       <AsyncState
@@ -827,6 +909,7 @@ async function setActive(active: boolean) {
           :get-row-id="(row: UserRow) => row.user_id"
           min-width="52rem"
           @rows-change="visibleRows = $event"
+          @filters-change="gridFilters = $event"
         >
           <template #cell-full_name="{ row }">
             <span class="text-ink font-semibold">{{ row.full_name || '—' }}</span>
