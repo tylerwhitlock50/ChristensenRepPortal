@@ -46,9 +46,9 @@ supabase secrets set PORTAL_URL=https://carms.app
 
 `PORTAL_URL` is the portal's origin. Set it: draft previews, order status,
 the order lists and both document tools add `portal_url` = this +
-`/orders/<id>`, and the document flow's fallback ("give the user the portal
-link, they drop the file on the order page") is only a link the user can
-click when it is set. Without it the tools carry only `portal_path`.
+`/orders/<id>`, and the document flow's last resort ("give the user the portal
+link, they drop the file on the order page", for a file the model cannot
+send inline) is only a link the user can click when it is set. Without it the tools carry only `portal_path`.
 
 `--no-verify-jwt` for the same reason as every other function here: the
 gateway's check would reject an MCP token, which is not a Supabase JWT. The
@@ -168,7 +168,7 @@ minutes on weekdays) were last loaded.
 | `get_sales_summary` | `report_sales_by_month()` | Sales this month / last month / QTD / the monthly trend, book or one account |
 | `list_backlog` | `v_backlog_by_sku` | What customers are owed, and when it ships |
 | `check_availability` | `v_ats_list` | Company-wide stock / available-to-sell |
-| `list_orders` | `v_account_recent_order_headers`, `v_account_order_lines` | Order history and one order's lines |
+| `list_orders` | `v_account_recent_order_headers`, `v_account_order_lines` | Order history and one order's lines (paged: `limit` 50 there, `offset`, `has_more`) |
 | `list_shipments` | `v_account_recent_shipment_headers`, `v_account_shipment_lines` | Did it ship, where is it, tracking number; `shipped_value` is packlist value, not revenue |
 | `lookup_order` | `lookup_orders()` | Which order is PO 44182 / tracking 1Z…, across the whole book; an order or PO number equal to the term comes first, marked `exact: true` (the match is a substring one: `PORTAL-12` also finds `PORTAL-123`) |
 | `get_goal_progress` | `v_account_goal_progress`, `v_my_goal_rollup` | Goal attainment and seasonal pace |
@@ -249,14 +249,14 @@ here touches the ERP; Tyler's middleware reads submitted orders from
 |---|---|---|
 | `get_order_context` | `order_context(p_customer_key)` + contact ranking from `_shared/contacts.ts` (same as `list_contacts`) | read-only |
 | `search_order_products` | `order_product_search(p_customer_key, p_query, p_limit)` | read-only |
-| `resolve_order_parts` | `order_resolve_parts(p_customer_key, p_items)` — PO item numbers / descriptions → parts, whole catalog | read-only |
-| `create_order_draft` | `mcp_create_order_draft(p)` | write, idempotent (keyed) |
+| `resolve_order_parts` | `order_resolve_parts(p_customer_key, p_items)` — PO item numbers / UPCs / descriptions → parts, whole catalog | read-only |
+| `create_order_draft` | `mcp_create_order_draft(p)` — optional PO header fields and the PO's contact (matched in SQL); optional `documents[]` uploaded after the RPC | write, idempotent (keyed) |
 | `update_order_draft` | `mcp_update_order_draft(p_order_id, p)` | write |
 | `cancel_order_draft` | `mcp_cancel_order_draft(p_order_id)` | write, destructive |
-| `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS (the header includes `notes` and `customer_contact_key`, so an update can send them back) | read-only |
+| `get_order_status` | `orders` / `order_lines` / `order_qc_results` under RLS (the header includes `notes` and `customer_contact_key`, so an update can send them back), plus the order's documents (names and sizes, best effort) | read-only |
 | `list_my_order_drafts` | `orders` where `user_id` = caller (`scope: "mine"`, the default), or every order RLS shows (`scope: "everyone"`, admin and inside sales only, owners named by `order_owner_names()`); rows carry `erp_order_number` | read-only |
 | `list_order_documents` | storage `order-documents` list of `<order id>/` + one `createSignedUrls` call (10-minute links, `link_error` per file, newest 100 and `has_more`) | read-only |
-| `attach_order_document` | storage `createSignedUploadUrl('<order id>/<epoch ms>-<name>')` — a one-time upload URL and the exact `content_type` to PUT with | write |
+| `attach_order_document` | with `content_base64` / `content_text`: storage `upload('<order id>/<epoch ms>-<name>')` under the caller's JWT (5 MB, bytes checked); without: `createSignedUploadUrl(...)`, a one-time upload URL and the exact `content_type` to PUT with (needs direct Storage egress) | write |
 
 **Admin pricing (20261112120000).** For an admin caller (`caller.role ===
 'admin'`) the create/update schemas also take a per-line `unit_price` and an
@@ -274,6 +274,80 @@ leads with UNMATCHED PARTS / DESCRIPTION CHECK / HAND PRICING warnings.
 portal an admin can set or reset a
 line's price (`admin_set_order_line_price`) or remove it; the order writer
 does not open such drafts (it would reprice them).
+
+**Matching a PO (`resolve_order_parts`, 20261114090000).** Each item is
+`{ref?, upc?, description?}` (at least one; a JSON number is sent as its
+digits). Matches, best first: exact part id, UPC (`order_upc_norm`: digits,
+leading zeros off; a 12-14 digit ref counts as one), the customer's own item
+number, the same digits, then, for at most the first 20 items nothing else
+matched, the description (`not_searched` past that). `upc_check` per item
+says whether the UPC agrees with the number; a UPC naming another part makes
+the item `ambiguous` (`check_reasons: ["upc_disagrees"]`). A number match is
+`check_description` only when the PO description conflicts with the part
+(`order_desc_conflicts`: chambering, length, material, model, in
+`check_reasons`), and `mcp_order_apply` sets `description_mismatch` by the
+same rule. The tool's `summary` adds `not_searched`, `upc_disagrees`,
+`upc_not_found` and `upc_only`.
+
+**Duplicates (20261114090000).** Besides the portal probe
+(`possible_duplicate:<order id>`: same PO or same lines within
+`duplicate_window_days`), `mcp_order_apply` refuses a PO already on an ERP
+order of the same account (`erp.fact_order_line`, e.g. an EDI order) within
+`erp_duplicate_window_days` (default 180): `possible_duplicate_erp:<ERP
+order id>`, with `erp_orders` in the detail. It runs before any line is
+priced. POs compare by `order_po_norm` (letters and digits, a leading PO and
+leading zeros dropped); cancelled ERP orders and POs with fewer than 3
+digits (WARRANTY, SHOT SHOW) never match. Test drafts are checked by both
+probes; an earlier test draft never blocks a real one. The preview carries an
+`erp_po_match` alert and leads with an `ALREADY IN THE ERP` warning. At
+submit, a Claude-drafted order whose PO is on an ERP order not named in its
+stored warnings (one that loaded after the draft was reviewed) is refused
+(`erp_duplicate_unreviewed`) until it is cancelled or updated with
+`allow_duplicate`. Portal-typed orders are not probed.
+
+**The PO's contact and header (20261114090000).** create/update take, all
+optional and as printed on the PO: `contact_email`, `contact_name`,
+`contact_phone`, `po_date` and `cancel_date` (YYYY-MM-DD), `payment_terms`,
+`ship_via`, `vendor_number`, `ship_to_location`, `po_total`, and per line
+`buyer_part_number` (the customer's own item number, Visual's
+CUSTOMER_PART_ID on EDI orders) and `upc`. Unlike `notes`, an update that
+leaves one out keeps it; `null` clears it (the edge function forwards the
+null, and the schemas allow it). With no `customer_contact_key`, SQL matches
+the PO contact to the account's ERP contacts (`order_match_contact`: email,
+then name + phone; a billing or internal contact, per
+`order_contact_excluded`, the SQL copy of `_shared/contacts.ts`, is never
+chosen; a name or phone alone only lists candidates). Matching runs in SQL on
+the raw arguments, so a retry's idempotency hash never depends on the contact
+load. No match is not a refusal: the contact is staged (`po_contact_*`), the
+preview raises `contact_not_on_file`, and `submit_order` writes it as the
+order's contact text (`contact_source = 'po'`, no key). A key the user gave
+is kept on an update that leaves it out; `customer_contact_key: null` drops
+it. Preview alerts: `contact_not_on_file`, `contact_differs_from_po`,
+`terms_mismatch` (PO terms vs the account's `ar_terms_rule_id`, normalised by
+`order_terms_canon`; terms never reach the ERP), `po_total_mismatch`,
+`cancel_date_passed` (hard: `submit_order` refuses it), `cancel_date_soon`,
+`cancel_before_ship_date`, `ship_to_location_mismatch` (and a ship-to
+confirmation refusal names the matching `suggested_ship_to_key`),
+`upc_mismatch`, `buyer_part_conflict`, and `upc_suggests` on
+`unmatched_parts`. The preview carries `po` and `po_contact` blocks only when
+set; `get_order_status` returns the new columns (nulls dropped). An order
+with only part + qty drafts exactly as before.
+
+**Response size (20261114090000 section 5).** Above 25 lines,
+create/update return a summary by default (`preview_detail: "summary" |
+"full"`, never forwarded to SQL): counts, alerts, warnings, `stock_short`
+(`[part_id, ats_qty, qty_ordered]` tuples), `line_defaults` and only the
+lines with `issues` (at most 25; `issue_line_count`, `lines_omitted`, a
+`note`). Hand pricing and short stock are not line issues. Lines are trimmed
+in both modes (`line` position; nulls, defaults and repeated prices dropped).
+SQL collapses more than 3 per-part Stock / inactive sentences and per-line
+`price_mismatch` alerts and sentences into one each (and caps alert strings
+at 600 characters); the edge function does the same for older previews and
+stored drafts. `get_order_status` pages lines (`line_limit` 50, `line_offset`,
+`has_more`); `list_orders(order_id)` pages an ERP order's lines with `limit`
+(50 there) / `offset`. **Contract change:** `orders.mcp_warnings`, and so
+`v_orders_ready_for_erp.mcp_warnings`, now holds one Stock sentence naming up
+to 10 short parts instead of one per part; tell the middleware owner.
 
 **Inside sales** (`profiles.role = 'order_entry'`, `20261113090000`). Inside
 sales reads every account (`my_customer_keys()` returns them all, so every read
@@ -301,25 +375,56 @@ person removes a PO, in the portal. A `PORTAL-<id>` reference is never
 accepted as a PO, and a PO or PO item number sent as a JSON number is
 forwarded as its digits.
 
-**Documents.** `attach_order_document` returns a one-time signed upload URL
-for the private `order-documents` bucket (objects are
-`<order id>/<epoch ms>-<name>`; storage RLS: whoever can read the order can
-read and add its documents). The name and the accepted types are the
+**Documents.** Files live in the private `order-documents` bucket (objects
+are `<order id>/<epoch ms>-<name>`; storage RLS: whoever can read the order
+can read and add its documents). The name and the accepted types are the
 portal's own rule: `mcp/orderDocuments.ts` is a copy of
 `frontend/src/lib/orderDocuments.ts`, and `orderDocuments.test.ts` fails if
-the two differ. An extension the bucket does not take is refused before any
-URL is minted; otherwise the result carries the exact `content_type`, which
-the PUT must send as `Content-Type` (Storage checks only that header: a
-missing or different one is a 415). A tool call carries JSON, not files, so
-the client PUTs the bytes to that URL; the tool says to use it only when the
-model can actually make that request, and otherwise to give the user the
-portal link, where a file can be dropped on the order. The audit row names
-the `object_name`; its `ok` means a URL was issued, not that a file arrived.
-An order the caller cannot see is an `order_not_found` refusal, logged
-against no order. `list_order_documents` returns names, sizes and 10-minute
-links from one signing request (a file whose link could not be made carries
-`link_error`), newest 100 with `has_more`. The order loader shows the same
-files to the person keying the order.
+the two differ. An extension the bucket does not take is refused before
+anything is read. `attach_order_document` has two modes:
+
+- **Inline (the usual one).** The model sends the file in the call:
+  `content_base64` (any accepted type) or `content_text` (`.csv`/`.txt`/
+  `.eml`), 5 MB at most (`MCP_INLINE_MAX_BYTES`). The server checks it
+  (`orderDocuments.ts`, MCP-only section: strict base64, the size estimated
+  before decoding, a magic-byte sniff of the declared type; text types are
+  refused only on a NUL byte) and uploads it with `ctx.db`, the caller-JWT
+  client, never service_role. So "add order documents" decides, and
+  `owner_id` is the caller. The object carries Storage metadata
+  `{source: 'mcp', sha256}`. A file already on the order with the same
+  name, size and sha256 is a retry (`already_attached`); a revised file of
+  the same name and size is stored. Storage errors are matched on
+  the string `statusCode` or the message, never on `error.status` (always
+  400): RLS gives `document_not_allowed`, and size or type are refusals.
+  This is the path for a model that can reach this server but not Storage
+  (claude.ai chat).
+- **Signed URL.** With neither content field, the tool returns a one-time
+  signed upload URL and the exact `content_type`. The PUT must send that
+  type as `Content-Type`: Storage checks only that header, and a missing or
+  different one gets a 415. It needs a client that can reach Storage
+  directly, and it is kept for files over 5 MB. Here the audit's `ok` means
+  a URL was issued, not that a file arrived.
+
+`create_order_draft` also takes `documents: [{file_name, content_base64 |
+content_text}]`, at most 3 and 5 MB in all. They are checked before the
+RPC: a bad file means nothing is saved. They are uploaded after it,
+outside its transaction. A Storage failure leaves the draft saved, with
+`documents[i].attached: false` and a `document_not_attached: …` warning
+string. `update_order_draft` refuses `documents`. The schema's
+`additionalProperties` is not enforced server-side, so the handler refuses
+explicitly rather than dropping the field.
+
+The audit (`mcp_tool_calls.args`) never holds document bytes: only
+`content_*_chars`, plus the stored `object_name`, `bytes` and `sha256`.
+`index.ts` refuses a request body over 8 MB with 413 (`requestBody.ts`:
+the declared length or a counted stream). An order the caller cannot see
+is an `order_not_found` refusal, logged against no order.
+
+`get_order_status` lists `documents` (name, size, added_at; the newest 20),
+best effort (`documents_error`). `list_order_documents` returns names, sizes
+and 10-minute links from one signing request (a file whose link could not
+be made carries `link_error`), newest 100 with `has_more`. The order loader
+shows the same files to the person keying the order.
 
 **Who sees them.** All ten are listed and callable only when both hold;
 otherwise they are absent from `tools/list` and `tools/call` calls them
@@ -363,6 +468,8 @@ user said $1,485). `mcp_order_apply` refuses a create or update unless:
 |---|---|---|
 | another active account the caller can see has the same name (`customer_name_key`) | `customer_confirmed: true` | `customer_confirmation_required` — the accounts |
 | more than one orderable ship-to | `ship_to_key` + `ship_to_confirmed: true` | `ship_to_confirmation_required` — ship-tos with FFL number, expiry, current |
+| the account's main address (`<cust>\|CUST`) while it has ship-tos (only when `feature.order_main_address_ship_to` is on) | `ship_to_key` + `ship_to_confirmed: true` | `ship_to_confirmation_required` — the choices include the main address (`kind: customer_address`, `label`) |
+| no orderable ship-to and no usable main address | — (fix the address in the ERP) | `no_orderable_ship_to` — refused before anything is saved (`20261114090000`) |
 | every line, always (the server can't know which search a part came from) | `lines[].part_confirmed: true` | `part_confirmation_required` — per line, the part and its priced siblings (RH/LH/Ti…) |
 | always, unless the user said the customer gave none | `po_number`, or `no_po_confirmed: true` | `po_confirmation_required` |
 
@@ -382,7 +489,8 @@ and appends the choices JSON to the text the model reads.
 
 **Errors.** The RPCs raise `code[:detail]: text`. `orderToolError` turns each
 code into an instruction the model can follow — `possible_duplicate` says to
-ask the user before retrying with `allow_duplicate`, FFL and acknowledgement
+ask the user before retrying with `allow_duplicate`, `possible_duplicate_erp`
+says the same and to show the ERP order with `lookup_order`, FFL and acknowledgement
 codes say a person finishes in the portal, `po_would_be_removed` says to
 resend the stored PO, `ship_date_past` to ask for a new date, `not_owner`
 who may finish the order — and keeps the raw text in brackets. A caller who

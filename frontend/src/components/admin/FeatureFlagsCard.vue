@@ -35,6 +35,9 @@ const LABELS: Record<string, string> = {
   'feature.orders': 'Order writer & entry queue',
   'feature.quick_log': 'Quick call log',
   'feature.mcp_orders': 'Claude order drafting (MCP)',
+  // Off until the order middleware writes no ship-to ID for these orders
+  // and the portal ship-to picker offers the main address (20261114090000).
+  'feature.order_main_address_ship_to': 'Ship to the main address (not ready: middleware + portal)',
 }
 
 function label(row: AppSettingRow): string {

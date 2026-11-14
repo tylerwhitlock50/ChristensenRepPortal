@@ -265,3 +265,56 @@ Deno.test('lookup_order: the exact order or PO comes first, marked, from the ful
   eq(r3.matched, 0, 'nothing')
   assert(/No order in your book matches/.test(r3.note), 'says so')
 })
+
+/* --- list_orders: an order's lines are paged ---------------------------- */
+
+function linesDb(total: number) {
+  const ranges: [number, number][] = []
+  const orders: unknown[] = []
+  const all = Array.from({ length: total }, (_, i) => ({
+    line_num: i + 1, order_date: '2026-11-03', promise_date: '2026-12-01', part_id: `P-${i + 1}`, order_qty: 2,
+  }))
+  const db = {
+    from() {
+      let from = 0
+      let to = total - 1
+      let counted = false
+      const b: Record<string, unknown> = {
+        select: (_c: string, opts?: { count?: string }) => ((counted = opts?.count === 'exact'), b),
+        eq: () => b,
+        order: (...a: unknown[]) => (orders.push(a), b),
+        range: (f: number, t: number) => (ranges.push([f, t]), (from = f), (to = t), b),
+        then: (ok: (v: unknown) => unknown) =>
+          Promise.resolve({ data: all.slice(from, to + 1), error: null, count: counted ? total : null }).then(ok),
+      }
+      return b
+    },
+  } as unknown as SupabaseClient
+  return { db, ranges, orders }
+}
+
+type LinesResult = {
+  order_id: string; order_date?: string; line_count: number; offset: number; returned: number
+  has_more: boolean; next_offset?: number; lines: Record<string, unknown>[]
+}
+
+Deno.test('list_orders: the order_id drill-down honours limit / offset, has_more, order_date once', async () => {
+  const list = TOOLS_BY_NAME.get('list_orders')!
+  const a = linesDb(194)
+  const r1 = (await list.handler({ customer_key: 'SPOR SOU1', order_id: 'EDI-00959', limit: 50 }, { db: a.db, caller })) as LinesResult
+  eq(a.ranges, [[0, 49]], 'range 0-49')
+  eq([r1.returned, r1.line_count, r1.has_more, r1.next_offset, r1.order_date], [50, 194, true, 50, '2026-11-03'], 'first page')
+  assert(r1.lines.every((l) => !('order_id' in l) && !('order_date' in l)), 'order_id / order_date sent once')
+  eq(a.orders, [['line_num', { ascending: true }], ['part_id', { ascending: true }]], 'stable order')
+
+  const b = linesDb(194)
+  const r2 = (await list.handler({ customer_key: 'SPOR SOU1', order_id: 'EDI-00959', limit: 50, offset: 150 }, { db: b.db, caller })) as LinesResult
+  eq([r2.returned, r2.has_more, 'next_offset' in r2, r2.offset], [44, false, false, 150], 'last page')
+
+  const c = linesDb(194)
+  await list.handler({ customer_key: 'SPOR SOU1', order_id: 'EDI-00959' }, { db: c.db, caller })
+  eq(c.ranges, [[0, 49]], 'no limit: 50 lines')
+  const d = linesDb(194)
+  await list.handler({ customer_key: 'SPOR SOU1', order_id: 'EDI-00959', limit: 500 }, { db: d.db, caller })
+  eq(d.ranges, [[0, 99]], 'capped at 100')
+})

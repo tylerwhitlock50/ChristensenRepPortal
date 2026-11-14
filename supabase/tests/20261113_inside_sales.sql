@@ -848,8 +848,11 @@ select pg_temp.assert(
   'another rep sees none of it');
 
 select pg_temp.become('entry');
+-- Counted in this test's folders only: inside sales reads every order, and
+-- the live bucket holds real documents.
 select pg_temp.assert(
-  (select count(*) from storage.objects where bucket_id = 'order-documents') = 1,
+  (select count(*) from storage.objects where bucket_id = 'order-documents'
+      and name like pg_temp.oid('repd') || '/%') = 1,
   'inside sales reads the document on a rep''s order');
 insert into storage.objects (bucket_id, name, owner, owner_id)
 values ('order-documents', pg_temp.oid('repd') || '/2-signed-po.pdf', pg_temp.uid('entry'), pg_temp.uid('entry')::text),
@@ -872,7 +875,8 @@ select pg_temp.assert(
   'but removes the one they uploaded (owner_id)');
 select pg_temp.become('entry');
 select pg_temp.assert(
-  pg_temp.rows($$delete from storage.objects where bucket_id = 'order-documents'$$) = 2,
+  pg_temp.rows(format($$delete from storage.objects where bucket_id = 'order-documents'
+                              and (name like '%s/%%' or name like '%s/%%')$$, pg_temp.oid('repd'), pg_temp.oid('is1'))) = 2,
   'inside sales adds one after the order was entered, and may remove any');
 
 -- Listing one order's folder costs the same however full the bucket is: the

@@ -1226,9 +1226,10 @@ const listOrders: ToolDef = {
   description:
     'Order history for one account at header level (value, line count, open ' +
     'lines, next promise date), newest first. FULL history — page older ' +
-    'orders with `offset`. Pass order_id to get that order\'s lines instead. ' +
-    '"Bookings" is the order value when placed; negative bookings are ' +
-    'credit/return orders.',
+    'orders with `offset`. Pass order_id to get that order\'s lines instead: ' +
+    '`limit` (default 50 there) and `offset` page them; `has_more` / ' +
+    '`next_offset` say when there are more. "Bookings" is the order value ' +
+    'when placed; negative bookings are credit/return orders.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1237,8 +1238,16 @@ const listOrders: ToolDef = {
         type: 'string',
         description: 'Drill into one order\'s lines instead of listing headers.',
       },
-      limit: limitProp(20, 100),
-      offset: { type: 'integer', minimum: 0, default: 0, description: 'For paging older orders.' },
+      limit: {
+        ...limitProp(20, 100),
+        description: 'Rows to return (max 100): orders, default 20; with order_id, lines, default 50.',
+      },
+      offset: {
+        type: 'integer',
+        minimum: 0,
+        default: 0,
+        description: 'For paging older orders, or (with order_id) the order\'s lines.',
+      },
     },
     required: ['customer_key'],
     additionalProperties: false,
@@ -1250,16 +1259,36 @@ const listOrders: ToolDef = {
     const orderId = str(args.order_id)
 
     if (orderId) {
+      // Paged (an EDI order can carry 200 lines); order_id and order_date
+      // are the same on every line, so they are sent once.
+      const lineLimit = clampInt(args.limit, 50, 1, 100)
       const lines = await db
         .from('v_account_order_lines')
         .select(
-          'order_id, line_num, order_date, promise_date, line_status_desc, part_id, ' +
+          'line_num, order_date, promise_date, line_status_desc, part_id, ' +
             'part_description, order_qty, bookings, backlog_qty, is_backlog_line',
+          { count: 'exact' },
         )
         .eq('customer_key', key)
         .eq('order_id', orderId)
-        .order('line_num')
-      return { order_id: orderId, lines: rowsOf(lines, 'the order lines').map(compact) }
+        // part_id as a tiebreak so pages are stable if line_num repeats.
+        .order('line_num', { ascending: true })
+        .order('part_id', { ascending: true })
+        .range(offset, offset + lineLimit - 1)
+      const rows = rowsOf(lines, 'the order lines')
+      const total = lines.count ?? offset + rows.length
+      const more = offset + rows.length < total
+      const orderDate = rows[0]?.order_date ?? null
+      return {
+        order_id: orderId,
+        ...(orderDate ? { order_date: orderDate } : {}),
+        line_count: total,
+        offset,
+        returned: rows.length,
+        has_more: more,
+        ...(more ? { next_offset: offset + rows.length } : {}),
+        lines: rows.map(({ order_date: _d, ...r }) => compact(r)),
+      }
     }
 
     const headers = await db
