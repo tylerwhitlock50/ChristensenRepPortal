@@ -14,7 +14,7 @@
     6. SHA-256 the context; if it matches ai_summaries.context_hash, return
        the cached row instantly and for free.
     7. Enforce a per-user daily call limit and a per-account cooldown.
-    8. One OpenAI call — gpt-5-mini, automatic prompt caching on the system
+    8. One OpenAI call — gpt-6-luna, automatic prompt caching on the system
        message.
     9. Upsert into public.ai_summaries with model, context_hash,
        prompt_version, generated_at.

@@ -81,8 +81,8 @@ supabase secrets list
 | `AI_SUMMARY_MIN_INVOICE_LINES` | `5` | Below this, with no notes, the function returns "Not enough activity to summarize" without calling the API. |
 | `AI_SUMMARY_COOLDOWN_SECONDS` | `60` | Minimum gap between two *paid* generations for the same account. Cached returns are unaffected. |
 | `CORS_ALLOWED_ORIGIN` | `*` | Pin to the Vercel origin if you ever move to cookie auth. |
-| `OPENAI_MODEL` | `gpt-5-mini` | Model id. Folded into the context hash, so changing it re-baselines every cached summary once. |
-| `OPENAI_REASONING_EFFORT` | `minimal` | `minimal` / `low` / `medium` / `high`. Raise if summaries come back shallow; costs more per call. |
+| `OPENAI_MODEL` | `gpt-6-luna` | Model id. Folded into the context hash, so changing it re-baselines every cached summary once. |
+| `OPENAI_REASONING_EFFORT` | `low` | `none` / `low` / `medium` / `high`. gpt-6-luna rejects `minimal` with a 400. Raise if summaries come back shallow; costs more per call. |
 
 ## Deploy
 
@@ -201,9 +201,9 @@ per-account cooldown → per-user daily cap. The hash covers the context *plus*
 `PROMPT_VERSION` and the model id, so a prompt change re-baselines every
 account exactly once.
 
-**Model.** `gpt-5-mini` via Chat Completions, one call, `reasoning_effort:
-minimal`. Note there is deliberately no `temperature` — gpt-5 reasoning models
-accept only the default and 400 on anything else. Determinism comes from the
+**Model.** `gpt-6-luna` via Chat Completions, one call, `reasoning_effort:
+low`. Note there is deliberately no `temperature` — reasoning models accept
+only the default and 400 on anything else. Determinism comes from the
 prompt, the effort level and the hash cache instead.
 
 Two parameter names are load-bearing and easy to get wrong:
@@ -229,6 +229,12 @@ is invalidating the prefix.
 The model id is folded into the context hash, so a change re-baselines every
 cached summary exactly once — the same property `prompt_version` has. That is
 also why moving off Claude did not require clearing `ai_summaries`.
+
+The default moved from `gpt-5-mini` to `gpt-6-luna` in November 2026, ahead of
+OpenAI shutting down the GPT-5 models on 2026-12-11. The effort default moved
+from `minimal` to `low` with it, because gpt-6-luna rejects `minimal`. A
+secret set with `supabase secrets set` beats the code default, so check
+`supabase secrets list` for a stale `OPENAI_MODEL` or `OPENAI_REASONING_EFFORT`.
 
 **Prompt versioning (§5.2).** `prompt.ts` exports `PROMPT_VERSION` alongside
 `SYSTEM_PROMPT`, so the version and the text it describes live in one file and

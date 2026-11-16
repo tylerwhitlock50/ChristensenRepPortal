@@ -14,7 +14,7 @@
     budget is never billed.
 
   - There is NO `temperature`. gpt-5 reasoning models accept only the default
-    and 400 on anything else. Determinism comes from the prompt, minimal
+    and 400 on anything else. Determinism comes from the prompt, a low
     reasoning effort, and the context-hash cache — which makes a repeated ask
     literally the same bytes rather than merely a similar sample.
 
@@ -30,8 +30,10 @@ import { HttpError } from './supabase.ts'
 import { buildContext, canonical, promptPayload, sha256Hex } from './accountContext.ts'
 import { PROMPT_VERSION, SYSTEM_PROMPT } from '../ai-account-summary/prompt.ts'
 
-export const MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-5-mini'
-export const REASONING_EFFORT = Deno.env.get('OPENAI_REASONING_EFFORT') ?? 'minimal'
+export const MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-6-luna'
+// 'low', not 'minimal': gpt-6-luna 400s on 'minimal' (gpt-5-mini's floor).
+// OpenAI's GPT-6 migration guide says to start a 'minimal' caller at 'low'.
+export const REASONING_EFFORT = Deno.env.get('OPENAI_REASONING_EFFORT') ?? 'low'
 
 const MAX_COMPLETION_TOKENS = 2000
 const OPENAI_TIMEOUT_MS = 60_000
