@@ -1,6 +1,7 @@
 /*============================================================================
   20261027_help_portal_vs_tableau.sql — assertions for
     20261027090700_help_portal_vs_tableau.sql
+    20261116090000_help_example_fake_account.sql
       public.help_articles  slug 'portal-vs-tableau-numbers'
 
   Runs in a transaction and ROLLS BACK. Dev only.
@@ -35,11 +36,18 @@ select pg_temp.assert(
           unnest(array['invoiced', 'shipped value', 'never revenue', 'credit memos',
                         'cancelled orders', 'same days last year', 'goal %',
                         'released, firmed and hold', 'R01–R09', 'whole dollars',
-                        'Midway USA', 'every 15 minutes', 'every hour',
+                        'Worked example: Dealer 1005', 'every 15 minutes', 'every hour',
                         '4:30 AM']) p
     where slug = 'portal-vs-tableau-numbers'),
   'body covers revenue, shipped value, cancelled orders, YoY, goal %, open orders, '
-  'stock, rounding, the Midway example and the refresh times');
+  'stock, rounding, the worked example and the refresh times');
+
+-- The worked example uses a made-up account (20261116090000), not a real one.
+select pg_temp.assert(
+  (select position('midway' in lower(body)) = 0
+     from public.help_articles
+    where slug = 'portal-vs-tableau-numbers'),
+  'the worked example does not name a real customer');
 
 -- Readable by a signed-in rep (published + RLS "read published help").
 select set_config('request.jwt.claims',
