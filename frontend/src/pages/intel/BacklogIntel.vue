@@ -261,6 +261,13 @@ const exportDetails = computed(() => [
         <StatTile label="Accounts waiting" :value="count(totals.accounts)" />
         <StatTile label="SKUs affected" :value="count(totals.skus)" />
       </div>
+      <!-- "Backlog" and "Open orders" are one set of lines, two cuts (rep
+           feedback, 2026-11: two quantities that seemed to mean one thing). -->
+      <p class="text-muted mt-2 text-[13px] leading-relaxed">
+        The same open order lines as the Open orders tab, added up by SKU for each account.
+        This total includes RMA and warranty lines; Open orders hides those until you turn
+        its "Hide RMA/warranty" filter off, so its quantity can be lower.
+      </p>
 
       <AppCard :padded="false" class="mt-4">
         <template #header>

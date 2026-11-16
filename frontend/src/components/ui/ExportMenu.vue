@@ -27,6 +27,7 @@ import { downloadCsv, toCsv } from '@/lib/csv'
 import { exportFilename } from '@/lib/download'
 import type { ExportColumn } from '@/lib/xlsx'
 import { count } from '@/lib/format'
+import { trackAction } from '@/lib/usage'
 
 const props = withDefaults(
   defineProps<{
@@ -121,6 +122,8 @@ async function download(kind: 'xlsx' | 'csv') {
         toCsv(props.rows, csvColumnsFor(props.columns)),
       )
     }
+    // Admin › Usage: which reports leave the portal as files, and how big.
+    trackAction('export', { report: props.title, format: kind, rows: props.rows.length })
   } catch (e) {
     console.error('[export]', e)
     // Never drawn over the open menu: the menu closes, the message sits

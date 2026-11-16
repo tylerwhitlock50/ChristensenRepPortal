@@ -4,8 +4,10 @@ import { useRoute } from 'vue-router'
 import { useNow } from '@vueuse/core'
 import type { ColumnDef } from '@tanstack/vue-table'
 import {
+  compareStockCategories,
   hasProductLine,
   isGunStockRow,
+  stockCategory,
   useAtsList,
   type AtsRow,
 } from '@/composables/useIntel'
@@ -27,6 +29,7 @@ import { exportTimestamp } from '@/lib/download'
 import { clockStamp, count } from '@/lib/format'
 import { isAtsStale, newestLoadedAt } from '@/lib/stockFreshness'
 import { useFeatureFlags } from '@/composables/useAppSettings'
+import { trackAction } from '@/lib/usage'
 
 /**
  * ATS — what the company can actually sell right now, straight from the
@@ -147,6 +150,7 @@ const filterQuery = computed(() =>
 const prospectPart = ref<AtsRow | null>(null)
 const prospectsOpen = ref(false)
 function whoToCall(row: AtsRow) {
+  trackAction('who_to_call', { what: row.part_id ?? row.part_key })
   prospectPart.value = row
   prospectsOpen.value = true
 }
@@ -182,6 +186,19 @@ const inStockOnly = ref(true)
 const displayRows = computed(() =>
   inStockOnly.value ? rows.value.filter((r) => r.ats_qty > 0) : rows.value,
 )
+
+/**
+ * "By category", default on (rep feedback, 2026-11): the list split into a
+ * section per product family — Evoke, Ridgeline FFT, Mesa… — with barreled
+ * actions and components last, each headed by its SKU and unit count. On a
+ * phone the Family dropdown was the only way to get there, and half of the
+ * field reads this page on a phone. Off gives back the one flat list, best
+ * sellers first. A SKU that arrives from the header search starts flat: one
+ * row needs no sections.
+ */
+const byCategory = ref(!routeTerm())
+/** Units a section can sell: oversold SKUs count as zero, like the tile. */
+const unitsIn = (list: AtsRow[]) => list.reduce((a, x) => a + Math.max(0, x.ats_qty), 0)
 
 /* ---- "Stock as of 9:15 AM" ---------------------------------------------
    Stock loads every 15 minutes on weekdays, so the page says which load it
@@ -255,7 +272,9 @@ const columns = computed<ColumnDef<AtsRow, any>[]>(() => [
   { id: 'ats_qty', header: 'Available', accessorKey: 'ats_qty' },
   { id: 'on_hand_qty', header: 'On hand', accessorKey: 'on_hand_qty' },
   { id: 'committed_qty', header: 'Committed', accessorKey: 'committed_qty' },
-  { id: 'backlog_qty', header: 'Backlog', accessorKey: 'backlog_qty' },
+  // "Open orders", not "Backlog" (rep feedback, 2026-11): it is every unit
+  // on an open customer order, company-wide — the number Available subtracts.
+  { id: 'backlog_qty', header: 'Open orders', accessorKey: 'backlog_qty' },
   { id: 'who', header: '', enableSorting: false } as ColumnDef<AtsRow, any>,
   ...(flags.orders.value
     ? [{ id: 'order', header: '', enableSorting: false } as ColumnDef<AtsRow, any>]
@@ -290,7 +309,7 @@ const exportColumns = computed<ExportColumn<AtsRow>[]>(() => [
   { key: 'ats_qty', header: 'Available qty', type: 'number' },
   { key: 'on_hand_qty', header: 'On hand', type: 'number' },
   { key: 'committed_qty', header: 'Committed', type: 'number' },
-  { key: 'backlog_qty', header: 'Backlog', type: 'number' },
+  { key: 'backlog_qty', header: 'Open orders', type: 'number' },
 ])
 
 /* The account pick only narrows the rows once that account's history has
@@ -318,7 +337,9 @@ const exportFilenamePrefix = computed(() =>
 )
 const EXPORT_DESCRIPTION =
   'Company-wide availability by SKU. Available = sellable on-hand stock minus open ' +
-  'customer orders; a negative number means oversold.'
+  'customer orders; a negative number means oversold. Open orders = units on open ' +
+  'customer orders, all customers. Committed = the part of those already allocated ' +
+  'to a specific order.'
 const exportDetails = computed(() => [
   stockAsOf.value ? `Stock as of ${exportTimestamp(new Date(stockAsOf.value))}` : null,
   // The page turns its stamp ember and warns; the file must say it too.
@@ -334,6 +355,7 @@ const exportDetails = computed(() => [
       : `Account: ${gapAccountName.value} — in-stock items they have bought before`
     : gapAccountKey.value &&
       `Account filter not applied (${gapAccountName.value}'s history did not load): whole catalog`,
+  byCategory.value && 'Grouped by category',
   ...gridFilters.value,
 ])
 </script>
@@ -441,6 +463,19 @@ const exportDetails = computed(() => [
             >
               Guns only
             </button>
+            <button
+              type="button"
+              class="tap-target font-label inline-flex items-center px-4 text-[13px] font-semibold tracking-[0.1em] uppercase"
+              :class="
+                byCategory
+                  ? 'bg-ink text-canvas'
+                  : 'border-line-2 text-ink-2 border bg-transparent'
+              "
+              :aria-pressed="byCategory"
+              @click="byCategory = !byCategory"
+            >
+              By category
+            </button>
             <span v-if="!inStockOnly" class="text-muted text-[13px]">
               showing {{ count(totals.out) }} out-of-stock too
             </span>
@@ -503,10 +538,19 @@ const exportDetails = computed(() => [
           search-placeholder="Filter by SKU, description, chambering, UPC…"
           v-model:global-filter="search"
           :get-row-id="(r: AtsRow) => r.part_key"
+          :group-by="byCategory ? stockCategory : undefined"
+          :group-order="compareStockCategories"
           class="p-3"
           @rows-change="visible = $event"
           @filters-change="gridFilters = $event"
         >
+          <template #group="{ group, rows: inGroup }">
+            <span class="u-label text-ink">{{ group }}</span>
+            <span class="text-muted ml-2 text-[13px] whitespace-nowrap">
+              {{ count(inGroup.length) }} {{ inGroup.length === 1 ? 'SKU' : 'SKUs' }} ·
+              {{ count(unitsIn(inGroup)) }} available
+            </span>
+          </template>
           <!-- The picture lives on the website — the family page. -->
           <template #cell-part_id="{ row }">
             <ProductLink :family="row.product_family">{{ row.part_id }}</ProductLink>
@@ -579,7 +623,8 @@ const exportDetails = computed(() => [
                   · UPC {{ row.upc }}</template>
               </p>
               <p class="mt-1 text-sm tabular-nums" :class="row.ats_qty <= 0 ? 'text-accent' : 'text-ink-2'">
-                {{ availableText(row.ats_qty) }} · {{ count(row.on_hand_qty) }} on hand
+                {{ availableText(row.ats_qty) }} · {{ count(row.on_hand_qty) }} on hand<template
+                  v-if="row.backlog_qty > 0"> · {{ count(row.backlog_qty) }} on open orders</template>
                 <ProductLink :family="row.product_family" fallback="none">
                   · see it
                 </ProductLink>
@@ -603,6 +648,15 @@ const exportDetails = computed(() => [
             </div>
           </template>
         </DataGrid>
+        <!-- The four numbers in one line: "Backlog" beside "Committed" read
+             as two names for one thing (rep feedback, 2026-11). -->
+        <p class="border-line text-muted border-t p-3 text-[13px] leading-relaxed">
+          <span class="text-ink-2 font-semibold">Available</span> = on hand minus open orders.
+          <span class="text-ink-2 font-semibold">Open orders</span> = units customers have
+          ordered that have not shipped, across every account.
+          <span class="text-ink-2 font-semibold">Committed</span> = the part of those already
+          allocated to a specific order.
+        </p>
       </AppCard>
     </AsyncState>
 

@@ -293,6 +293,13 @@ const router = createRouter({
           meta: { title: 'Activity' },
         },
         {
+          // What the team looks at: page views by page, person and account.
+          path: 'usage',
+          name: 'admin-usage',
+          component: () => import('@/pages/admin/AdminUsageView.vue'),
+          meta: { title: 'Usage' },
+        },
+        {
           path: 'support',
           name: 'admin-support',
           component: () => import('@/pages/admin/AdminSupportView.vue'),

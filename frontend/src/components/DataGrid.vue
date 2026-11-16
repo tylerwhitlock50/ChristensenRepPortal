@@ -43,6 +43,7 @@ import type {
 } from '@tanstack/vue-table'
 import { gridGlobalFilterOptions } from '@/lib/gridFilter'
 import { gridSortDefaults } from '@/lib/gridSort'
+import { drawItems, groupRows, type GridItem } from '@/lib/gridGroup'
 
 /**
  * Per-column filters are OPT-IN via column meta:
@@ -79,6 +80,16 @@ const props = withDefaults(
     minWidth?: string
     /** Rows drawn before "Show more"; each tap draws this many again. */
     renderLimit?: number
+    /**
+     * Cut the rows into named sections (lib/gridGroup.ts): each gets a
+     * header row that opens and closes it, and the sort applies inside a
+     * section. Search, filters and the rows emitted for export still cover
+     * every row, closed sections included, in section order. Fill the
+     * `group` slot ({ group, rows }) to say more than name and count.
+     */
+    groupBy?: (row: T) => string
+    /** Section order; by name when omitted. */
+    groupOrder?: (a: string, b: string) => number
   }>(),
   {
     globalFilter: '',
@@ -207,10 +218,35 @@ const table = useVueTable<T>({
  * the CSV). Touching the prop makes this computed depend on it; the call
  * below then rebuilds the row model because options.data changed.
  */
-const rows = computed(() => {
+const sortedRows = computed(() => {
   void data.value
   return table.getRowModel().rows
 })
+
+/* ---- sections (groupBy) -------------------------------------------------- */
+const groups = computed(() =>
+  props.groupBy
+    ? groupRows(sortedRows.value, (r) => props.groupBy!(r.original), props.groupOrder)
+    : null,
+)
+/** In display order: section by section when grouped, so an export matches the screen. */
+const rows = computed(() =>
+  groups.value ? groups.value.flatMap((g) => g.rows) : sortedRows.value,
+)
+const collapsedGroups = ref<Set<string>>(new Set())
+function toggleGroup(key: string) {
+  const next = new Set(collapsedGroups.value)
+  if (!next.delete(key)) next.add(key)
+  collapsedGroups.value = next
+}
+const allCollapsed = computed(
+  () => !!groups.value?.length && groups.value.every((g) => collapsedGroups.value.has(g.key)),
+)
+function toggleAllGroups() {
+  collapsedGroups.value = allCollapsed.value
+    ? new Set()
+    : new Set((groups.value ?? []).map((g) => g.key))
+}
 const visibleRows = computed(() => rows.value.map((r) => r.original))
 
 watch(visibleRows, (value) => emit('rowsChange', value), { immediate: true })
@@ -221,8 +257,14 @@ watch(visibleRows, (value) => emit('rowsChange', value), { immediate: true })
 const isWide = useMediaQuery('(min-width: 40rem)')
 
 const drawLimit = ref(props.renderLimit)
-const drawnRows = computed(() => rows.value.slice(0, drawLimit.value))
-const hiddenCount = computed(() => Math.max(0, rows.value.length - drawLimit.value))
+const drawn = computed(() => {
+  if (groups.value) return drawItems(groups.value, collapsedGroups.value, drawLimit.value)
+  const items: GridItem<Row<T>>[] = rows.value
+    .slice(0, drawLimit.value)
+    .map((row) => ({ kind: 'row', row }))
+  return { items, drawn: items.length, drawable: rows.value.length }
+})
+const hiddenCount = computed(() => Math.max(0, drawn.value.drawable - drawn.value.drawn))
 const nextBatch = computed(() => Math.min(props.renderLimit, hiddenCount.value))
 
 function showMore() {
@@ -392,6 +434,12 @@ defineExpose({ table, visibleRows, filterLabels })
       </label>
     </div>
 
+    <div v-if="groups && groups.length > 1" class="mb-2">
+      <button type="button" class="btn-ghost text-[13px]" @click="toggleAllGroups">
+        {{ allCollapsed ? 'Open all sections' : 'Close all sections' }}
+      </button>
+    </div>
+
     <!-- Phone: stacked cards + an explicit sort control, since the sortable
          column headers live in the table that is not drawn here. -->
     <template v-if="$slots.card && !isWide">
@@ -420,9 +468,26 @@ defineExpose({ table, visibleRows, filterLabels })
       </div>
 
       <div v-if="rows.length" class="divide-line divide-y">
-        <div v-for="row in drawnRows" :key="row.id" class="py-3 first:pt-0">
-          <slot name="card" :row="row.original" />
-        </div>
+        <template v-for="item in drawn.items" :key="item.kind === 'group' ? `g:${item.group.key}` : item.row.id">
+          <button
+            v-if="item.kind === 'group'"
+            type="button"
+            class="bg-canvas tap-target -mx-3 flex w-[calc(100%+1.5rem)] items-center justify-between gap-3 px-3 py-2 text-left"
+            :aria-expanded="!item.collapsed"
+            @click="toggleGroup(item.group.key)"
+          >
+            <span class="min-w-0">
+              <slot name="group" :group="item.group.key" :rows="item.group.rows.map((r) => r.original)">
+                <span class="u-label text-ink">{{ item.group.key }}</span>
+                <span class="text-muted ml-2 text-[13px]">{{ item.group.rows.length.toLocaleString() }}</span>
+              </slot>
+            </span>
+            <span class="text-muted shrink-0 text-xs" aria-hidden="true">{{ item.collapsed ? '▸' : '▾' }}</span>
+          </button>
+          <div v-else class="py-3" :class="groups ? '' : 'first:pt-0'">
+            <slot name="card" :row="item.row.original" />
+          </div>
+        </template>
       </div>
       <div v-else>
         <slot name="empty">
@@ -539,15 +604,34 @@ defineExpose({ table, visibleRows, filterLabels })
         </thead>
 
         <tbody class="divide-line divide-y">
-          <tr v-for="row in drawnRows" :key="row.id" class="bg-surface">
+          <template v-for="item in drawn.items" :key="item.kind === 'group' ? `g:${item.group.key}` : item.row.id">
+          <tr v-if="item.kind === 'group'" class="bg-canvas">
+            <td :colspan="table.getVisibleLeafColumns().length" class="p-0">
+              <button
+                type="button"
+                class="tap-target flex w-full items-center gap-3 px-3 py-2 text-left"
+                :aria-expanded="!item.collapsed"
+                @click="toggleGroup(item.group.key)"
+              >
+                <span class="text-muted w-3 shrink-0 text-xs" aria-hidden="true">{{ item.collapsed ? '▸' : '▾' }}</span>
+                <span class="min-w-0">
+                  <slot name="group" :group="item.group.key" :rows="item.group.rows.map((r) => r.original)">
+                    <span class="u-label text-ink">{{ item.group.key }}</span>
+                    <span class="text-muted ml-2 text-[13px]">{{ item.group.rows.length.toLocaleString() }}</span>
+                  </slot>
+                </span>
+              </button>
+            </td>
+          </tr>
+          <tr v-else class="bg-surface">
             <td
-              v-for="cell in row.getVisibleCells()"
+              v-for="cell in item.row.getVisibleCells()"
               :key="cell.id"
               class="px-3 py-2.5 align-top"
             >
               <slot
                 :name="`cell-${cell.column.id}`"
-                :row="row.original"
+                :row="item.row.original"
                 :value="cell.getValue()"
               >
                 <FlexRender
@@ -557,6 +641,7 @@ defineExpose({ table, visibleRows, filterLabels })
               </slot>
             </td>
           </tr>
+          </template>
 
           <tr v-if="!rows.length">
             <td :colspan="table.getVisibleLeafColumns().length" class="bg-surface">
@@ -576,8 +661,8 @@ defineExpose({ table, visibleRows, filterLabels })
       class="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2"
     >
       <p class="text-muted text-[13px]">
-        Showing {{ drawnRows.length.toLocaleString() }} of
-        {{ rows.length.toLocaleString() }}
+        Showing {{ drawn.drawn.toLocaleString() }} of
+        {{ drawn.drawable.toLocaleString() }}
       </p>
       <AppButton variant="ghost" @click="showMore">
         Show {{ nextBatch.toLocaleString() }} more

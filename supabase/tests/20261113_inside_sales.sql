@@ -346,7 +346,8 @@ select pg_temp.assert(
                               'order_line_snapshot', 'mcp_tokens', 'mcp_tool_calls',
                               'support_requests', 'support_messages', 'ai_summaries', 'ai_briefs',
                               'ai_feedback', 'ai_batch_checks', 'ai_usage_events', 'login_events',
-                              'job_runs', 'impersonation', 'impersonation_events')
+                              'job_runs', 'impersonation', 'impersonation_events',
+                              'usage_events')
       and not exists (select 1 from pg_trigger g
                       where g.tgrelid = format('public.%I', t.tablename)::regclass
                         and g.tgname = 'trg_' || t.tablename || '_read_only_role')),
