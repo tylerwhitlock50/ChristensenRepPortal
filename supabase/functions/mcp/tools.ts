@@ -320,7 +320,7 @@ const searchAccounts: ToolDef = {
   title: 'Search accounts',
   description:
     'Find accounts in the book by name, key, city or state. This is how you ' +
-    'turn "Smoky Mountain" into the customer_key every other account tool ' +
+    'turn "Smith Outdoors" into the customer_key every other account tool ' +
     'needs. Excludes inactive and rep-deactivated accounts unless asked.',
   inputSchema: {
     type: 'object',

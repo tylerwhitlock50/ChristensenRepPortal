@@ -25,11 +25,13 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-function asDisplayError(error: unknown, migration: string): unknown {
+function asDisplayError(error: unknown, _migration: string): unknown {
   if (isViewMissing(error)) {
     return Object.assign(
+      // The text is shown to reps, so it does not name the file. For whoever
+      // is fixing it: the missing view comes from supabase/migrations/<migration>.
       new Error(
-        `This report's view is not in the database yet. Apply supabase/migrations/${migration}, then reload.`,
+        'This report is not set up yet. Ask an admin, then reload.',
       ),
       { code: 'PGRST205' },
     )
