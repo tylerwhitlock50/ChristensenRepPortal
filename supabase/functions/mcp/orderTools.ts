@@ -1544,7 +1544,7 @@ const DRAFT_DOCUMENTS = {
         type: 'string',
         minLength: 1,
         maxLength: MCP_FILE_NAME_MAX,
-        description: 'The file\'s name with its extension, e.g. "PO 215647.csv". The extension decides the type.',
+        description: 'The file\'s name with its extension, e.g. "PO 12345.csv". The extension decides the type.',
       },
       ...INLINE_CONTENT,
     },
@@ -1556,8 +1556,8 @@ const PRICE_OVERRIDE_REASON = {
   maxLength: 500,
   description:
     'Admin or inside sales; required when any line carries a unit_price that is not the ' +
-    'published price (or a part on no list): why, e.g. "Bill Hicks stocking order at ' +
-    'distributor program pricing, approved by ...". Shown to the reviewer.',
+    'published price (or a part on no list): why, e.g. "stocking order at distributor ' +
+    'program pricing, approved by ...". Shown to the reviewer.',
 } as const
 
 const DRAFT_FIELDS = {
@@ -2855,7 +2855,7 @@ const attachOrderDocument: ToolDef = {
         type: 'string',
         minLength: 1,
         maxLength: MCP_FILE_NAME_MAX,
-        description: 'The file\'s name with its extension, e.g. "PO 197065.pdf". The extension decides the type.',
+        description: 'The file\'s name with its extension, e.g. "PO 12345.pdf". The extension decides the type.',
       },
       ...INLINE_CONTENT,
     },

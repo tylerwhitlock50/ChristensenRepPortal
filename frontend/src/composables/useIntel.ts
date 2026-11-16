@@ -122,7 +122,7 @@ export function useSkuSalesByAccount(customerKey: MaybeRef<string>) {
     retry: retryUnlessMissing,
     queryFn: async (): Promise<SkuYearRow[]> => {
       // A big dealer's SKU × year history exceeds PostgREST's 1,000-row cap
-      // (LIPSEYS: 1,692 rows) — unpaged, the grid AND the header totals were
+      // (the largest: 1,692 rows) — unpaged, the grid AND the header totals were
       // silently truncated. (part_key, sales_year) is the view's grain per
       // customer, so ordering by both is a total order.
       try {

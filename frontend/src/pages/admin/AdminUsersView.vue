@@ -559,7 +559,7 @@ async function setActive(active: boolean) {
             <span class="u-label mb-1.5 block">
               Rep code <span class="normal-case">(their book — optional)</span>
             </span>
-            <input v-model="cRepKey" type="text" class="field" placeholder="e.g. TANY MCDO" />
+            <input v-model="cRepKey" type="text" class="field" placeholder="e.g. JANE DOE" />
           </label>
           <label class="block">
             <span class="u-label mb-1.5 block">

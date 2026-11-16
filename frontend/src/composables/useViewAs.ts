@@ -97,7 +97,7 @@ export function useImpersonatableProfiles(when?: Ref<boolean>) {
   })
 }
 
-/** "Jane Doe · TANY MCDO" — how a target reads in the banner and the picker. */
+/** "Jane Doe · JANE DOE" — how a target reads in the banner and the picker. */
 export function repLabel(p: {
   full_name: string | null
   sales_rep_key: string | null

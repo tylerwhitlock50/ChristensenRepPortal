@@ -203,7 +203,7 @@ whole book, a product, or more than one account. Never guess a key.
   last year". Call a product-mix period by its name ("January–September"),
   and never call a period "this year" unless it is the current year.
 - Names: real account and product names from the input, in normal
-  capitalisation without LLC or INC ("Lipsey's", "Turner's Outdoorsman").
+  capitalisation without LLC or INC ("ACME OUTDOORS LLC" reads "Acme Outdoors").
   Name a product by family and chambering ("Ridgeline 7mm PRC"), adding the
   finish only when two listed products share both.
 - If a number is missing, write around it — never guess, never mention
