@@ -1562,7 +1562,9 @@ const getAccountSkuGaps: ToolDef = {
         minimum: 1,
         maximum: 100,
         default: 4,
-        description: 'Only SKUs at least this many dealers buy — filters out one-off specials.',
+        description:
+          'Only SKUs at least this many dealers buy — filters out one-off specials. ' +
+          'Values below 4 apply only for admins and inside sales.',
       },
       limit: limitProp(25, 100),
     },

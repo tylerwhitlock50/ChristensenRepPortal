@@ -33,7 +33,11 @@ insert into erp.dim_customer
 values
   ('INT-CUST-A1', 'INT-CUST-A1', 'Intel Dealer A1', 'INT REPA', 'INT-DEALER', 'Y'),
   ('INT-CUST-A2', 'INT-CUST-A2', 'Intel Dealer A2', 'INT REPA', 'INT-DEALER', 'Y'),
-  ('INT-CUST-F1', 'INT-CUST-F1', 'Intel Dealer F1', 'INT REPF', 'INT-DEALER', 'Y');
+  ('INT-CUST-F1', 'INT-CUST-F1', 'Intel Dealer F1', 'INT REPF', 'INT-DEALER', 'Y'),
+  -- Two more foreign dealers, so part one has four buyers company-wide and
+  -- clears the global report's minimum (20261116110000). Part two has two.
+  ('INT-CUST-F2', 'INT-CUST-F2', 'Intel Dealer F2', 'INT REPF', 'INT-DEALER', 'Y'),
+  ('INT-CUST-F3', 'INT-CUST-F3', 'Intel Dealer F3', 'INT REPF', 'INT-DEALER', 'Y');
 
 insert into erp.dim_part (part_key, part_id, part_description)
 values ('INTPK-1', 'INT-PART-1', 'Intel part one'),
@@ -52,6 +56,10 @@ values
   ('INT-E', 'INT-INV-2', 1, 'INT-CUST-A2', 'INTPK-1',  4,  400.00, false,
    to_char(current_date, 'YYYYMMDD')::int),
   ('INT-E', 'INT-INV-3', 1, 'INT-CUST-F1', 'INTPK-2', 20, 1000.00, false,
+   to_char(current_date, 'YYYYMMDD')::int),
+  ('INT-E', 'INT-INV-4', 1, 'INT-CUST-F2', 'INTPK-1', 10, 1000.00, false,
+   to_char(current_date, 'YYYYMMDD')::int),
+  ('INT-E', 'INT-INV-5', 1, 'INT-CUST-F3', 'INTPK-1', 10, 1000.00, false,
    to_char(current_date, 'YYYYMMDD')::int);
 
 -- The territory views read the 030 rollup tables, not the facts — rebuild
@@ -210,6 +218,29 @@ begin
     raise exception 'T6 FAILED: global units (%) below the rep''s own book (%) — not global', v, v_expected_qty;
   end if;
   raise notice 'T6 ok (global rows for a rep; units % >= book %)', v, v_expected_qty;
+
+  -- T6b: a SKU fewer than four dealers bought is close to one dealer's own
+  -- volume, so a rep does not get it; an admin does (20261116110000).
+  select count(*) into n from public.report_global_product_sales(12, 2000)
+   where account_count < 4;
+  if n <> 0 then
+    raise exception 'T6b FAILED: a rep got % global SKUs bought by fewer than 4 dealers', n;
+  end if;
+  select count(*) into n from public.report_global_product_sales(12, 2000)
+   where part_key = 'INTPK-1';
+  if n <> 1 then
+    raise exception 'T6b FAILED: the four-dealer SKU is missing from the rep''s global report';
+  end if;
+  perform pg_temp.as_super();
+  perform pg_temp.as_user(u_admin);
+  select count(*) into n from public.report_global_product_sales(12, 2000)
+   where part_key = 'INTPK-2';
+  if n <> 1 then
+    raise exception 'T6b FAILED: an admin no longer gets the two-dealer SKU';
+  end if;
+  perform pg_temp.as_super();
+  perform pg_temp.as_user(u_rep);
+  raise notice 'T6b ok (reps: four dealers or more; admins: everything)';
 
   -- Structural: the function's output columns must never include customer
   -- identifiers, nor any dollar figure (033 stripped revenue — reps get
