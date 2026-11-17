@@ -231,7 +231,14 @@ never submits") applies to an OAuth connection unchanged.
 
 **Do not drop or rename `postgrest_pre_request()`** without first clearing
 `pgrst.db_pre_request` on the `authenticator` role: PostgREST calls it by name
-on every Data API request.
+on every Data API request. Because every request runs it, apply the migration
+to dev and run `supabase/tests/20261116_mcp_oauth.sql` there before prod. To
+switch the check off (the trigger and Storage layers stay):
+
+```sql
+alter role authenticator reset pgrst.db_pre_request;
+notify pgrst, 'reload config';
+```
 
 #### Revoking
 
