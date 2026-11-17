@@ -18,6 +18,7 @@
 ============================================================================*/
 
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2'
+import { isOAuthClientToken } from './oauthToken.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 
@@ -54,11 +55,28 @@ function requireEnv(value: string, name: string): string {
   return value
 }
 
+/**
+ * The caller's portal session token.
+ *
+ * An access token Supabase Auth issued to a connected app (an OAuth client,
+ * migration 20261116120000) is refused here. It is a valid user JWT, and the
+ * Auth server would vouch for it, but it was approved for one thing: the mcp
+ * endpoint. Without this, the token Claude holds for an admin could create
+ * users through admin-create-user. Every function that takes a user JWT goes
+ * through here (userClient); mcp does not, and checks such tokens itself.
+ */
 export function bearerToken(req: Request): string {
   const header = req.headers.get('Authorization') ?? ''
   const token = header.replace(/^Bearer\s+/i, '').trim()
   if (!token) {
     throw new HttpError(401, 'no_auth', 'Missing Authorization header.')
+  }
+  if (isOAuthClientToken(token)) {
+    throw new HttpError(
+      403,
+      'oauth_client_token',
+      'This access token was issued to a connected app and only works at the MCP endpoint.',
+    )
   }
   return token
 }

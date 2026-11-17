@@ -9,18 +9,23 @@ https://<project-ref>.supabase.co/functions/v1/mcp
 
 Read-only, apart from gated order **drafting** (see "Order drafting, gated"
 below): twenty-one read tools, plus ten order tools that only a pilot user
-on the order-drafting allow-list ever sees (with any valid token). No new access
-model: a token identifies a user, and that user's existing RLS decides
-everything they can see.
+on the order-drafting allow-list ever sees. No new access model: a credential
+identifies a user, and that user's existing RLS decides everything they can
+see.
+
+People connect by **signing in** (OAuth, since `20261116120000`): one
+connector address for the whole team, with nothing secret in it, and each
+person approves Claude as themselves. The older `crp_` tokens still work.
 
 ---
 
 ## The one-paragraph version of the security design
 
-The function resolves the incoming token to a `user_id` with **one**
-`service_role` call (`mcp_token_resolve`, which returns no account data), then
-mints a **five-minute `authenticated` JWT** for that user and does every read
-through an ordinary supabase-js client carrying it. From that point it is
+The function resolves the incoming credential to a `user_id` with **one**
+`service_role` call (`mcp_oauth_resolve` for an OAuth access token it has
+verified, `mcp_token_resolve` for a `crp_` token; neither returns account
+data), then mints a **five-minute `authenticated` JWT** for that user and does
+every read through an ordinary supabase-js client carrying it. From that point it is
 indistinguishable from the SPA — same anon key, same PostgREST, same policies,
 same `my_customer_keys()`.
 
@@ -75,6 +80,8 @@ else in the design changes; the signing algorithm is the only assumption.
 |---|---|---|
 | `MCP_DISABLED_TOOLS` | *(empty)* | Comma-separated tool names to turn off without a deploy. |
 | `MCP_ALLOWED_ORIGIN` | `*` | CORS origin. Pin it if browser-based MCP clients are ever the only consumers. |
+| `MCP_PUBLIC_URL` | *(from the request)* | The endpoint's public URL, as people type it into Claude. Only to pin it: by default it is the origin the request arrived on plus `/functions/v1/mcp`. |
+| `MCP_AUTH_ISSUER` | `SUPABASE_URL` + `/auth/v1` | The Auth issuer: what the metadata document advertises and what every OAuth token's `iss` must equal. Set it for `supabase functions serve` (there `SUPABASE_URL` is a Docker-internal address) or behind a custom domain (Auth keeps issuing as the project domain). |
 
 `MCP_DISABLED_TOOLS` exists mainly for `list_contacts`. `ai-account-summary`
 deliberately keeps contact PII out of a model's context (see the PII note in
@@ -86,9 +93,169 @@ judgement should be reversible from the dashboard, not from a pull request.
 
 ## How a rep connects
 
-They do it themselves, from **account menu → Connect Claude** (`/connect`) in
-the portal. The page mints a token, shows the plaintext **once**, and hands
-over both connection forms. There is no admin step.
+### By signing in (OAuth)
+
+The connector address is the bare endpoint, the same for everyone:
+
+```
+https://<project-ref>.supabase.co/functions/v1/mcp
+```
+
+**Claude (web, desktop, phone).** Add it as a custom connector. On a Team or
+Enterprise plan an owner adds it once under the organization's connectors, and
+each member then presses **Connect**. Claude sends the member to the portal's
+consent screen (`/oauth/consent`); they sign in if needed, check it says
+Claude, and approve. Each person is connected as themselves, so each sees
+their own book.
+
+**Claude Code.**
+
+```bash
+claude mcp add --transport http rep-portal https://<project-ref>.supabase.co/functions/v1/mcp
+```
+
+then `/mcp` inside Claude Code, pick `rep-portal`, sign in.
+
+Connected apps are listed on **account menu → Connect Claude** (`/connect`),
+with when each was last used and a **Disconnect** button. Disconnecting is
+immediate (see "Revoking" below).
+
+#### What happens, and who does what
+
+```
+Claude                       mcp function                Supabase Auth              portal
+  │  POST (no credential)        │                            │                       │
+  ├─────────────────────────────>│                            │                       │
+  │  401  WWW-Authenticate: Bearer resource_metadata="…/mcp/oauth-protected-resource"
+  │<─────────────────────────────┤                            │                       │
+  │  GET …/mcp/oauth-protected-resource                       │                       │
+  ├─────────────────────────────>│  {resource, authorization_servers:[…/auth/v1]}     │
+  │  discovery, (registration), /oauth/authorize + PKCE       │                       │
+  ├──────────────────────────────────────────────────────────>│  302 /oauth/consent?authorization_id=…
+  │                              │                            ├──────────────────────>│
+  │                              │                            │   sign in, Approve    │
+  │  code → /oauth/token → access token (+ refresh token)     │<──────────────────────┤
+  │<──────────────────────────────────────────────────────────┤                       │
+  │  POST  Authorization: Bearer <access token>               │                       │
+  ├─────────────────────────────>│ verify, mcp_oauth_resolve, mint 5-minute JWT, RLS  │
+```
+
+- **Supabase Auth is the authorization server.** It runs the flow, stores
+  clients, consents and sessions, and issues and refreshes tokens. Nothing in
+  this repo implements OAuth endpoints.
+- **The portal hosts the consent screen** (`frontend/src/pages/OAuthConsentView.vue`).
+  It decides by the redirect URI, not the app's name: with dynamic
+  registration anyone can register an app called "Claude", but Auth only
+  ever sends an approval to the exact redirect URI the app registered.
+  Claude's callback (`https://claude.ai/api/mcp/auth_callback`) and loopback
+  addresses (Claude Code, the MCP Inspector) can be approved; anything else
+  is refused unless listed in the portal's `VITE_MCP_OAUTH_REDIRECTS`.
+- **This function is the resource server.** It publishes where to sign in
+  (RFC 9728 metadata, at `…/mcp/oauth-protected-resource` and the same under
+  `/.well-known/`; the host root is not ours to serve, so the 401 names the
+  document's real address) and checks the token it is handed
+  (`_shared/oauthToken.ts`): signature against the project's published keys
+  (ES256/RS256) or the legacy secret (HS256), issuer, expiry, and that it is
+  a token issued **to an OAuth client** (`client_id` claim). A portal session
+  JWT is refused. Then `mcp_oauth_resolve` checks the grant's session still
+  exists and the profile is active.
+
+#### One-time setup (Supabase dashboard)
+
+Nothing here can be done from a migration. In the project dashboard:
+
+1. **Authentication → URL Configuration → Site URL** is the portal's origin
+   (`https://carms.app`). Auth sends people to *Site URL + authorization path*.
+2. **Authentication → OAuth Server**: enable it, and set the **authorization
+   path** to `/oauth/consent`.
+3. Let Claude identify itself. Either, or both:
+   - **Register one client** (tighter; recommended for the team connector).
+     Authentication → OAuth Apps → add a client named `Claude`, type
+     **Public**, redirect URI `https://claude.ai/api/mcp/auth_callback`.
+     When adding the connector in Claude, choose **Use your own OAuth client**
+     and paste the client ID. Everyone in the organization then shares that
+     one client, and approves it once.
+   - **Dynamic client registration** (zero configuration in the client). Turn
+     it on under OAuth Server. Claude ("Register automatically"), Claude Code
+     and the MCP Inspector then register themselves. It also lets anyone on
+     the internet register a client: the consent screen's redirect check is
+     what stands in the way, and registered clients pile up under OAuth Apps
+     (Claude registers a new one per fresh connection), so look at that list
+     now and then.
+4. Deploy, in this order: the migration (`20261116120000_mcp_oauth.sql`), the
+   functions (all five: `_shared/supabase.ts` changed), then the portal.
+
+Check it from a terminal before trying Claude:
+
+```bash
+URL=https://<project-ref>.supabase.co/functions/v1/mcp
+
+# 401, and a pointer to the metadata document
+curl -si -X POST "$URL" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | grep -i '^HTTP\|www-authenticate'
+
+# the document: this URL as `resource`, the project's Auth as authorization server
+curl -s "$URL/oauth-protected-resource"
+
+# Auth's side: 200 once the OAuth server is enabled (404 while it is off)
+curl -s -o /dev/null -w '%{http_code}\n' \
+  https://<project-ref>.supabase.co/auth/v1/.well-known/oauth-authorization-server
+```
+
+The MCP Inspector (`npx @modelcontextprotocol/inspector`, Streamable HTTP,
+the URL above) runs the whole flow from a browser; it needs dynamic
+registration, or its redirect URI registered on a client.
+
+#### An OAuth token works here and nowhere else
+
+The access token Supabase Auth gives Claude is an ordinary user JWT with a
+`client_id` claim. Auth cannot bind a token to one resource yet (`aud` is
+always `authenticated`), so left alone, that token would be a portal session
+for the Data API: it could submit an order or mint a `crp_` token, which a
+`crp_` token itself never could. `20261116120000` section 5 closes that:
+
+| Where | What refuses the raw token |
+|---|---|
+| Data API (PostgREST) | `postgrest_pre_request()`, registered on the `authenticator` role: any request whose JWT has a `client_id` gets `403 oauth_client_token`. Reads and RPCs included. |
+| Any table write, by any path | `block_writes_while_impersonating()` (the trigger already on every RLS table) also raises `oauth_client_read_only`. Second layer: it holds if the pre-request setting is ever lost. |
+| Storage | A restrictive policy on `storage.objects`. |
+| The other Edge Functions | `_shared/supabase.ts` `bearerToken()`: `403 oauth_client_token`. |
+| Auth's own account endpoints | Supabase Auth refuses OAuth client tokens on them itself. |
+
+Not covered: Realtime. A token holder could subscribe to changes on rows the
+user can already read.
+
+This function is unaffected: the JWT it mints has `app_metadata.provider =
+'mcp'` and no `client_id`, which is also why every existing guard ("Claude
+never submits") applies to an OAuth connection unchanged.
+
+**Do not drop or rename `postgrest_pre_request()`** without first clearing
+`pgrst.db_pre_request` on the `authenticator` role: PostgREST calls it by name
+on every Data API request.
+
+#### Revoking
+
+A person disconnects an app on `/connect` (`supabase.auth.oauth.revokeGrant`).
+Auth marks the consent revoked and deletes the grant's sessions and refresh
+tokens. `mcp_oauth_resolve` looks for that session on every request and
+`mcp_orders_gate` looks again inside the request, so the still-unexpired
+access token stops working on its next call, not at the end of its hour.
+Deactivating the profile does the same, as it does for tokens. An admin can
+remove a client altogether under Authentication → OAuth Apps.
+
+#### What OAuth does not change
+
+Who may draft orders is still the user's row in `mcp_order_users` plus
+`feature.mcp_orders`, whatever they connected with. Supabase Auth has no
+custom scopes yet, so there is no per-connection "this one may draft"
+choice; the consent screen says what the connection will be able to do for
+that person. `mcp_tokens.scopes` stays unused.
+
+### With a token (the older way)
+
+From **account menu → Connect Claude** (`/connect`). The page mints a token,
+shows the plaintext **once**, and hands over both connection forms. Existing
+connections made this way keep working; prefer signing in for new ones.
 
 **claude.ai (web or desktop)** — Settings → Connectors → Add custom connector,
 paste the URL form:
@@ -97,8 +264,8 @@ paste the URL form:
 https://<project-ref>.supabase.co/functions/v1/mcp?token=crp_…
 ```
 
-**Claude Code / anything with a headers block** — preferred, because the secret
-never enters a URL:
+**Claude Code / anything with a headers block** — the secret never enters a
+URL:
 
 ```bash
 claude mcp add --transport http rep-portal \
@@ -109,26 +276,30 @@ claude mcp add --transport http rep-portal \
 The token is also accepted as `x-mcp-token`, and as a trailing path segment
 (`/functions/v1/mcp/crp_…`) for clients that mangle query strings.
 
+A `401` for a bad `crp_` token carries no OAuth pointer: that connector's
+address contains the token, so it is not the address the metadata document
+describes, and a client that tried to sign in from it would fail.
+
 ### On putting a secret in a URL
 
-It is a real trade, taken deliberately: claude.ai custom connectors accept a URL
-and nothing else, and a sales team that cannot connect is a feature that does
-not exist. What makes it acceptable is that the credential is per-user,
-expiring, revocable on its own from `/connect`, and scoped to data its holder
-can already see.
+It was a real trade, taken deliberately before OAuth: a claude.ai connector
+could then carry a credential only in its URL, and a sales team that cannot
+connect is a feature that does not exist. What made it acceptable is that the
+credential is per-user, expiring, revocable on its own from `/connect`, and
+scoped to data its holder can already see. Signing in removes the trade: the
+connector address holds no credential at all.
 
 **Since 2026-11-11 the transport does not matter.** A token in a URL works
 exactly like one in a header, and token scopes no longer gate anything: once a
 user is on the order-drafting allow-list (and `feature.mcp_orders` is on),
 *any* valid token of theirs — including an existing read-only one pasted into
-a claude.ai connector URL — exposes the order tools. The tradeoff, accepted
-until OAuth: **a leaked connector URL lets whoever holds it read that user's
-book and create drafts as them.** It can never submit an order (only a person
-in the portal can, after ticking the review box), and revoking the token on
-the Connect page ends it immediately. `mcp_tokens.scopes` (and the JWT's
-informational `mcp_scopes` claim) remain for OAuth, which will bring back
-per-connection consent. Reps whose client can send a header should still send
-a header.
+a claude.ai connector URL — exposes the order tools. The tradeoff: **a leaked
+connector URL lets whoever holds it read that user's book and create drafts
+as them.** It can never submit an order (only a person in the portal can,
+after ticking the review box), and revoking the token on the Connect page
+ends it immediately. `mcp_tokens.scopes` (and the JWT's informational
+`mcp_scopes` claim) are unused. Anyone still on a URL token should move to
+signing in.
 
 **For an admin or inside-sales user the blast radius is the whole company,
 not one book.** Their RLS reads every account, so a leaked URL token of theirs
@@ -139,9 +310,8 @@ order, and fetch 10-minute links to every order's PO documents. It still
 cannot submit, and an issued upload URL or document link outlives a revoked
 token until it expires. Nothing in this function treats those tokens
 differently (`tokenVia` is informational). So: admins and inside sales should
-connect with the header transport wherever the client supports it (Claude
-Code, the desktop config), keep URL connectors to the people who need
-claude.ai, and revoke a token on `/connect` the moment a URL may have leaked.
+connect by signing in, replace any URL connector they still have, and revoke
+a token on `/connect` the moment a URL may have leaked.
 
 ---
 
@@ -437,8 +607,9 @@ unknown:
    lets a user read only their own row, and an MCP session can never add or
    remove one).
 
-Any valid MCP token qualifies, header or URL, whatever scopes it carries
-(see "On putting a secret in a URL").
+Any valid credential qualifies: an OAuth connection, or a `crp_` token in a
+header or a URL, whatever scopes it carries (see "On putting a secret in a
+URL").
 
 `toolsFor(caller, setting, onList)` decides this as a pure function;
 `index.ts` feeds it one read of `feature.mcp_orders` and one read of the
@@ -449,8 +620,9 @@ false, so a client sees a flag change when it reconnects. `whoami` reports
 why. The server instructions gain an "Ordering" paragraph only when the tools
 are listed. Postgres enforces the same gate again in `mcp_orders_gate()`
 (flag, account active, allow-list, and that the JWT is an MCP session whose
-`app_metadata.mcp_token_id` names a live token of the caller's); hiding the
-tools is a convenience, not the boundary.
+`app_metadata.mcp_token_id` names a live token of the caller's, or whose
+`mcp_oauth_connection_id` names a connection of the caller's with its Auth
+session still present); hiding the tools is a convenience, not the boundary.
 
 **No money from a rep, no FFL from anyone.** No rep input schema has a price
 or FFL field, the RPC payload is built from a whitelist, and a rep's call that
@@ -505,7 +677,8 @@ adds free goods in the portal.
 inside the RPC would roll back with it). Outcomes are `ok`, `refused` (a
 coded refusal or a local validation failure) or `error`. Logged args never
 include a rejected price/FFL value, only the key names. A logging failure is
-printed and never replaces the tool's result.
+printed and never replaces the tool's result. Each row names the credential:
+`token_id`, or `oauth_connection_id` for a call made over OAuth.
 
 Kill switch without a deploy: turn `feature.mcp_orders` off, or name tools in
 `MCP_DISABLED_TOOLS`.
@@ -522,13 +695,21 @@ mcp/
 ├── orderDocuments.ts  document names and types (copy of the portal's, parity-tested)
 ├── prompts.ts      the three MCP prompts
 └── README.md       this file
-../_shared/mcpAuth.ts   token extraction, resolution, JWT minting
-../_shared/contacts.ts  contact ranking (copy of the frontend's, parity-tested)
+../_shared/mcpAuth.ts     which credential, resolution, JWT minting
+../_shared/oauthToken.ts  OAuth: token verification and the RFC 9728 helpers (pure)
+../_shared/contacts.ts    contact ranking (copy of the frontend's, parity-tested)
 ```
 
 Database side: `supabase/migrations/20260816120000_mcp_access.sql`
 (`mcp_tokens`, `mcp_token_create/revoke/resolve`), tested by
-`supabase/tests/034_mcp_access.sql`.
+`supabase/tests/034_mcp_access.sql`; and
+`supabase/migrations/20261116120000_mcp_oauth.sql` (`mcp_oauth_connections`,
+`mcp_oauth_resolve`, the gate's OAuth branch, and the rules that keep an
+OAuth token to this endpoint), tested by `supabase/tests/20261116_mcp_oauth.sql`.
+
+Portal side: `frontend/src/pages/OAuthConsentView.vue` (the consent screen),
+`frontend/src/lib/oauthConsent.ts` (what it will approve) and
+`frontend/src/pages/ConnectView.vue`.
 
 ---
 
@@ -555,11 +736,25 @@ curl -s -X POST "$URL" -H "Authorization: Bearer $TOKEN" \
 ```
 
 Locally: `supabase functions serve --env-file ./supabase/.env.local` with
-`MCP_JWT_SECRET` set, against `http://localhost:54321/functions/v1/mcp`.
+`MCP_JWT_SECRET` set, against `http://localhost:54321/functions/v1/mcp`. For
+OAuth locally also set `MCP_AUTH_ISSUER=http://127.0.0.1:54321/auth/v1`, and
+enable the OAuth server in `supabase/config.toml` (`[auth.oauth_server]`).
+
+The OAuth door has its own unit tests, with real keys and no network:
+`deno test --allow-env supabase/functions/_shared/`.
 
 ### The check worth running after any change here
 
-Two reps, two tokens, one `customer_key` belonging to the first. The second
-rep's token must return "not visible to you" from `get_account` — not an empty
-result, not a row. If it ever returns a row, something in this directory has
-started reading with `service_role`.
+Two reps, two connections (or tokens), one `customer_key` belonging to the
+first. The second rep's connection must return "not visible to you" from
+`get_account` — not an empty result, not a row. If it ever returns a row,
+something in this directory has started reading with `service_role`.
+
+And for OAuth: copy the access token out of a client that holds one (the MCP
+Inspector shows it) and send it straight to the Data API. It must be refused:
+
+```bash
+curl -s "https://<project-ref>.supabase.co/rest/v1/profiles?select=user_id" \
+  -H "apikey: <publishable key>" -H "Authorization: Bearer <OAuth access token>"
+# {"code":"42501","message":"oauth_client_token: …"}
+```

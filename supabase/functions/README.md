@@ -10,7 +10,7 @@ TECH_STACK §3.2 admits only code that holds a secret or needs `service_role`.
 | `ai-brief` | Holds `OPENAI_API_KEY`; the AI Actions / territory brief path |
 | `admin-create-user` | Needs `service_role` to create auth users and set passwords (PRD: no self-signup) |
 | `admin-update-user` | Needs `service_role` to set passwords and ban/unban sign-in on deactivate |
-| `mcp` | Holds `MCP_JWT_SECRET`, and needs `service_role` for exactly one call — resolving an MCP token to a user. Speaks an HTTP protocol, so it cannot be a Postgres function. See [`mcp/README.md`](./mcp/README.md). |
+| `mcp` | Holds `MCP_JWT_SECRET`, and needs `service_role` for exactly one call — resolving an MCP credential (an OAuth access token, or a `crp_` token) to a user. Speaks an HTTP protocol, so it cannot be a Postgres function. See [`mcp/README.md`](./mcp/README.md). |
 
 Everything else — reads, writes, photo upload/download — goes straight to
 PostgREST and Storage with the user's JWT. If a new candidate appears, the
@@ -22,6 +22,8 @@ functions/
 ├── _shared/
 │   ├── cors.ts              CORS headers, preflight, json()/fail()
 │   ├── supabase.ts          userClient() vs serviceClient(), HttpError
+│   ├── mcpAuth.ts           the mcp function's door: credential → user → 5-minute JWT
+│   ├── oauthToken.ts        OAuth access-token verification + RFC 9728 helpers (pure)
 │   ├── accountContext.ts    the context payload + hashing, shared by both AI paths
 │   ├── aiSummary.ts         the model call, cost gates, generate-or-cache decision
 │   └── contacts.ts          contact ranking — a parity-tested copy of the frontend's
@@ -110,9 +112,18 @@ code. If you prefer the gateway check, drop the flag and handle the preflight
 at the CDN instead — but do not remove the in-function checks either way.
 
 `mcp` follows the same rule from a different direction: it resolves the caller
-from an MCP token rather than a JWT, using `service_role` for that one lookup,
-and then does every data read as that user with a token it mints itself. It
-never reads sales data with `service_role` — see `mcp/README.md`.
+from an MCP credential rather than a portal JWT, using `service_role` for that
+one lookup, and then does every data read as that user with a token it mints
+itself. It never reads sales data with `service_role` — see `mcp/README.md`.
+
+**OAuth client tokens stop at `userClient()`.** Since `20261116120000` Claude
+can hold an access token that Supabase Auth issued for a user (a JWT with a
+`client_id` claim). It was approved for the `mcp` endpoint only, so
+`bearerToken()` in `_shared/supabase.ts` answers it with `403
+oauth_client_token` before any of the four functions above looks at it.
+Without that, the token Claude holds for an admin would pass
+`admin-create-user`'s `is_admin()` check. Keep new functions on
+`userClient()`, and redeploy all of them when `_shared/` changes.
 
 `ai-summary-batch` is the exception to the pattern above: it has no caller and
 no JWT. It authenticates a constant-time match on `x-batch-secret`, and it is

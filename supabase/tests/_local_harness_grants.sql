@@ -95,3 +95,13 @@ revoke execute on function public.block_writes_for_read_only_role()
   from authenticated, anon, public;
 revoke execute on function public.order_apply_promo(bigint)
   from authenticated, anon, public;
+
+-- 20261116120000 (OAuth sign-in for MCP): the connection list is read-only
+-- for a signed-in user, and resolving a token to a user is the gateway's
+-- job alone, as for mcp_token_resolve.
+revoke all on public.mcp_oauth_connections from authenticated, anon, public;
+grant select on public.mcp_oauth_connections to authenticated;
+revoke execute on function public.mcp_oauth_resolve(uuid, uuid, uuid)
+  from authenticated, anon, public;
+revoke execute on function public.mcp_oauth_session_live(uuid, uuid, uuid)
+  from authenticated, anon, public;

@@ -19,6 +19,12 @@ declare module 'vue-router' {
   interface RouteMeta {
     /** Reachable without a session. Everything else requires one. */
     public?: boolean
+    /**
+     * Needs a session like any other page, but renders without the app's
+     * navigation: a single-purpose screen someone lands on from outside the
+     * portal (the OAuth consent screen).
+     */
+    bare?: boolean
     adminOnly?: boolean
     /** Rep-group principals only; an admin is sent to /admin/agencies. */
     principalOnly?: boolean
@@ -226,6 +232,17 @@ const router = createRouter({
       name: 'connect',
       component: () => import('@/pages/ConnectView.vue'),
       meta: { title: 'Connect Claude' },
+    },
+    {
+      // Where Supabase Auth sends someone who is connecting Claude with OAuth
+      // (Dashboard → Authentication → OAuth Server → authorization path; the
+      // two must match). Signed-in only: the guard below takes a signed-out
+      // visitor through /login and back here with the query intact, which is
+      // the whole "preserve authorization_id" step of the flow.
+      path: '/oauth/consent',
+      name: 'oauth-consent',
+      component: () => import('@/pages/OAuthConsentView.vue'),
+      meta: { title: 'Connect Claude', bare: true },
     },
     {
       // Also from the account menu. The signed-out half of this (the link in
