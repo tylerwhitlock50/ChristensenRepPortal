@@ -16,23 +16,46 @@
   functions/README.md admits only code that holds a secret or needs
   service_role. This qualifies on both counts, narrowly: it holds
   MCP_JWT_SECRET, and it makes exactly one service_role call — resolving a
-  token to a user id — before dropping to a client scoped to that user. It
-  cannot be a Postgres function with `security definer` instead, which is the
-  first question that file tells you to ask, because MCP is an HTTP protocol
-  and PostgREST does not speak it.
+  credential to a user id — before dropping to a client scoped to that user.
+  It cannot be a Postgres function with `security definer` instead, which is
+  the first question that file tells you to ask, because MCP is an HTTP
+  protocol and PostgREST does not speak it.
+
+  The credential is an OAuth access token (the user signed in to the portal
+  and approved Claude; Supabase Auth is the authorization server) or one of
+  our own crp_ tokens. This function is the OAuth *resource server* and only
+  that: it publishes where to sign in (the metadata document below, RFC 9728)
+  and checks the token it is then handed. It never sees a password, an
+  authorization code or a refresh token.
 
   Everything past the door is ordinary RLS. See _shared/mcpAuth.ts for the
   handover, and mcp/tools.ts for the rule that no tool may scope by customer
   in TypeScript.
 
   Deploy: supabase functions deploy mcp --no-verify-jwt
-  (--no-verify-jwt because the gateway's check would reject an MCP token — it
-  is not a Supabase JWT — and this function authenticates every request
-  itself before reading anything.)
+  (--no-verify-jwt because the gateway's check would reject a crp_ token — it
+  is not a Supabase JWT — and would answer the unauthenticated request that
+  starts OAuth before this function could point the client at the sign-in.
+  This function authenticates every request itself before reading anything.)
 ============================================================================*/
 
 import { HttpError } from '../_shared/supabase.ts'
-import { callerClient, extractToken, resolveCaller } from '../_shared/mcpAuth.ts'
+import {
+  AUTH_ISSUER,
+  callerClient,
+  type Credential,
+  extractCredential,
+  resolveCaller,
+  resolveOAuthCaller,
+  verifyOAuthToken,
+} from '../_shared/mcpAuth.ts'
+import {
+  bearerChallenge,
+  isResourceMetadataPath,
+  mcpResourceUrl,
+  resourceMetadata,
+  resourceMetadataUrl,
+} from '../_shared/oauthToken.ts'
 import { describeTool, type OrderAccess, ToolError, type ToolDef } from './tools.ts'
 import {
   isAdminCaller,
@@ -103,7 +126,9 @@ const CORS: Record<string, string> = {
     'authorization, content-type, accept, apikey, x-client-info, ' +
     'x-mcp-token, mcp-protocol-version, mcp-session-id, last-event-id',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Expose-Headers': 'mcp-protocol-version, mcp-session-id',
+  // www-authenticate: a browser-based client (the MCP Inspector) has to read
+  // the sign-in pointer off a 401, and cannot unless it is exposed.
+  'Access-Control-Expose-Headers': 'mcp-protocol-version, mcp-session-id, www-authenticate',
   'Access-Control-Max-Age': '86400',
   Vary: 'Origin',
 }
@@ -260,11 +285,57 @@ async function dispatch(
 }
 
 /*----------------------------------------------------------------------------
+  OAuth discovery (RFC 9728)
+
+  The whole of this server's part in signing in. A client with no token gets
+  a 401 whose WWW-Authenticate header names the metadata document; the
+  document names Supabase Auth as the authorization server; the client does
+  the rest with Auth and comes back with a token. Nothing here is secret and
+  nothing here is per-user.
+
+  `resource` must be the URL exactly as the person typed it into Claude, so
+  it is built from the origin the request came in on (MCP_PUBLIC_URL to pin
+  it). The authorization server is the project's Auth issuer, which is also
+  the `iss` every token is checked against.
+----------------------------------------------------------------------------*/
+function resourceUrl(req: Request): string {
+  const slug = Deno.env.get('SUPABASE_FUNCTION_SLUG') || 'mcp'
+  // No forwarded host means req.url is an address only the platform can
+  // reach; the project URL is then the better answer than echoing it.
+  const projectUrl = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/+$/, '')
+  const fallback = !req.headers.get('x-forwarded-host') && projectUrl
+    ? `${projectUrl}/functions/v1/${slug}`
+    : undefined
+  return mcpResourceUrl(req, { override: Deno.env.get('MCP_PUBLIC_URL') || fallback, slug })
+}
+
+/** "Sign in first", or with a description, "that token is no good". */
+function challenge(req: Request, invalidToken?: string): Record<string, string> {
+  return {
+    'WWW-Authenticate': bearerChallenge(
+      resourceMetadataUrl(resourceUrl(req)),
+      invalidToken ? { code: 'invalid_token', description: invalidToken } : undefined,
+    ),
+  }
+}
+
+/*----------------------------------------------------------------------------
   The handler
 ----------------------------------------------------------------------------*/
 Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS })
+  }
+
+  // Before anything that needs a credential: a client asks for this because
+  // it has none yet.
+  if (req.method === 'GET' && isResourceMetadataPath(new URL(req.url).pathname)) {
+    if (!AUTH_ISSUER) {
+      return jsonResponse({ error: { code: 'missing_env', message: 'SUPABASE_URL is not set on this function.' } }, 500)
+    }
+    return jsonResponse(resourceMetadata(resourceUrl(req), AUTH_ISSUER), 200, {
+      'Cache-Control': 'public, max-age=300',
+    })
   }
 
   // GET is how a client opens a server-initiated SSE stream. We are stateless
@@ -293,19 +364,24 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   let caller: Caller
   let db: Db
+  let credential: Credential | null = null
   try {
-    const token = extractToken(req)
-    if (!token) {
+    credential = extractCredential(req)
+    if (!credential) {
       throw new HttpError(
         401,
         'no_token',
-        'No MCP token. Send it as `Authorization: Bearer <token>`, as the ' +
-          '`x-mcp-token` header, or as `?token=` on the URL. Mint one in the ' +
-          'portal under your account menu → Connect Claude.',
+        'Sign-in required. An MCP client that supports OAuth (Claude does) ' +
+          'signs in by itself from the WWW-Authenticate header of this ' +
+          'response: add this URL as a connector and follow the sign-in. ' +
+          'A portal token (account menu → Connect Claude) also works, sent as ' +
+          '`Authorization: Bearer <token>`.',
       )
     }
-    // Header and URL tokens resolve identically (see extractToken).
-    caller = await resolveCaller(token.token, token.via)
+    caller = credential.kind === 'oauth'
+      ? await resolveOAuthCaller(await verifyOAuthToken(credential.token))
+      // Header and URL tokens resolve identically (see extractToken).
+      : await resolveCaller(credential.token, credential.via)
     db = await callerClient(caller)
   } catch (error) {
     const err =
@@ -313,11 +389,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
         ? error
         : new HttpError(500, 'auth_failed', error instanceof Error ? error.message : String(error))
     if (err.status >= 500) console.error('mcp auth failed', error)
-    return jsonResponse(
-      { error: { code: err.code, message: err.message } },
-      err.status,
-      err.status === 401 ? { 'WWW-Authenticate': 'Bearer realm="christensen-rep-portal"' } : {},
-    )
+
+    // What a 401 tells the client to do next depends on what it sent:
+    //   nothing          sign in (the metadata pointer alone).
+    //   an OAuth token   that token is no good: refresh it, or sign in again.
+    //   a crp_ token     nothing a client can fix by itself. No OAuth pointer:
+    //                    the connector's URL carries the token, so it is not
+    //                    the URL the metadata document describes, and a
+    //                    client that tried to sign in would fail on that.
+    let authHeaders: Record<string, string> = {}
+    if (err.status === 401) {
+      if (!credential) authHeaders = challenge(req)
+      else if (credential.kind === 'oauth') authHeaders = challenge(req, err.message)
+      else authHeaders = { 'WWW-Authenticate': 'Bearer realm="christensen-rep-portal"' }
+    }
+    return jsonResponse({ error: { code: err.code, message: err.message } }, err.status, authHeaders)
   }
 
   // After auth, as before: an unauthenticated caller cannot make this
