@@ -143,8 +143,8 @@ async function doRevoke(token: McpTokenRow) {
       </h1>
       <p class="text-muted mt-1 max-w-2xl text-sm">
         Give Claude read-only access to your accounts so you can ask questions in
-        plain English — “which of my dealers are behind pace”, “what did Smoky
-        Mountain buy last year”, “what’s on backorder for me”. Claude sees
+        plain English — “which of my dealers are behind pace”, “what did Smith
+        Outdoors buy last year”, “what’s on backorder for me”. Claude sees
         <strong class="text-ink">exactly the accounts you see in this portal</strong>,
         nothing more<template v-if="!mcpOrders.available.value">, and it cannot change anything</template>.
       </p>

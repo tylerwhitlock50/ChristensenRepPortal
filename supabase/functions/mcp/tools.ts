@@ -320,7 +320,7 @@ const searchAccounts: ToolDef = {
   title: 'Search accounts',
   description:
     'Find accounts in the book by name, key, city or state. This is how you ' +
-    'turn "Smoky Mountain" into the customer_key every other account tool ' +
+    'turn "Smith Outdoors" into the customer_key every other account tool ' +
     'needs. Excludes inactive and rep-deactivated accounts unless asked.',
   inputSchema: {
     type: 'object',
@@ -1562,7 +1562,9 @@ const getAccountSkuGaps: ToolDef = {
         minimum: 1,
         maximum: 100,
         default: 4,
-        description: 'Only SKUs at least this many dealers buy — filters out one-off specials.',
+        description:
+          'Only SKUs at least this many dealers buy — filters out one-off specials. ' +
+          'Values below 4 apply only for admins and inside sales.',
       },
       limit: limitProp(25, 100),
     },

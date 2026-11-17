@@ -205,9 +205,9 @@ function numOrNull(value: unknown): number | null {
 }
 
 const MISSING_VIEW_MESSAGE =
-  'The account rollup views are not in the database yet. Apply ' +
-  'supabase/migrations/011_account_views.sql and 018_account_header_views.sql ' +
-  '(they create the v_account_* views), then reload.'
+  // Shown to reps. The v_account_* views come from supabase/migrations/
+  // 011_account_views.sql and 018_account_header_views.sql.
+  'The account figures are not set up yet. Ask an admin, then reload.'
 
 /**
  * True when PostgREST could not find the relation — i.e. 011 has not been

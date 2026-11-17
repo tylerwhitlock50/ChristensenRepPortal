@@ -388,17 +388,14 @@ begin
   -- scope the admin DOWN to whatever that rep can now see, never pop them
   -- back up to everything.
   --
-  -- Asserted against the rep's own answer rather than a literal, because
-  -- what a deactivated rep sees is not nothing: deactivation kills the
-  -- derived branches of my_customer_keys() but not an explicit grant row
-  -- (see the note on §6 of the migration — that is 010's behaviour, left
-  -- deliberately unchanged). Comparing the two answers keeps this test
-  -- honest about fidelity instead of pinning a constant that would have to
-  -- be re-guessed if the grant rules ever move.
+  -- Asserted against the rep's own answer first, so the test is about
+  -- fidelity. Since 20261116110000 a deactivated rep sees nothing at all:
+  -- deactivation now stops the explicit-grant branch of my_customer_keys()
+  -- along with the derived ones (before, the grant row survived it).
   perform pg_temp.assert_eq('T23 a deactivated target scopes DOWN to what that rep sees',
                             pg_temp.visible(u_admin), pg_temp.visible(u_rep));
-  perform pg_temp.assert_eq('T23b …which is the grant only, not the whole company',
-                            pg_temp.visible(u_admin), array['VA-C8']);
+  perform pg_temp.assert_eq('T23b …which is nothing: not the grant, not the whole company',
+                            pg_temp.visible(u_admin), array[]::text[]);
   perform pg_temp.be(u_admin);
   execute 'set local role authenticated';
   perform pg_temp.assert_eq('T24 …and does not restore admin rights',
