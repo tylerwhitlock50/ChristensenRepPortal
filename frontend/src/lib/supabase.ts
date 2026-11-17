@@ -215,7 +215,9 @@ export function describeError(error: unknown): string {
   if (!e) return ''
 
   if (isSchemaNotExposed(e)) {
-    return 'The ERP read models are not published to the API yet. An admin needs to add the `erp` schema under Settings → API → Exposed schemas in Supabase.'
+    // For whoever is fixing it: add the `erp` schema under Settings → API →
+    // Exposed schemas in Supabase.
+    return 'The sales data is not set up yet. Ask an admin, then reload.'
   }
   if (isReadTimeout(e)) {
     return `The signal here is too weak to load this — it didn't come back in ${READ_TIMEOUT_MS / 1000} seconds. Anything you've saved is still here; try again when you have more bars.`

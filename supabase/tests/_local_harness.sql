@@ -56,6 +56,12 @@ begin
      behaviour fails on an RLS violation that would never happen in
      production. Needs superuser, which the setup in this file's header has. */
   alter role service_role bypassrls;
+  /* PostgREST's login role. Two migrations set role-level settings on it
+     (the business time zone, and the pre-request function of
+     20261116120000); nothing ever connects as it here. */
+  if not exists (select 1 from pg_roles where rolname = 'authenticator') then
+    create role authenticator noinherit;
+  end if;
 end $$;
 
 --------------------------------------------------------------------------
@@ -76,6 +82,17 @@ create table if not exists auth.users (
     raw_app_meta_data  jsonb,
     raw_user_meta_data jsonb,
     is_super_admin     boolean
+);
+
+/* auth.sessions: only the columns 20261116120000 reads. Supabase Auth keeps
+   one row per signed-in session; a session that belongs to an OAuth grant
+   has oauth_client_id set, and revoking the grant deletes the row. */
+create table if not exists auth.sessions (
+    id              uuid primary key,
+    user_id         uuid not null,
+    oauth_client_id uuid,
+    not_after       timestamptz,
+    created_at      timestamptz default now()
 );
 
 /* The real auth.uid() reads the request's JWT claims, and the test files

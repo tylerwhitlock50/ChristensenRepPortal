@@ -25,11 +25,13 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-function asDisplayError(error: unknown, migration: string): unknown {
+function asDisplayError(error: unknown, _migration: string): unknown {
   if (isViewMissing(error)) {
     return Object.assign(
+      // The text is shown to reps, so it does not name the file. For whoever
+      // is fixing it: the missing view comes from supabase/migrations/<migration>.
       new Error(
-        `This report's view is not in the database yet. Apply supabase/migrations/${migration}, then reload.`,
+        'This report is not set up yet. Ask an admin, then reload.',
       ),
       { code: 'PGRST205' },
     )
@@ -122,7 +124,7 @@ export function useSkuSalesByAccount(customerKey: MaybeRef<string>) {
     retry: retryUnlessMissing,
     queryFn: async (): Promise<SkuYearRow[]> => {
       // A big dealer's SKU × year history exceeds PostgREST's 1,000-row cap
-      // (LIPSEYS: 1,692 rows) — unpaged, the grid AND the header totals were
+      // (the largest: 1,692 rows) — unpaged, the grid AND the header totals were
       // silently truncated. (part_key, sales_year) is the view's grain per
       // customer, so ordering by both is a total order.
       try {

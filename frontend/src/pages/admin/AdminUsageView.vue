@@ -241,7 +241,7 @@ const DESCRIPTION =
     <AppCard v-if="missing" title="Usage">
       <p class="text-ink-2 text-[15px] leading-relaxed">
         Usage tracking is not in the database yet. Apply
-        <code>supabase/migrations/20261116120000_usage_events.sql</code>, then reload.
+        <code>supabase/migrations/20261116130000_usage_events.sql</code>, then reload.
       </p>
     </AppCard>
 

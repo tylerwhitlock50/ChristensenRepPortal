@@ -1,7 +1,7 @@
 /*============================================================================
   20261116_usage_events.sql — assertions for the usage log.
 
-  Companion to 20261116120000_usage_events.sql. Proves that log_usage() is
+  Companion to 20261116130000_usage_events.sql. Proves that log_usage() is
   the only write path and stamps the caller, that junk and oversize input is
   dropped, that nothing is logged while an admin views as a rep, that the
   hourly cap holds, and that only an admin reads the table or the report.

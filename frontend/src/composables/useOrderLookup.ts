@@ -80,8 +80,8 @@ export function useOrderLookup(term: MaybeRef<string>) {
         if (isViewMissing(error)) {
           throw Object.assign(
             new Error(
-              'Order lookup is not in the database yet. Apply ' +
-                'supabase/migrations/035_order_lookup.sql, then reload.',
+              // Shown to reps. It comes from supabase/migrations/035_order_lookup.sql.
+              'Order lookup is not set up yet. Ask an admin, then reload.',
             ),
             { code: 'PGRST202' },
           )

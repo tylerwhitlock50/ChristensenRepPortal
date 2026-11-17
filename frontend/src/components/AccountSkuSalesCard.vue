@@ -20,7 +20,7 @@ import type { ExportColumn } from '@/lib/xlsx'
  * to say how much there is to read; every row spells out both years anyway.
  *
  * Nothing is fetched until the card is first opened: a big dealer's SKU
- * history is two or more pages (LIPSEYS: 1,692 rows), and most account opens
+ * history is two or more pages (the largest: 1,692 rows), and most account opens
  * never look. Until then the query runs against an empty key, which keeps it
  * disabled (useSkuSalesByAccount only runs with a key), and the hint says
  * what the card holds instead of counting it.

@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { qk } from '@/lib/queryClient'
 
 /**
- * Admin › Usage: admin_usage_report() (20261116120000), one round trip for
+ * Admin › Usage: admin_usage_report() (20261116130000), one round trip for
  * the whole page. The function returns null to a non-admin and the table's
  * only read policy is the admin's, so the page gate is cosmetic.
  */

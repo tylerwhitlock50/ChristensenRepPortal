@@ -1,5 +1,5 @@
 /*============================================================================
-  20261116120000_usage_events.sql — what the team actually looks at.
+  20261116130000_usage_events.sql — what the team actually looks at.
 
   Why
   ---

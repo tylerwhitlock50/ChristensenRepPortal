@@ -102,9 +102,10 @@ function reload() {
     </div>
   </div>
 
-  <!-- Public routes (login, reset, 404) render full-bleed; everything else is
-       chrome-wrapped. -->
-  <RouterView v-else-if="route.meta.public" />
+  <!-- Public routes (login, reset, 404) render full-bleed, and so does a
+       `bare` one (the OAuth consent screen: signed in, but no navigation to
+       wander off into mid-approval); everything else is chrome-wrapped. -->
+  <RouterView v-else-if="route.meta.public || route.meta.bare" />
   <AppShell v-else>
     <!-- Keyed on the acting identity so a page that stays mounted across a
          view-as switch (Overview, mid-banner) remounts with fresh local

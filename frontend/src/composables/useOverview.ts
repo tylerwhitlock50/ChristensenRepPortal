@@ -71,8 +71,8 @@ function numOrNull(value: unknown): number | null {
 }
 
 const MISSING_VIEW_MESSAGE =
-  'The territory views are not in the database yet. Apply ' +
-  'supabase/migrations/025_intel_views.sql, then reload.'
+  // Shown to reps. The views come from supabase/migrations/025_intel_views.sql.
+  'The territory figures are not set up yet. Ask an admin, then reload.'
 
 /** Same deployment-state handling as useAccountMetrics.ts, plus PGRST202 —
  *  "could not find the function" — because the intel pages also call an RPC. */

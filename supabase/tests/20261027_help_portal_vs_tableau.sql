@@ -2,6 +2,7 @@
   20261027_help_portal_vs_tableau.sql — assertions for
     20261027090700_help_portal_vs_tableau.sql
     20261116090000_help_example_fake_account.sql
+    20261116100000_help_example_made_up_figures.sql
       public.help_articles  slug 'portal-vs-tableau-numbers'
 
   Runs in a transaction and ROLLS BACK. Dev only.
@@ -48,6 +49,14 @@ select pg_temp.assert(
      from public.help_articles
     where slug = 'portal-vs-tableau-numbers'),
   'the worked example does not name a real customer');
+
+-- ...and its amounts are made up (20261116100000), not that account's.
+select pg_temp.assert(
+  (select position('443,933' in body) = 0 and position('407,845' in body) = 0
+          and position('$250,000' in body) > 0
+     from public.help_articles
+    where slug = 'portal-vs-tableau-numbers'),
+  'the worked example does not carry a real account''s figures');
 
 -- Readable by a signed-in rep (published + RLS "read published help").
 select set_config('request.jwt.claims',

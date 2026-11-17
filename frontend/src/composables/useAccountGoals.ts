@@ -150,8 +150,8 @@ function toProgress(row: Record<string, unknown>): AccountGoalProgress {
 }
 
 const MISSING_RELATION_MESSAGE =
-  'Account goals are not in the database yet. Apply ' +
-  'supabase/migrations/023_account_goals.sql, then reload.'
+  // Shown to reps. The tables come from supabase/migrations/023_account_goals.sql.
+  'Account goals are not set up yet. Ask an admin, then reload.'
 
 /**
  * A goal table that does not exist yet is a deployment state, not a crash.
