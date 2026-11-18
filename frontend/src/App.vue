@@ -5,12 +5,15 @@ import AppShell from '@/components/AppShell.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import { useSessionStore } from '@/stores/session'
 import { useUsagePing } from '@/composables/useUsagePing'
+import { useUsageTracking } from '@/composables/useUsageTracking'
 
 const route = useRoute()
 const session = useSessionStore()
 
 // App opens count as activity, not only password sign-ins (Admin → Activity).
 useUsagePing()
+// …and which screens they look at once it is open (Admin → Usage).
+useUsageTracking()
 
 // Its own chunk, fetched after the shell paints: nothing on first load
 // needs it, and it pulls in date math and the task/action writers. If the

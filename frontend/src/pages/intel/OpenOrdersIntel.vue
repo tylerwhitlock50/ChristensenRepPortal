@@ -77,6 +77,18 @@ const statusOptions = computed(() =>
   distinctOptions(all.value, (r) => orderStatusLabel(r.order_status, r.order_status_desc)),
 )
 
+/**
+ * Why this tab's quantity is lower than the Backlog tab's (rep feedback,
+ * 2026-11): both read the same open lines, but RMA and warranty lines start
+ * hidden here and are counted there. Said on the page, with the numbers and
+ * the switch, while that filter is hiding something.
+ */
+const hiddenRma = computed(() => {
+  if (!filters.hideRma) return { lines: 0, qty: 0 }
+  const hidden = filterOpenOrders(all.value, { ...filters, hideRma: false }).filter((r) => r.is_rma)
+  return { lines: hidden.length, qty: hidden.reduce((a, r) => a + r.backlog_qty, 0) }
+})
+
 /* ---- what the grid shows (filters + its search box) ------------------ */
 const visible = shallowRef<OpenOrderLine[]>([])
 const totals = computed(() => openOrderTotals(visible.value))
@@ -277,6 +289,23 @@ const chip = (on: boolean) =>
           />
         </button>
       </div>
+
+      <p class="text-muted mt-2 text-[13px] leading-relaxed">
+        Every open order line, one row each. The Backlog tab is these same lines added up
+        by SKU.
+        <template v-if="hiddenRma.lines">
+          {{ count(hiddenRma.lines) }} RMA/warranty
+          {{ hiddenRma.lines === 1 ? 'line' : 'lines' }} ({{ count(hiddenRma.qty) }}
+          {{ hiddenRma.qty === 1 ? 'unit' : 'units' }}) are hidden here and counted there.
+          <button
+            type="button"
+            class="text-ink-2 underline decoration-dotted underline-offset-2"
+            @click="filters.hideRma = false"
+          >
+            Show them
+          </button>
+        </template>
+      </p>
 
       <BookListCard
         class="mt-4"

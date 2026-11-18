@@ -23,8 +23,11 @@ begin
     and p.rowsecurity
     -- mcp_tool_calls (20261111100000) is an audit table like impersonation_events:
     -- a call refused while an admin is viewing as a rep is still logged.
+    -- usage_events (20261116130000) is a log like login_events; log_usage()
+    -- itself writes nothing while viewing as a rep.
     and p.tablename not in ('impersonation', 'impersonation_events',
-                            'login_events', 'job_runs', 'mcp_tool_calls')
+                            'login_events', 'job_runs', 'mcp_tool_calls',
+                            'usage_events')
     and not exists (
       select 1
       from pg_trigger t

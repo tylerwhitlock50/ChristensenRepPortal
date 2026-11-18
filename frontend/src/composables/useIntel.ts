@@ -487,6 +487,35 @@ export function isGunStockRow(
   return isGunRow(r)
 }
 
+/** The In stock page's last two sections: what is not a gun on the rack. */
+export const STOCK_CATEGORY_BARRELED = 'Barreled actions'
+export const STOCK_CATEGORY_COMPONENTS = 'Components & accessories'
+
+/**
+ * The section a stock row sits under when the In stock list is split by
+ * category: a gun's product family (EVOKE, RIDGELINE FLASH FORGED
+ * TECHNOLOGY…), barreled actions on their own, and everything else — parts,
+ * accessories, components — together. Same gun test as "Guns only"
+ * (isGunStockRow), so the two can never disagree. Pure, unit-testable.
+ */
+export function stockCategory(
+  r: Pick<AtsRow, 'product_code' | 'product_family' | 'chambering'>,
+): string {
+  if ((r.product_code ?? '').trim().toUpperCase() === BARRELED_ACTION_PRODUCT_CODE) {
+    return STOCK_CATEGORY_BARRELED
+  }
+  if (!isGunRow(r)) return STOCK_CATEGORY_COMPONENTS
+  const family = (r.product_family ?? '').trim()
+  return family && family.toUpperCase() !== 'N/A' ? family.toUpperCase() : 'Other guns'
+}
+
+/** Gun families by name, then barreled actions, then components last. */
+export function compareStockCategories(a: string, b: string): number {
+  const rank = (c: string) =>
+    c === STOCK_CATEGORY_COMPONENTS ? 2 : c === STOCK_CATEGORY_BARRELED ? 1 : 0
+  return rank(a) - rank(b) || a.localeCompare(b)
+}
+
 /**
  * True when any row carries a product line. False both on a database whose
  * view predates the product_code column and on a book where it is blank
