@@ -561,6 +561,254 @@ class ExcludeColumns(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Column drift: a view has grown a column its table lacks
+# ---------------------------------------------------------------------------
+
+class ColumnDrift(unittest.TestCase):
+    """bi.vw_DimCustomer publishes ServiceTier; erp.dim_customer has no such column."""
+
+    VIEW_COLS = ("CustomerKey", "ServiceTier", "CustomerName", "TaxIDNumber")
+    VIEW_ROWS = [("C1", "gold", "Acme, Inc", "123-45-6789"), ("C2", "tin", "Bolt", None)]
+
+    def push(self, swap="replace", *, cols=VIEW_COLS, rows=VIEW_ROWS, shape_rows=SHAPE_ROWS,
+             exclude=("tax_id_number",), holding=()):
+        """push_table over fakes -> (pg, result, stderr). `holding`: live
+        columns that still have a value in some row (the rename probe)."""
+        answers = {"pg_attribute": shape_rows,
+                   'SELECT count(*) FROM "erp"."dim_customer"': [(len(rows),)]}
+        for name, *_ in shape_rows:
+            answers[f'WHERE "{name}" IS NOT NULL)'] = [(name in holding,)]
+        pg = FakePg(answers=answers, rowcounts={"DELETE FROM": 1, "INSERT INTO": 2})
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            res = p.push_table(FakeMs(cols=cols, rows=rows), pg, "bi.vw_DimCustomer",
+                               "erp.dim_customer", {"TaxIDNumber": "tax_id_number"}, None,
+                               exclude=list(exclude), swap=swap)
+        return pg, res, err.getvalue()
+
+    def drift_lines(self, stderr: str) -> list[str]:
+        return [ln for ln in stderr.splitlines() if ln.startswith(p.DRIFT_MARKER)]
+
+    # -- the pure helper ----------------------------------------------------
+
+    def test_known_columns_drops_the_column_and_its_value(self):
+        cols, keep, unknown = p.known_columns(["a", "new_thing", "b"], None,
+                                              ["b", "a", "loaded_at"])
+        self.assertEqual((cols, keep, unknown), (["a", "b"], [0, 2], ["new_thing"]))
+        self.assertEqual(p.csv_line(("x", "never sent", "y"), keep), "x,y\n")
+
+    def test_known_columns_with_nothing_unknown_returns_its_inputs(self):
+        cols = ["a", "b"]
+        self.assertEqual(p.known_columns(cols, None, ["a", "b", "c"]), (cols, None, []))
+        self.assertEqual(p.known_columns(cols, [0, 2], ["b", "a"]), (cols, [0, 2], []))
+
+    def test_known_columns_keeps_source_positions_after_exclude_columns(self):
+        src = ["customer_key", "tax_id_number", "new_thing", "customer_name"]
+        cols, keep, _ = p.loaded_columns(src, ["tax_id_number"])
+        cols, keep, unknown = p.known_columns(
+            cols, keep, ["customer_key", "customer_name", "tax_id_number"])
+        self.assertEqual((cols, keep, unknown),
+                         (["customer_key", "customer_name"], [0, 3], ["new_thing"]))
+        self.assertEqual(p.csv_line(("C1", "123-45-6789", "n", "Acme"), keep), "C1,Acme\n")
+
+    def test_known_columns_compares_names_exactly(self):
+        self.assertEqual(p.known_columns(["Foo", "foo"], None, ["foo"]),
+                         (["foo"], [1], ["Foo"]))
+
+    # -- push_table ---------------------------------------------------------
+
+    def test_unknown_column_is_skipped_from_columns_and_rows_and_the_table_loads(self):
+        pg, res, stderr = self.push("replace")
+        self.assertEqual(res, p.Pushed(2, "replace", drift=("service_tier",)))
+        copy_sql = pg.ran("COPY ")[0]
+        self.assertIn('("customer_key", "customer_name")', copy_sql)
+        # The value is never sent, not merely unnamed.
+        self.assertEqual(pg.copy_sink.data, 'C1,"Acme, Inc"\nC2,Bolt\n')
+        self.assertEqual(norm(pg.ran('INSERT INTO "erp"')[0]),
+                         'INSERT INTO "erp"."dim_customer" ("customer_key", "customer_name") '
+                         'SELECT "customer_key", "customer_name" FROM "etl_stage"."dim_customer"')
+        for sql in pg.log:  # no statement sent to Postgres names it
+            self.assertNotIn("service_tier", sql)
+        self.assertEqual(pg.log[-1], "COMMIT")
+
+    def test_stderr_names_the_view_the_table_and_the_columns_on_one_ascii_line(self):
+        _, _, stderr = self.push("replace")
+        lines = self.drift_lines(stderr)
+        self.assertEqual(len(lines), 1)
+        for word in ("bi.vw_DimCustomer", "erp.dim_customer", "service_tier",
+                     "add column if not exists", "deploy_migrations.py"):
+            self.assertIn(word, lines[0])
+        self.assertTrue(lines[0].isascii())  # push.ps1 matches and stores it
+        self.assertNotIn("tax_id_number", lines[0])
+
+    def test_no_drift_no_line_and_an_empty_drift(self):
+        pg, res, stderr = self.push("replace", cols=("CustomerKey", "CustomerName"),
+                                    rows=[("C1", "A"), ("C2", "B")])
+        self.assertEqual(res, p.Pushed(2, "replace"))
+        self.assertEqual(res.drift, ())
+        self.assertEqual(self.drift_lines(stderr), [])
+        self.assertFalse(pg.ran("IS NOT NULL)"))
+
+    def test_exclude_columns_are_never_drift_and_never_sent(self):
+        # tax_id_number: excluded and on the table. nickname: excluded and
+        # NOT on the table. service_tier: neither listed nor on the table.
+        pg, res, stderr = self.push(
+            "replace",
+            cols=("CustomerKey", "Nickname", "ServiceTier", "CustomerName", "TaxIDNumber"),
+            rows=[("C1", "Ace", "gold", "Acme, Inc", "123-45-6789")],
+            exclude=("tax_id_number", "nickname"))
+        self.assertEqual(res.drift, ("service_tier",))
+        self.assertIn('("customer_key", "customer_name")', pg.ran("COPY ")[0])
+        self.assertEqual(pg.copy_sink.data, 'C1,"Acme, Inc"\n')
+        line = self.drift_lines(stderr)[0]
+        self.assertNotIn("nickname", line)
+        self.assertNotIn("tax_id_number", line)
+        # An excluded column the load leaves NULL is not a rename suspect,
+        # even while it still holds a value: it is never probed.
+        self.assertFalse(pg.ran("IS NOT NULL)"))
+
+    def test_merge_compares_only_the_loaded_columns(self):
+        pg, res, _ = self.push("merge")
+        self.assertEqual(res, p.Pushed(2, "merge", 1, 2, ("service_tier",)))
+        delete = norm(pg.ran('DELETE FROM "erp"')[0])
+        self.assertIn('s."customer_key" = l."customer_key" AND '
+                      'ROW(s."customer_name") IS NOT DISTINCT FROM ROW(l."customer_name")',
+                      delete)
+        # unsupplied_null_columns reads the same list: the excluded column
+        # must still be NULL in live, and that is the only such column.
+        self.assertTrue(delete.endswith('AND l."tax_id_number" IS NULL )'), delete)
+        self.assertEqual(delete.count(" IS NULL"), 1)
+        self.assertIn('INSERT INTO "erp"."dim_customer" ("customer_key", "customer_name") '
+                      'SELECT s."customer_key", s."customer_name" FROM',
+                      norm(pg.ran('INSERT INTO "erp"')[0]))
+        for sql in pg.log:
+            self.assertNotIn("service_tier", sql)
+        self.assertEqual(pg.copy_sink.data, 'C1,"Acme, Inc"\nC2,Bolt\n')
+
+    def test_a_source_column_that_is_generated_on_the_table_is_left_alone(self):
+        # Existing behaviour, deliberately unchanged: the column exists, so
+        # it is not drift and stays in the list.
+        shape = SHAPE_ROWS + [("created_date", True, False, None)]
+        pg, res, stderr = self.push("replace", shape_rows=shape,
+                                    cols=("CustomerKey", "CustomerName", "CreatedDate"),
+                                    rows=[("C1", "Acme", "2026-11-19")])
+        self.assertEqual(res.drift, ())
+        self.assertEqual(self.drift_lines(stderr), [])
+        self.assertIn('("customer_key", "customer_name", "created_date")', pg.ran("COPY ")[0])
+
+    def test_a_rename_is_still_refused_before_anything_is_staged(self):
+        # CustomerName became CustName: one unknown column, and a live one
+        # that would be blanked. That load failed before; it still does.
+        with self.assertRaises(p.LoadRefused) as cm:
+            self.push("merge", cols=("CustomerKey", "CustName"), rows=[("C1", "Acme")],
+                      holding=("customer_name", "tax_id_number"))
+        msg = str(cm.exception)
+        for word in ("cust_name", "customer_name", "column_map"):
+            self.assertIn(word, msg)
+        self.assertNotIn("tax_id_number", msg)
+
+    def test_a_refused_rename_touches_nothing(self):
+        answers = {"pg_attribute": SHAPE_ROWS,
+                   'WHERE "customer_name" IS NOT NULL)': [(True,)]}
+        pg = FakePg(answers=answers)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(p.LoadRefused):
+            p.push_table(FakeMs(cols=("CustomerKey", "CustName"), rows=[("C1", "Acme")]),
+                         pg, "bi.vw_DimCustomer", "erp.dim_customer", {}, None)
+        self.assertEqual(pg.log[-1], "ROLLBACK")
+        for fragment in ("COPY ", "DROP TABLE", "CREATE UNLOGGED", "DELETE FROM", "INSERT INTO"):
+            self.assertFalse(pg.ran(fragment), fragment)
+        self.assertEqual(self.drift_lines(err.getvalue()), [])
+
+    def test_a_column_the_view_dropped_long_ago_does_not_block_a_new_one(self):
+        # customer_name is unsupplied but already all NULL: nothing to lose,
+        # so the new column is plain drift. Only that one column is probed —
+        # not the excluded one, not the defaulted one.
+        pg, res, stderr = self.push("merge", cols=("CustomerKey", "ServiceTier"),
+                                    rows=[("C1", "gold")], holding=())
+        self.assertEqual(res.drift, ("service_tier",))
+        self.assertEqual(len(self.drift_lines(stderr)), 1)
+        probes = pg.ran("IS NOT NULL)")
+        self.assertEqual(len(probes), 1)
+        self.assertIn('FROM "erp"."dim_customer" WHERE "customer_name" IS NOT NULL', probes[0])
+
+    def test_a_view_sharing_no_column_with_its_table_is_refused(self):
+        with self.assertRaises(p.LoadRefused) as cm:
+            self.push("replace", cols=("Alpha", "Beta"), rows=[(1, 2)], exclude=())
+        self.assertIn("none of", str(cm.exception))
+
+    # -- job_runs and the run ledger ----------------------------------------
+
+    SHIPMENT_SHAPE = [("shipment_id", False, False, 1), ("line_num", False, False, 2),
+                      ("ship_qty", False, False, None), ("loaded_at", False, True, None)]
+
+    def test_load_tables_logs_the_drift_beside_the_tables_success(self):
+        # 2026-11-16: vw_FactShipmentLine grew ServiceChargeID and IsServiceLine.
+        by_name = {t["target_table"]: t for t in REAL_CFG["tables"]}
+        plan = p.RunPlan(profile="hourly", tables=[by_name["erp.fact_shipment_line"]],
+                         post_load=True, http=False, ledger="etl:run:hourly", lock="core",
+                         lock_wait_minutes=0, statement_timeout=None, if_idle=False)
+        pg = lock_pg()
+        pg.answers["pg_attribute"] = self.SHIPMENT_SHAPE
+        pg.answers['SELECT count(*) FROM "erp"."fact_shipment_line"'] = [(2,)]
+        pg.rowcounts = {"DELETE FROM": 0, "INSERT INTO": 0}
+        ms = FakeMs(cols=("ShipmentID", "LineNum", "ShipQty", "ServiceChargeID", "IsServiceLine"),
+                    rows=[("S1", 1, 4, "FRT", True), ("S1", 2, 1, None, False)])
+        logged = []
+        err = io.StringIO()
+        with mock.patch.object(p, "log_job_run", side_effect=lambda *a: logged.append(a[1:])), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            res = p.load_tables(pg, ms, plan, {"ShipmentID": "shipment_id",
+                                               "ServiceChargeID": "service_charge_id"}, {})
+        self.assertEqual(res.loaded, {"erp.fact_shipment_line"})  # post-load can run
+        self.assertEqual((res.failures, res.failed_tables, res.skipped), ([], [], []))
+        self.assertEqual(res.drifted, ["erp.fact_shipment_line"])
+        self.assertEqual(p.exit_code(res.failures, res.skipped), 0)
+        self.assertEqual(pg.copy_sink.data, "S1,1,4\nS1,2,1\n")
+
+        self.assertEqual(len(logged), 2)
+        (name, started, status, rows), drift = logged[0], logged[1]
+        # The table's own row is what the row floor and the stamp read.
+        self.assertEqual((name, status, rows), ("etl:erp.fact_shipment_line", "success", 2))
+        self.assertEqual(drift[0], "etl:column_drift")
+        self.assertEqual(drift[1], started)
+        self.assertEqual(drift[2:4], ("error", None))
+        for word in ("bi.vw_FactShipmentLine", "erp.fact_shipment_line",
+                     "service_charge_id, is_service_line"):
+            self.assertIn(word, drift[4])
+        # stderr carries the same sentence, behind the marker push.ps1 reads.
+        self.assertEqual(self.drift_lines(err.getvalue()), [f"{p.DRIFT_MARKER} {drift[4]}"])
+
+    def test_the_drift_job_name_is_one_no_reader_of_the_stamp_matches(self):
+        # v_data_freshness (20261027090100) and last_good_rows read
+        # status = 'success' rows named etl:run, etl:run:hourly or etl:erp.*.
+        self.assertEqual(p.DRIFT_JOB, "etl:column_drift")
+        self.assertFalse(p.DRIFT_JOB.startswith(("etl:run", "etl:erp.")))
+
+    def test_the_run_ledger_stays_a_success_and_post_load_runs(self):
+        hourly = set(p.validate_config(cfg_copy())["hourly"]["tables"])
+        result = p.LoadResult(loaded=hourly, failed_tables=[], failures=[], skipped=[],
+                              total_rows=1234, drifted=["erp.fact_shipment_line"])
+        pg = lock_pg(core=True)
+        logged = []
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, MainBusyPaths.ENV), \
+                mock.patch.object(p.psycopg, "connect", return_value=pg), \
+                mock.patch.object(p, "mssql_connect", return_value=FakeMs()), \
+                mock.patch.object(p, "load_tables", return_value=result), \
+                mock.patch.object(p, "log_job_run", side_effect=lambda *a: logged.append(a[1:])), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = p.main(["--profile", "hourly"])
+        self.assertEqual(code, 0)
+        self.assertTrue(pg.ran("refresh_territory_rollups"))
+        self.assertEqual(len(logged), 1)
+        name, _, status, rows, error = logged[0]
+        self.assertEqual((name, status, rows, error), ("etl:run:hourly", "success", 1234, None))
+        self.assertIn("column drift", out.getvalue().splitlines()[-1])
+        self.assertIn("erp.fact_shipment_line", out.getvalue().splitlines()[-1])
+
+
+# ---------------------------------------------------------------------------
 # Locks, the session guard and exit codes
 # ---------------------------------------------------------------------------
 

@@ -31,6 +31,13 @@
 #   - a -Tables subset is a hand run, not the tier: it alerts on a failure
 #     but sends no heartbeat, so a noon subset never pings the full check
 #     in place of a missed 04:30 run (or marks it failed while testing).
+# And one alert that is not a failure:
+#   - column drift. A view has grown a column its erp table lacks; the
+#     loader leaves the column out, loads the table and exits 0 (a
+#     "COLUMN DRIFT:" line in the log, an etl:column_drift row in job_runs).
+#     The run is fine and the heartbeat says so, but someone has to write
+#     the add-column migration: one alert per drifted table per day, from
+#     whichever tier sees it first, remembered in push-drift.state.
 # A failed alert or ping is logged and never changes the exit code.
 #
 # Settings come from the environment first, then a minimal KEY=VALUE read of
@@ -119,6 +126,7 @@ function Send-Alert([string]$Text) {
         $json = @{ text = $Text } | ConvertTo-Json -Compress
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         Invoke-RestMethod -Uri $hook -Method Post -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec 15 -UseBasicParsing | Out-Null
+        $script:alertSent = $true
         'alert: sent' | Log-Line
     } catch {
         "alert: FAILED - $($_.Exception.Message)" | Log-Line
@@ -222,6 +230,41 @@ if ($code -eq 0) {
     if ($alert) {
         $tail = @($runLines | Select-Object -Last 15) -join "`n"
         Send-Alert ("CRM ETL $runLabel run FAILED on ${hostName}: exit $code ($meaning)$extra`n" + $tail)
+    }
+}
+
+# Column drift, whatever the exit code: the loader printed one
+# "COLUMN DRIFT: <view> has column(s) <table> does not: ..." line per table
+# it loaded without a column the view has grown. Not per run - a shipment
+# column would be 13 messages a day, a stock column 50 more, and the channel
+# would be muted by the time something else broke. Once per line per day
+# instead: push-drift.state holds the lines already alerted today, so the
+# hourly and full tiers share one alert and tomorrow's first run repeats it
+# until a migration adds the column. A line is recorded only when the alert
+# was really sent; if the file cannot be read or written the alert goes out
+# anyway, every run.
+$driftLines = @($runLines | Where-Object { $_ -like 'COLUMN DRIFT:*' } | Select-Object -Unique)
+if ($driftLines.Count -gt 0) {
+    $driftFile = Join-Path $PSScriptRoot 'push-drift.state'
+    $today = Get-Date -Format 'yyyy-MM-dd'
+    $told = @()
+    if (Test-Path -LiteralPath $driftFile) {
+        try {
+            $told = @(Get-Content -LiteralPath $driftFile -Encoding UTF8 -ErrorAction Stop |
+                Where-Object { $_.StartsWith("$today`t") } |
+                ForEach-Object { $_.Substring($today.Length + 1) })
+        } catch { "column drift: could not read push-drift.state - $($_.Exception.Message)" | Log-Line }
+    }
+    $new = @($driftLines | Where-Object { $told -notcontains $_ })
+    if ($new.Count -eq 0) {
+        'column drift: already alerted today - no alert' | Log-Line
+    } else {
+        $script:alertSent = $false
+        Send-Alert ("CRM ETL $runLabel run on ${hostName}: a source view has a column its erp table lacks. The column is NOT being loaded; the rest of the table is, and this alone does not fail a run. Repeats once a day until fixed.`n" + ($new -join "`n"))
+        if ($script:alertSent) {
+            $lines = @(@($told) + $new | ForEach-Object { "$today`t$_" })
+            try { Set-Content -LiteralPath $driftFile -Value $lines -Encoding UTF8 -ErrorAction Stop } catch { "column drift: could not write push-drift.state - $($_.Exception.Message)" | Log-Line }
+        }
     }
 }
 
