@@ -14,6 +14,14 @@ import {
   type AccountTableRow,
 } from '@/composables/useAccounts'
 import { observeAccount, useTerritoryAccounts } from '@/composables/useOverview'
+import {
+  accountFamilyDetail,
+  accountSkuDetail,
+  useBookSkuSales,
+  type AccountFamilyDetailRow,
+  type AccountIdentity,
+  type AccountSkuDetailRow,
+} from '@/composables/useIntel'
 import { useTerritorySignals } from '@/composables/useAccountSignals'
 import { useBestContacts, type AccountReach } from '@/composables/useBestContacts'
 import { usePlan } from '@/composables/usePlan'
@@ -238,6 +246,116 @@ const tableExportDetails = computed(() => [
     : 'Includes inactive and deactivated accounts',
   goalMode.value && `Behind goal: accounts with a ${goalYear} goal that are behind pace`,
   ...tableGridFilters.value,
+])
+
+/* ---- download detail ------------------------------------------------------
+   The same accounts, with what they bought underneath: one row per account
+   and family, product line, or SKU. Flat rows on purpose — every row carries
+   its account, rep and family, so Excel's filter arrows (and a PivotTable)
+   drill account → family → SKU without the file having an opinion about it.
+
+   The SKU rows are the whole book's, read once when a level is first picked
+   (useBookSkuSales); the table's search, Rep filter and Behind goal then
+   narrow them in memory, so the file always matches the accounts on screen.
+   Two years only: this year to date and all of last year, the SKU pages'
+   pairing. The rollup has no "same days last year" at SKU grain, so there is
+   no PYTD column here to mistake for the table's.
+------------------------------------------------------------------------- */
+type DetailLevel = 'accounts' | 'family' | 'line' | 'sku'
+const DETAIL_LEVELS: { value: DetailLevel; label: string }[] = [
+  { value: 'accounts', label: 'Accounts only' },
+  { value: 'family', label: 'By family' },
+  { value: 'line', label: 'By product line' },
+  { value: 'sku', label: 'By SKU' },
+]
+const detailLevel = ref<DetailLevel>('accounts')
+const detailYear = new Date().getFullYear()
+
+const bookSku = useBookSkuSales(
+  computed(() => effectiveView.value === 'table' && detailLevel.value !== 'accounts'),
+  detailYear - 1,
+)
+const detailReady = computed(() => bookSku.data.value !== undefined)
+
+const skuDetailRows = computed<AccountSkuDetailRow[]>(() =>
+  detailLevel.value === 'sku' && detailReady.value
+    ? accountSkuDetail(tableExportRows.value, bookSku.data.value ?? [], detailYear)
+    : [],
+)
+const familyDetailRows = computed<AccountFamilyDetailRow[]>(() =>
+  (detailLevel.value === 'family' || detailLevel.value === 'line') && detailReady.value
+    ? accountFamilyDetail(
+        tableExportRows.value,
+        bookSku.data.value ?? [],
+        detailLevel.value,
+        detailYear,
+      )
+    : [],
+)
+
+/** The account columns every detail row leads with. */
+const DETAIL_ACCOUNT_COLUMNS: ExportColumn<AccountIdentity>[] = [
+  { key: 'customer_key', header: 'Customer key', type: 'text' },
+  { key: 'customer_name', header: 'Account' },
+  { key: 'sold_to_city', header: 'City' },
+  { key: 'sold_to_state', header: 'State' },
+  { key: 'assigned_sales_rep_name', header: 'Rep' },
+]
+const skuDetailColumns: ExportColumn<AccountSkuDetailRow>[] = [
+  ...DETAIL_ACCOUNT_COLUMNS,
+  // The by-family file's own family names, so the two files add up alike.
+  { key: 'family', header: 'Family' },
+  { key: 'product_code', header: 'Product line' },
+  { key: 'part_id', header: 'SKU', type: 'text' },
+  { key: 'part_description', header: 'Description' },
+  { key: 'chambering', header: 'Chambering' },
+  { key: 'upc', header: 'UPC', type: 'text' },
+  { key: 'qtyThisYear', header: `Units ${detailYear} to date`, type: 'number' },
+  { key: 'revenueThisYear', header: `Revenue ${detailYear} to date`, type: 'money' },
+  { key: 'qtyLastYear', header: `Units all of ${detailYear - 1}`, type: 'number' },
+  { key: 'revenueLastYear', header: `Revenue all of ${detailYear - 1}`, type: 'money' },
+  { key: 'lastInvoiceDate', header: 'Last invoice', type: 'date' },
+]
+const familyDetailColumns = computed<ExportColumn<AccountFamilyDetailRow>[]>(() => [
+  ...DETAIL_ACCOUNT_COLUMNS,
+  { key: 'key', header: detailLevel.value === 'line' ? 'Product line' : 'Family' },
+  { key: 'skuCount', header: 'SKUs', type: 'integer' },
+  { key: 'qtyThisYear', header: `Units ${detailYear} to date`, type: 'number' },
+  { key: 'revenueThisYear', header: `Revenue ${detailYear} to date`, type: 'money' },
+  // Of the ACCOUNT's revenue: each account's rows add up to 100%.
+  { key: 'shareThisYear', header: `Share of account ${detailYear}`, type: 'percent' },
+  { key: 'qtyLastYear', header: `Units all of ${detailYear - 1}`, type: 'number' },
+  { key: 'revenueLastYear', header: `Revenue all of ${detailYear - 1}`, type: 'money' },
+  { key: 'shareLastYear', header: `Share of account ${detailYear - 1}`, type: 'percent' },
+  { key: 'lastInvoiceDate', header: 'Last invoice', type: 'date' },
+])
+
+const DETAIL_WORDS: Record<Exclude<DetailLevel, 'accounts'>, { noun: string; slug: string }> = {
+  family: { noun: 'family', slug: 'by-family' },
+  line: { noun: 'product line', slug: 'by-product-line' },
+  sku: { noun: 'SKU', slug: 'by-sku' },
+}
+const detailWords = computed(() =>
+  detailLevel.value === 'accounts' ? null : DETAIL_WORDS[detailLevel.value],
+)
+const detailExportTitle = computed(
+  () =>
+    `${goalMode.value ? `Accounts behind goal — ${goalYear}` : 'Accounts'} — sales by ${detailWords.value?.noun}`,
+)
+const detailExportFilename = computed(
+  () => `${tableExportFilename.value}-${detailWords.value?.slug}`,
+)
+const DETAIL_EXPORT_DESCRIPTION =
+  `Invoiced units and revenue. ${detailYear} is year to date; ${detailYear - 1} is the ` +
+  'whole calendar year, not the same period. Internal customers are left out.'
+const detailExportDetails = computed(() => [
+  `One row per account and ${detailWords.value?.noun}, for the accounts in the table ` +
+    `(${fmtCount(tableExportRows.value.length)}); an account with nothing invoiced in ` +
+    `${detailYear - 1} or ${detailYear} has no rows`,
+  detailLevel.value === 'line' && 'Product line is the ERP product code ("Family" in Tableau)',
+  detailLevel.value === 'family' &&
+    'Barreled actions, and components & accessories, are one family row each',
+  ...tableExportDetails.value,
 ])
 
 function pct(value: number | null | undefined): string {
@@ -597,26 +715,82 @@ function goalAmounts(g: AccountGoalProgress): string {
       :rows="6"
       @retry="tableQuery.refetch()"
     >
-      <div class="mb-2 flex items-center justify-between gap-3">
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <p class="text-muted text-sm">
           <template v-if="goalMode">
             Accounts with a {{ goalYear }} goal that are behind pace.
           </template>
           <template v-else>Revenue is invoiced; orders are bookings.</template>
         </p>
-        <!-- Disabled while "Active only" is refetching: keepPreviousData
-             keeps the old list on screen, and the file would carry it under
-             the new toggle's label. -->
-        <ExportMenu
-          :rows="tableExportRows"
-          :disabled="tableQuery.isPlaceholderData.value"
-          :columns="tableExportColumns"
-          :title="tableExportTitle"
-          :filename="tableExportFilename"
-          :description="TABLE_EXPORT_DESCRIPTION"
-          :details="tableExportDetails"
-          sheet-name="Accounts"
-        />
+        <div class="ml-auto flex shrink-0 items-center gap-2">
+          <!-- What the file holds under each account (see "download detail"
+               in the script). The SKU rows load when a level is first
+               picked, and the button waits for them. -->
+          <span
+            v-if="detailLevel !== 'accounts' && bookSku.error.value"
+            role="alert"
+            class="text-accent text-sm"
+          >
+            Couldn't load the sales detail.
+            <button type="button" class="underline" @click="bookSku.refetch()">Retry</button>
+          </span>
+          <span
+            v-else-if="detailLevel !== 'accounts' && !detailReady"
+            role="status"
+            class="text-muted text-sm"
+          >
+            Loading sales detail…
+          </span>
+          <label class="flex items-center gap-2">
+            <span
+              class="font-label text-muted text-xs font-semibold tracking-[0.12em] uppercase"
+            >
+              Detail
+            </span>
+            <select v-model="detailLevel" class="field w-auto">
+              <option v-for="l in DETAIL_LEVELS" :key="l.value" :value="l.value">
+                {{ l.label }}
+              </option>
+            </select>
+          </label>
+          <!-- Disabled while "Active only" is refetching: keepPreviousData
+               keeps the old list on screen, and the file would carry it under
+               the new toggle's label. One menu per row shape, so each keeps
+               its own column types. -->
+          <ExportMenu
+            v-if="detailLevel === 'accounts'"
+            :rows="tableExportRows"
+            :disabled="tableQuery.isPlaceholderData.value"
+            :columns="tableExportColumns"
+            :title="tableExportTitle"
+            :filename="tableExportFilename"
+            :description="TABLE_EXPORT_DESCRIPTION"
+            :details="tableExportDetails"
+            sheet-name="Accounts"
+          />
+          <ExportMenu
+            v-else-if="detailLevel === 'sku'"
+            :rows="skuDetailRows"
+            :disabled="tableQuery.isPlaceholderData.value || !detailReady"
+            :columns="skuDetailColumns"
+            :title="detailExportTitle"
+            :filename="detailExportFilename"
+            :description="DETAIL_EXPORT_DESCRIPTION"
+            :details="detailExportDetails"
+            sheet-name="Accounts by SKU"
+          />
+          <ExportMenu
+            v-else
+            :rows="familyDetailRows"
+            :disabled="tableQuery.isPlaceholderData.value || !detailReady"
+            :columns="familyDetailColumns"
+            :title="detailExportTitle"
+            :filename="detailExportFilename"
+            :description="DETAIL_EXPORT_DESCRIPTION"
+            :details="detailExportDetails"
+            :sheet-name="detailLevel === 'line' ? 'Accounts by product line' : 'Accounts by family'"
+          />
+        </div>
       </div>
 
       <div class="border-line bg-surface border p-3">

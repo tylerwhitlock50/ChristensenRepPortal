@@ -52,6 +52,7 @@ import LazyLoadFailed from '@/components/ui/LazyLoadFailed.vue'
 import type VisitSurveyComponent from '@/components/VisitSurvey.vue'
 import type PhotoPickerComponent from '@/components/PhotoPicker.vue'
 import AccountOrdersCard from '@/components/AccountOrdersCard.vue'
+import AccountFamilySalesCard from '@/components/AccountFamilySalesCard.vue'
 import AccountSkuSalesCard from '@/components/AccountSkuSalesCard.vue'
 import AccountBacklogCard from '@/components/AccountBacklogCard.vue'
 import AccountOpportunityCard from '@/components/AccountOpportunityCard.vue'
@@ -1054,7 +1055,10 @@ watch(key, () => {
       />
     </section>
 
-    <!-- What they buy and what they're owed, by SKU (data-first additions). -->
+    <!-- What they buy — the mix by family first (each family opens to its
+         SKUs), then the flat top-seller list; one query feeds both — and
+         what they're owed, by SKU (data-first additions). -->
+    <AccountFamilySalesCard :customer-key="customerKey" />
     <AccountSkuSalesCard :customer-key="customerKey" />
     <AccountBacklogCard :customer-key="customerKey" />
 
