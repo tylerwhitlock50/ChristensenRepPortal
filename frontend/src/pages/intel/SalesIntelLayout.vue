@@ -14,10 +14,13 @@ import { TABLEAU_ARTICLE_SLUG } from '@/lib/helpLinks'
  * Open orders and Shipments are the two book lists outside reps used to pull
  * from Tableau (G03, G04): every open line and every packlist in the book,
  * filterable and exportable, so Tableau can go away for them.
+ *
+ * There is no "Backlog" tab: it showed the open order lines added up by SKU,
+ * which is now the By SKU cut inside Open orders (one list, one set of
+ * filters, one total). /intel/backlog redirects there.
  */
 const tabs = [
   { to: { name: 'intel-sku' }, label: 'SKU Sales' },
-  { to: { name: 'intel-backlog' }, label: 'Backlog' },
   { to: { name: 'intel-open-orders' }, label: 'Open orders' },
   { to: { name: 'intel-shipments' }, label: 'Shipments' },
   // "ATS" is the ERP's word; reps read "In stock". The route keeps 'ats'.

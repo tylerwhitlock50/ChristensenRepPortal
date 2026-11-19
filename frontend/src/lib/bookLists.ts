@@ -17,6 +17,11 @@ import {
  * OpenOrdersIntel.vue, ShipmentsIntel.vue) only wire these to the screen;
  * tests/unit/bookLists.test.ts pins them.
  *
+ * Each list has a second cut made here from the same filtered lines, with no
+ * second request: open orders added up by SKU for each account
+ * (rollupOpenOrdersBySku — once its own "Backlog" tab), and shipments
+ * grouped per packlist (groupPacklists).
+ *
  * Money words: an open line's dollars are "Open $" (unshipped order value),
  * a shipment's are "Shipped value" (packlist value). Neither is revenue —
  * revenue is invoiced only, and shipping runs ahead of invoicing.
@@ -24,7 +29,7 @@ import {
 
 /* ------------------------------------------------------------- rows */
 
-/** One open order line — public.v_open_order_lines (20261027090600), in its column order. */
+/** One open order line — public.v_open_order_lines (20261027090600, + chambering 20261119130000), in its column order. */
 export interface OpenOrderLine {
   customer_key: string
   customer_id: string | null
@@ -62,6 +67,43 @@ export interface OpenOrderLine {
   is_non_part: boolean
   is_past_want: boolean
   is_past_promise: boolean
+  /** dim_part.chambering (20261119130000); null on a database without that migration. */
+  chambering: string | null
+}
+
+/**
+ * The open lines of one SKU at one account, added up — a row of the Open
+ * orders tab's "By SKU" cut (rollupOpenOrdersBySku). Named like the line's
+ * own fields, and like v_backlog_by_sku, which is the same sum made in SQL.
+ */
+export interface OpenSkuRow {
+  /** `${customer_key}|${part_key}` — the row's identity. */
+  key: string
+  customer_key: string
+  customer_id: string | null
+  customer_name: string | null
+  assigned_sales_rep_id: string | null
+  assigned_sales_rep_name: string | null
+  part_key: string | null
+  part_id: string | null
+  part_description: string | null
+  product_code: string | null
+  product_family: string | null
+  chambering: string | null
+  backlog_qty: number
+  backlog_amount: number
+  open_line_count: number
+  /** Distinct orders the SKU is open on. */
+  order_count: number
+  /** The soonest want date among the lines; null when none has one. */
+  earliest_desired_ship_date: string | null
+  earliest_promise_date: string | null
+  latest_order_date: string | null
+  /** Any line past its want / promise date — so the earliest one is. */
+  is_past_want: boolean
+  is_past_promise: boolean
+  /** The lines behind the row, in the order given: totals count orders from them. */
+  lines: OpenOrderLine[]
 }
 
 /** One packlist line — public.report_book_shipments() (20261027090600), in its column order. */
@@ -140,6 +182,7 @@ export function mapOpenOrderLine(r: Record<string, unknown>): OpenOrderLine {
     is_non_part: r.is_non_part === true,
     is_past_want: r.is_past_want === true,
     is_past_promise: r.is_past_promise === true,
+    chambering: str(r.chambering),
   }
 }
 
@@ -360,6 +403,88 @@ export function openOrderSubtotals(rows: readonly OpenOrderLine[]): {
     byOrder.set(k, o)
   }
   return { byAccount, byOrder }
+}
+
+/* ----------------------------------------------- open orders, by SKU */
+
+/** The earlier / later of two yyyy-MM-dd dates; a missing one never wins. */
+const earlier = (a: string | null, b: string | null) => (a && b ? (a < b ? a : b) : (a ?? b))
+const later = (a: string | null, b: string | null) => (a && b ? (a > b ? a : b) : (a ?? b))
+
+/**
+ * The lines added up by SKU for each account — the Open orders tab's "By
+ * SKU" cut, and what the separate Backlog tab used to read from
+ * v_backlog_by_sku (the same sum in SQL; supabase/tests/
+ * 20261119_open_order_lines_chambering.sql pins that the two agree).
+ *
+ * Built from the lines the filters left, so every filter means the same
+ * thing in both cuts and their totals cannot disagree. Rows come out in
+ * first-seen order; the grid sorts them. Discount / credit lines share the
+ * one "(Unknown)" part, so an account's land on a single row.
+ */
+export function rollupOpenOrdersBySku(lines: readonly OpenOrderLine[]): OpenSkuRow[] {
+  const rows = new Map<string, OpenSkuRow>()
+  const orders = new Map<string, Set<string>>()
+  for (const l of lines) {
+    const key = `${l.customer_key}|${l.part_key ?? ''}`
+    let row = rows.get(key)
+    if (!row) {
+      row = {
+        key,
+        customer_key: l.customer_key,
+        customer_id: l.customer_id,
+        customer_name: l.customer_name,
+        assigned_sales_rep_id: l.assigned_sales_rep_id,
+        assigned_sales_rep_name: l.assigned_sales_rep_name,
+        part_key: l.part_key,
+        part_id: l.part_id,
+        part_description: l.part_description,
+        product_code: l.product_code,
+        product_family: l.product_family,
+        chambering: l.chambering,
+        backlog_qty: 0,
+        backlog_amount: 0,
+        open_line_count: 0,
+        order_count: 0,
+        earliest_desired_ship_date: null,
+        earliest_promise_date: null,
+        latest_order_date: null,
+        is_past_want: false,
+        is_past_promise: false,
+        lines: [],
+      }
+      rows.set(key, row)
+      orders.set(key, new Set())
+    }
+    const seen = orders.get(key)!
+    seen.add(l.order_id)
+    row.backlog_qty += l.backlog_qty
+    row.backlog_amount += l.backlog_amount
+    row.open_line_count += 1
+    row.order_count = seen.size
+    row.earliest_desired_ship_date = earlier(row.earliest_desired_ship_date, l.desired_ship_date)
+    row.earliest_promise_date = earlier(row.earliest_promise_date, l.promise_date)
+    row.latest_order_date = later(row.latest_order_date, l.order_date)
+    row.is_past_want ||= l.is_past_want
+    row.is_past_promise ||= l.is_past_promise
+    row.lines.push(l)
+  }
+  return [...rows.values()]
+}
+
+export interface OpenSkuTotals extends OpenOrderTotals {
+  /** Distinct SKUs across the rows (one SKU open at three accounts is one). */
+  skus: number
+}
+
+/**
+ * Totals over by-SKU rows: the same figures openOrderTotals gives for the
+ * lines behind them (so the tiles read alike in both cuts), plus the SKUs.
+ */
+export function openSkuTotals(rows: readonly OpenSkuRow[]): OpenSkuTotals {
+  const skus = new Set<string>()
+  for (const r of rows) skus.add(r.part_key ?? '')
+  return { ...openOrderTotals(rows.flatMap((r) => r.lines)), skus: skus.size }
 }
 
 /* -------------------------------------------------------- shipments */

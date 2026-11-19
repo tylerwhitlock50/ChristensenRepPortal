@@ -416,7 +416,7 @@ const exportDetails = computed(() => [
       <!--
         "What can I sell THIS dealer?" — the catalog filtered to what the
         chosen account does not already carry. Same one-click shape as the
-        account dropdown on BacklogIntel, but answering the opposite
+        account dropdown on Open orders, but answering the opposite
         question. Without it this page is territory-agnostic: it can say what
         is in stock, but not who to put it in front of.
       -->

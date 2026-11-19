@@ -119,7 +119,6 @@ const ats: [string, readonly unknown[]][] = [
 ]
 for (const [label, key] of ats) t(`ATS: ${label}`, isAtsQueryKey(key), true)
 const notAts: [string, readonly unknown[]][] = [
-  ['backlog', qk.intel.backlog()],
   ['open orders', qk.intel.openOrders()],
   ['book shipments', qk.intel.bookShipments('2026-01-01', '2026-10-26')],
   ['account summary', accountMetricsKeys.summary(k)],

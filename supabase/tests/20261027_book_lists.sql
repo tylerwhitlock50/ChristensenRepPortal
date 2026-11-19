@@ -96,8 +96,10 @@ select pg_temp.assert(
           'desired_ship_date', 'promise_date', 'part_key', 'part_id', 'part_description',
           'product_code', 'product_family', 'upc', 'program_code', 'unit_price',
           'trade_discount_pct', 'backlog_qty', 'backlog_amount', 'credit_status', 'is_rma',
-          'is_non_part', 'is_past_want', 'is_past_promise'],
-  'v_open_order_lines: the 30 contract columns, in order');
+          'is_non_part', 'is_past_want', 'is_past_promise',
+          -- appended by 20261119130000 (tests/20261119_open_order_lines_chambering.sql)
+          'chambering'],
+  'v_open_order_lines: the 30 contract columns, in order, then chambering');
 
 select pg_temp.assert(
   (select array_agg(n order by o)
