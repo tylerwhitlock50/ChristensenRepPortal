@@ -63,8 +63,9 @@ const hint = computed(() =>
 )
 
 /* ---- download ------------------------------------------------------------
-   The list as shown, oldest promise first. Same columns as the Backlog by
-   SKU page's sheet, minus the account and rep: every row is this account.
+   The list as shown, oldest promise first. Much the same columns as the
+   Open orders tab's By SKU sheet, minus the account and rep: every row is
+   this account.
 ------------------------------------------------------------------------- */
 
 /* The account's NAME for the sheet title — the page header's query

@@ -605,34 +605,6 @@ function mapBacklogRow(r: Record<string, unknown>): BacklogSkuRow {
   }
 }
 
-/** Every open backlog line in the caller's book, rolled up to account × SKU. */
-export function useTerritoryBacklog() {
-  return useQuery({
-    queryKey: qk.intel.backlog(),
-    staleTime: ERP_STALE_TIME,
-    retry: retryUnlessMissing,
-    queryFn: async (): Promise<BacklogSkuRow[]> => {
-      // Account × SKU across the territory can exceed the 1,000-row cap.
-      // The (customer_key, part_key) tiebreakers make the sort total so
-      // pages never overlap on equal backlog amounts.
-      try {
-        const data = await fetchAllRows<Record<string, unknown>>((from, to) =>
-          db
-            .from('v_backlog_by_sku')
-            .select('*', { count: 'exact' }) // unfiltered on purpose — RLS is the territory filter
-            .order('backlog_amount', { ascending: false })
-            .order('customer_key')
-            .order('part_key')
-            .range(from, to),
-        )
-        return data.map(mapBacklogRow)
-      } catch (error) {
-        throw asDisplayError(error, '025_intel_views.sql')
-      }
-    },
-  })
-}
-
 /** One account's backlog by SKU, for the account page card. */
 export function useAccountBacklog(customerKey: MaybeRef<string>) {
   const key = computed(() => unref(customerKey))

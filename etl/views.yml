@@ -34,6 +34,24 @@
 # these columns and adds CHECK (col IS NULL), so a loader without this
 # list fails that table's load instead of landing the values; the ERP note
 # (docs/erp_changes) asks for the views to stop publishing them.
+#
+# When a view grows a column (four times so far, never announced): a
+# source column the live erp table does not have is left out — dropped from
+# the COPY column list and from every row, the same way exclude_columns
+# are, so its values never leave this machine — and the table loads without
+# it. The loader never adds a column to a table by itself. The run is still
+# a success (exit 0, etl:run / etl:run:hourly success, post-load runs), and
+# it says what it left out three ways: a `COLUMN DRIFT:` line in the log,
+# an `etl:column_drift` error row in public.job_runs on every run until it
+# is fixed, and one alert per table per day from push.ps1.
+# The fix is what it always was: a migration with
+#   alter table erp.<table> add column if not exists <column> <type>;
+# applied with etl/deploy_migrations.py. The next load fills the column. A
+# column that must never land goes in exclude_columns instead, which also
+# ends the alert.
+# Still a failed table, as before: a RENAMED column (a new name plus a
+# loaded column gone, which skipping would blank on every row — map the new
+# name onto the old column in column_map below).
 
 tables:
   - source_view: bi.vw_DimCustomer

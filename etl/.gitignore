@@ -1,3 +1,4 @@
 # push.ps1's runtime files (the *.log themselves are ignored at the repo root)
 *.log.1
 push-ats.failcount
+push-drift.state

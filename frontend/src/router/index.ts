@@ -133,14 +133,15 @@ const router = createRouter({
           meta: { title: 'SKU Sales' },
         },
         {
+          // "Backlog" was its own tab: the open order lines added up by SKU.
+          // It is now the By SKU cut of Open orders; old links and
+          // bookmarks land there.
           path: 'backlog',
-          name: 'intel-backlog',
-          component: () => import('@/pages/intel/BacklogIntel.vue'),
-          meta: { title: 'Backlog' },
+          redirect: { name: 'intel-open-orders', query: { view: 'sku' } },
         },
         {
           // Every open order line in the book (G03) — the Tableau open-order
-          // list, grouped by account and order.
+          // list, by account and order, or added up by SKU (?view=sku).
           path: 'open-orders',
           name: 'intel-open-orders',
           component: () => import('@/pages/intel/OpenOrdersIntel.vue'),

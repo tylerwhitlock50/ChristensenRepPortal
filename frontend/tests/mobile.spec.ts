@@ -62,9 +62,10 @@ test.describe('signed in', () => {
     { path: '/accounts', name: 'accounts' },
     { path: '/lookup', name: 'lookup' },
     { path: '/intel/sku-sales', name: 'intel-sku-sales' },
-    { path: '/intel/backlog', name: 'intel-backlog' },
-    // The two book lists (G03, G04): the widest grids in the app.
+    // The two book lists (G03, G04): the widest grids in the app. Open
+    // orders has two cuts — by order, and by SKU (once the Backlog tab).
     { path: '/intel/open-orders', name: 'intel-open-orders' },
+    { path: '/intel/open-orders?view=sku', name: 'intel-open-orders-by-sku' },
     { path: '/intel/shipments', name: 'intel-shipments' },
     { path: '/intel/ats', name: 'intel-ats' },
     { path: '/intel/global', name: 'intel-global' },
