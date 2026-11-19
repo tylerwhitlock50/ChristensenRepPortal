@@ -27,6 +27,11 @@ Exit codes (push.ps1 alerts on them):
        profile's lock_wait_minutes, or --if-idle skipped a table another
        run was loading
 
+A view that has grown a column its erp.* table lacks is NOT a failure: the
+column is left out (never sent), the table loads, and the run says so three
+ways — a `COLUMN DRIFT:` line on stderr, an 'etl:column_drift' row in
+job_runs, and push.ps1's alert. See known_columns().
+
 Environment (see .env.example):
     MSSQL_CONN   ODBC connection string to the SQL Server instance (VECA)
     PG_CONN      Postgres connection string to Supabase, role postgres. Must
@@ -89,6 +94,17 @@ PROFILE_NAMES = ("full", "hourly", "ats")
 PROFILE_KEYS = {"tables", "post_load", "http", "ledger", "lock",
                 "lock_wait_minutes", "statement_timeout"}
 SWAP_MODES = ("replace", "merge")
+
+# Column drift: a source view has a column its erp.* table lacks
+# (known_columns). The job_runs row is an 'error' under a name of its own:
+# every reader of job_runs that feeds the freshness stamp or the row floor
+# asks for status = 'success' and for 'etl:run', 'etl:run:hourly' or
+# 'etl:erp.<table>' (v_data_freshness 20261027090100, last_good_rows), so
+# this row can neither move the stamp nor hold it back, and the run's own
+# ledger row stays a success. push.ps1 finds the stderr line by its prefix
+# and alerts on it — keep the line one line, and ASCII.
+DRIFT_JOB = "etl:column_drift"
+DRIFT_MARKER = "COLUMN DRIFT:"
 
 # What a views.yml without a `profiles:` key means: the full run exactly as
 # it was before profiles existed, so an older views.yml keeps working.
@@ -667,6 +683,46 @@ def csv_line(row, keep: list[int] | None) -> str:
     return ",".join(csv_field(v) for v in fields) + "\n"
 
 
+def known_columns(cols: list[str], keep: list[int] | None,
+                  live_columns) -> tuple[list[str], list[int] | None, list[str]]:
+    """(columns to COPY, their positions in the source row, columns the table lacks).
+
+    The ERP's views grow columns without notice (four times between
+    2026-09-17 and 2026-11-16). COPY names every column, so one the live
+    table lacks used to fail the whole table — and when that table is in
+    post_load_requires, every rollup with it: November 2026, 36 shipment
+    loads and three days of a frozen Overview over two columns nothing read
+    yet. Such a column is now dropped exactly as loaded_columns drops
+    exclude_columns: from the column list AND from every row, so its value
+    never leaves this machine. Nothing is added to the table — a column
+    nobody has looked at stays out until a migration lets it in, which is
+    the fail-closed side of the privacy rule (migration 20261027090000).
+
+    Takes and returns loaded_columns' (cols, keep), so the result is still
+    the one list COPY, the merge comparison and unsupplied_null_columns
+    read. Names are compared exactly, as Postgres would. A column that
+    exists but is GENERATED is known and stays in the list: that case
+    behaves as it always has. With nothing to drop the inputs come back
+    untouched.
+    """
+    live = set(live_columns)
+    unknown = [c for c in cols if c not in live]
+    if not unknown:
+        return cols, keep, []
+    positions = keep if keep is not None else range(len(cols))
+    kept = [(c, i) for c, i in zip(cols, positions) if c in live]
+    return [c for c, _ in kept], [i for _, i in kept], unknown
+
+
+def drift_message(source_view: str, target_table: str, unknown) -> str:
+    """The one sentence for stderr and job_runs. ASCII: push.ps1 matches on it."""
+    return (f"{source_view} has column(s) {target_table} does not: "
+            f"{', '.join(unknown)} - NOT loaded; the table loads without them. "
+            f"Fix: an `add column if not exists` migration applied with "
+            f"etl/deploy_migrations.py (or exclude_columns in views.yml for a "
+            f"column that must never land).")
+
+
 class TableShape(NamedTuple):
     columns: list[str]          # every live column, in table order
     pk: list[str]               # primary key columns in key order; [] if none
@@ -711,6 +767,49 @@ def unsupplied_null_columns(shape: TableShape, loaded: list[str]) -> list[str]:
     supplied = set(loaded)
     return [c for c in shape.columns
             if c not in supplied and c not in shape.generated and c not in shape.defaulted]
+
+
+def columns_holding_values(cur, live_rel: str, columns) -> list[str]:
+    """Of `columns`, those with a non-NULL value in some live row."""
+    held = []
+    for c in columns:
+        row = cur.execute(f"SELECT EXISTS (SELECT 1 FROM {live_rel} "
+                          f"WHERE {quote_ident(c)} IS NOT NULL)").fetchone()
+        if row and row[0]:
+            held.append(c)
+    return held
+
+
+def refuse_a_rename(cur, live_rel: str, shape: TableShape, loaded: list[str], exclude,
+                    source_view: str, target_table: str, unknown: list[str]) -> None:
+    """Skipping an unknown column is for a column that was ADDED. Not a rename.
+
+    A renamed column is an unknown one plus a known one the view no longer
+    supplies. Skipping the new name would then load the table with the old
+    column NULL on every row — revenue, say — and report success. Before
+    known_columns that load failed on the new name; it still must. Told
+    apart by what the load would destroy: a live column this load does not
+    supply (and that is not excluded, generated or defaulted) which still
+    holds a value. A column the view dropped long ago is all NULL and does
+    not trip this, so it costs nothing on a table without one and one
+    EXISTS probe per such column otherwise, on drift runs only.
+
+    A view that merely stops publishing a column, with nothing new beside
+    it, is untouched: that still loads as NULL (unsupplied_null_columns).
+    """
+    excluded = {c.lower() for c in (exclude or [])}
+    at_risk = [c for c in unsupplied_null_columns(shape, loaded) if c.lower() not in excluded]
+    held = columns_holding_values(cur, live_rel, at_risk)
+    if held:
+        raise LoadRefused(
+            f"{target_table}: {source_view} has column(s) the table does not "
+            f"({', '.join(unknown)}) and no longer supplies {', '.join(held)}, which "
+            f"the table still holds values for — a renamed column? Loading would "
+            f"blank {', '.join(held)}. Live table left untouched. If it is a rename, "
+            f"map the new name onto the old column in views.yml column_map; if the "
+            f"old column is really gone, add the new one with a migration and the "
+            f"old one then loads as NULL."
+        )
 
 
 class MergeSQL(NamedTuple):
@@ -818,6 +917,7 @@ class Pushed(NamedTuple):
     swap: str                  # replace | merge (after any fallback)
     deleted: int | None = None
     inserted: int | None = None
+    drift: tuple = ()          # source columns the table lacks: not loaded
 
 
 def push_table(ms, pg, source_view: str, target_table: str, overrides: dict,
@@ -843,6 +943,11 @@ def push_table(ms, pg, source_view: str, target_table: str, overrides: dict,
     replace's INSERT would fail on the same source. Either way the row
     count returned is the staged count, so the row floor reads it exactly
     as before.
+
+    Columns: the view's, minus exclude_columns, minus any the live table
+    does not have (known_columns — reported in Pushed.drift and on stderr,
+    never loaded). That one list is what COPY names, what the swap inserts
+    and what merge compares.
     """
     schema, name = target_table.split(".", 1)
     stage = qualified(STAGE_SCHEMA, name)
@@ -855,11 +960,24 @@ def push_table(ms, pg, source_view: str, target_table: str, overrides: dict,
     if absent:
         print(f"{target_table}: exclude_columns {', '.join(absent)} not in "
               f"{source_view} — nothing to drop", file=sys.stderr)
-    col_list = ", ".join(quote_ident(c) for c in cols)
 
     total = 0
     with pg.transaction():
         pcur = pg.cursor()
+        # After exclude_columns on purpose: a column listed there is never
+        # drift, whether or not the table has it.
+        live_shape = table_shape(pcur, live)
+        cols, keep, drift = known_columns(cols, keep, live_shape.columns)
+        if drift:
+            if not cols:
+                raise LoadRefused(
+                    f"{target_table}: none of {source_view}'s columns exist on the "
+                    f"table. Live table left untouched.")
+            refuse_a_rename(pcur, live, live_shape, cols, exclude,
+                            source_view, target_table, drift)
+            print(f"{DRIFT_MARKER} {drift_message(source_view, target_table, drift)}",
+                  file=sys.stderr)
+        col_list = ", ".join(quote_ident(c) for c in cols)
         # Fresh each run so a column added to the live table by a migration
         # is picked up, not a stale staging shape from last night.
         pcur.execute(f"DROP TABLE IF EXISTS {stage}")
@@ -910,13 +1028,13 @@ def push_table(ms, pg, source_view: str, target_table: str, overrides: dict,
                 pcur.execute("select set_config('work_mem', %s, true)", (mem,))
             deleted, inserted = run_merge(pcur, merge_sql)
             check_merged_rows(pcur, live, target_table, total)
-            return Pushed(total, "merge", deleted, inserted)
+            return Pushed(total, "merge", deleted, inserted, tuple(drift))
         pcur.execute(f"DELETE FROM {live}")
         # Generated columns (order_date, ship_date, …) are computed by
         # Postgres on insert — copy only the columns the source supplied.
         pcur.execute(f"INSERT INTO {live} ({col_list}) SELECT {col_list} FROM {stage}")
         pcur.execute(f"DROP TABLE {stage}")
-    return Pushed(total, "replace")
+    return Pushed(total, "replace", drift=tuple(drift))
 
 
 class LoadResult(NamedTuple):
@@ -925,6 +1043,7 @@ class LoadResult(NamedTuple):
     failures: list             # "table: message" lines for the ledger
     skipped: list              # busy under --if-idle: no job_runs row
     total_rows: int
+    drifted: list              # loaded, but without a column the view now has
 
 
 def load_tables(pg, ms, plan: RunPlan, overrides: dict, env=os.environ, *,
@@ -936,11 +1055,19 @@ def load_tables(pg, ms, plan: RunPlan, overrides: dict, env=os.environ, *,
     stock run to finish its table); with it, a busy table is skipped and
     printed — no job_runs row, since nothing was attempted — and the run
     exits 3 if nothing failed.
+
+    A table that loaded without a column its view has grown (Pushed.drift)
+    is a loaded table: its own row is a success with its row count, so the
+    row floor and the freshness stamp read it as they always have. The
+    drift gets a second row, DRIFT_JOB / error, naming the view, the table
+    and the columns — one per run until a migration adds them, so job_runs
+    also answers "since when?".
     """
     loaded: set[str] = set()
     failed_tables: list[str] = []
     failures: list[str] = []
     skipped: list[str] = []
+    drifted: list[str] = []
     total_rows = 0
     for t in plan.tables:
         target = t["target_table"]
@@ -965,9 +1092,16 @@ def load_tables(pg, ms, plan: RunPlan, overrides: dict, env=os.environ, *,
             total_rows += res.rows
             loaded.add(target.lower())
             log_job_run(pg, job_name, started_at, "success", res.rows)
+            if res.drift:
+                drifted.append(target)
+                log_job_run(pg, DRIFT_JOB, started_at, "error", None,
+                            drift_message(t["source_view"], target, res.drift))
             merged = (f" — merged: -{res.deleted} +{res.inserted}"
                       if res.swap == "merge" else "")
-            print(f"{target}: {res.rows} rows in {time.monotonic() - started:.1f}s{merged}")
+            unloaded = (f" — {len(res.drift)} source column(s) NOT loaded "
+                        f"(column drift)" if res.drift else "")
+            print(f"{target}: {res.rows} rows in {time.monotonic() - started:.1f}s"
+                  f"{merged}{unloaded}")
         except Exception as exc:  # keep loading the rest; report at the end
             failures.append(f"{target}: {exc}")
             failed_tables.append(target)
@@ -975,7 +1109,7 @@ def load_tables(pg, ms, plan: RunPlan, overrides: dict, env=os.environ, *,
             print(f"{target}: FAILED — {exc}", file=sys.stderr)
         finally:
             unlock_table(pg, target)
-    return LoadResult(loaded, failed_tables, failures, skipped, total_rows)
+    return LoadResult(loaded, failed_tables, failures, skipped, total_rows, drifted)
 
 
 def exit_code(failures: list, skipped: list) -> int:
@@ -1210,6 +1344,11 @@ def main(argv: list[str] | None = None) -> int:
         # the stamp (and the app's cache invalidation, which also watches the
         # data horizons) should move when the data lands, on a connection
         # that has not sat idle all that time.
+        #
+        # Column drift (result.drifted) is not a failure here: the table
+        # loaded every column the portal has, so the run is as current as
+        # the portal can show and the stamp moves. The drift has its own
+        # job_runs row (load_tables) and its own alert (push.ps1).
         if plan.ledger:
             ok = not failures and not skipped
             log_job_run(
@@ -1231,7 +1370,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"push finished at {datetime.now():%Y-%m-%d %H:%M:%S} "
               f"— elapsed {fmt_elapsed(time.monotonic() - run_started)}"
               + (f" (with {len(failures)} failure(s))" if failures else "")
-              + (f" ({len(skipped)} table(s) skipped as busy)" if skipped else ""))
+              + (f" ({len(skipped)} table(s) skipped as busy)" if skipped else "")
+              + (f" (column drift, see {DRIFT_MARKER} above: "
+                 f"{', '.join(result.drifted)})" if result.drifted else ""))
         return exit_code(failures, skipped)
     finally:
         if ms is not None:

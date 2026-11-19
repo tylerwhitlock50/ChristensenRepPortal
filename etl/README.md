@@ -22,6 +22,13 @@ Pushes the governed SQL Server `bi.vw_*` views into Supabase (`erp` schema).
 - **Never loaded:** `exclude_columns` in `views.yml` (`dim_customer.tax_id_number`,
   `dim_customer_contact.salutation`) are dropped from the COPY before any
   row leaves this machine, and the first merge erases values already live.
+- **When a view grows a column:** a source column the `erp` table does not
+  have is left out the same way (never sent, never added to the table) and
+  the table loads without it. The run still succeeds and post-load still
+  runs. It is reported as a `COLUMN DRIFT:` line in the log, an
+  `etl:column_drift` row in `public.job_runs` and one alert a day. The fix
+  is still an `add column if not exists` migration. See
+  [A view grew a column](#a-view-grew-a-column-column-drift).
 - **Statement timeout:** the loader sets `statement_timeout` on its own
   session to `ETL_STATEMENT_TIMEOUT` (default `15min`) right after it
   connects, because the project default of 120 s is shorter than
@@ -242,6 +249,80 @@ config error (exit 2) before anything connects.
   -- select pg_terminate_backend(<pid>);
   ```
 
+### A view grew a column (column drift)
+
+The ERP's `bi.vw_*` views gain columns without notice. The loader names
+every column in its COPY, so a column the `erp` table lacks used to fail
+that table. In November 2026 two new shipment columns failed 36 loads in a
+row, and because `fact_shipment_line` is in `post_load_requires`, every
+rep's Overview stood still for three days.
+
+**What happens now.** The unknown column is dropped from the column list
+and from every row before anything is sent, exactly like `exclude_columns`.
+The table loads with the columns it has, by merge or replace as usual, and
+post-load runs. Nothing is added to the table: a column nobody has looked
+at stays out of Supabase until a migration lets it in.
+
+**How you find out:**
+
+- `push*.log` has one line per table, on stderr:
+  `COLUMN DRIFT: bi.vw_FactShipmentLine has column(s) erp.fact_shipment_line does not: service_charge_id, is_service_line - NOT loaded; …`.
+  The table's own line ends `— 2 source column(s) NOT loaded (column drift)`
+  and the last line of the run names the tables.
+- `public.job_runs` gets an `etl:column_drift` row with status `error` and
+  that same sentence, on every run until it is fixed. The oldest row says
+  how long it has been going on:
+
+  ```sql
+  select min(started_at) as since, max(started_at) as last_seen, count(*) as runs, error
+  from public.job_runs
+  where job_name = 'etl:column_drift' and started_at > now() - interval '14 days'
+  group by error order by last_seen desc;
+  ```
+- `push.ps1` posts one alert per drifted table per day to
+  `ETL_ALERT_WEBHOOK`, from whichever tier sees it first. It keeps today's
+  alerted lines in `push-drift.state`.
+
+The run itself is a success. The exit code is 0, the heartbeat pings
+success, the table's `etl:erp.<table>` row is `success` with its row
+count, and `etl:run` / `etl:run:hourly` are `success`, so the freshness
+stamp moves. Everything the portal can show is current. Only the new
+column is missing.
+
+**The fix** is unchanged:
+
+1. Add a migration in `supabase/migrations/`. Take the type from the view.
+
+   ```sql
+   alter table erp.fact_shipment_line
+     add column if not exists service_charge_id text,
+     add column if not exists is_service_line   boolean;
+   ```
+
+   Some `erp` tables grant SELECT column by column
+   (`20260901190300_erp_column_grants.sql`), so decide in the same file
+   whether the app roles may read the new column.
+2. Apply it from `etl\`: `venv\Scripts\python.exe deploy_migrations.py --dry-run`,
+   then without `--dry-run`.
+3. The next load fills the column and the drift rows and alerts stop. No
+   special run is needed. On a merge table that load rewrites every row
+   that has a value in the new column.
+
+If the column must never reach Supabase, list it under that table's
+`exclude_columns` in `views.yml` instead. Excluded columns are never drift.
+
+**What still fails the table,** as it did before:
+
+- **A renamed column.** The view shows a name the table lacks and stops
+  supplying a column the table still holds values for. Skipping the new
+  name would load that column as NULL on every row, so the load is refused
+  (`… a renamed column? Loading would blank …`) and the live table is left
+  alone. Map the new name onto the old column in `views.yml → column_map`.
+- A view that shares no column with its table.
+
+A view that only *stops* publishing a column, with nothing new beside it,
+is unchanged too: the column loads as NULL.
+
 ### Pausing the stock (ATS) run
 
 - From an elevated prompt in `etl\`: `.\schedule\Register-CrmTasks.ps1 -Disable ats`
@@ -308,6 +389,12 @@ What gets an alert:
     counted in `push-ats.failcount`.
   - It alerts once per streak, then says once when it recovers.
   - A success resets the count to 0.
+- **Column drift** (not a failure, see
+  [A view grew a column](#a-view-grew-a-column-column-drift)): one alert
+  per drifted table per day, from any tier or hand run, repeated on the
+  first run of each day until a migration adds the column. The line is
+  recorded in `push-drift.state` only when the alert was really sent, so an
+  unreachable webhook is retried on the next run.
 
 A failed webhook or ping is logged and never changes the exit code. Logs
 roll over to `<log>.1` past 10 MB.
