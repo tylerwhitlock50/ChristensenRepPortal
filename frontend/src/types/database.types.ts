@@ -1883,6 +1883,7 @@ export type Database = {
           assigned_sales_rep_name: string | null
           backlog_amount: number | null
           backlog_qty: number | null
+          chambering: string | null
           credit_status: string | null
           customer_id: string | null
           customer_key: string | null

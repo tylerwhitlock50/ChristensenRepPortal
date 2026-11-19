@@ -65,7 +65,6 @@ export const qk = {
     territoryYoy: () => ['intel', 'territory-yoy'] as const,
     territoryRecentOrders: () => ['intel', 'territory-recent-orders'] as const,
     territorySku: () => ['intel', 'territory-sku'] as const,
-    backlog: () => ['intel', 'backlog'] as const,
     ats: () => ['intel', 'ats'] as const,
     global: (months: number) => ['intel', 'global', months] as const,
     /** public.account_signals across the book — the nightly behaviour scores. */
@@ -233,7 +232,6 @@ const ERP_INTEL_KEYS = new Set([
   'territory-yoy', //          v_territory_account_yoy (dim_customer + agg_account_rollup)
   'territory-recent-orders', // v_territory_recent_orders (fact_order_line)
   'territory-sku', //          v_territory_sku_sales
-  'backlog', //                v_backlog_by_sku
   'ats', //                    v_ats_list
   'global', //                 report_global_product_sales()
   'signals', //                account_signals (rebuilt by the ETL's post-load step)

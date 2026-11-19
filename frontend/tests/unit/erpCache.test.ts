@@ -54,7 +54,6 @@ const erp: [string, readonly unknown[]][] = [
   ['territory yoy', qk.intel.territoryYoy()],
   ['territory recent orders', qk.intel.territoryRecentOrders()],
   ['territory sku', qk.intel.territorySku()],
-  ['backlog', qk.intel.backlog()],
   ['ats', qk.intel.ats()],
   ['global, any window', qk.intel.global(24)],
   ['book signals', qk.intel.signals()],

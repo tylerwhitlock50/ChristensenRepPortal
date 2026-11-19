@@ -6,7 +6,8 @@
  *
  * Pinned: the default filters (RMA/warranty hidden, discount/credit lines
  * kept so the total matches the Overview), the account → order grouping, the
- * totals the strip and the CSV show, the shipment date windows (including
+ * by-SKU roll-up (the old Backlog tab) and that its totals equal the lines',
+ * the totals the strip and the CSV show, the shipment date windows (including
  * "last week" = the previous Monday to Sunday and the 400-day guard), and the
  * packlist roll-up.
  */
@@ -22,10 +23,12 @@ import {
   MAX_SHIPMENT_SPAN_DAYS,
   openOrderSubtotals,
   openOrderTotals,
+  openSkuTotals,
   orderKey,
   orderStatusLabel,
   presetRange,
   rangeProblem,
+  rollupOpenOrdersBySku,
   shipmentTotals,
   shipToText,
   sortOpenOrders,
@@ -82,6 +85,7 @@ const line = (over: Partial<OpenOrderLine>): OpenOrderLine => ({
   is_non_part: false,
   is_past_want: false,
   is_past_promise: false,
+  chambering: '6.5 Creedmoor',
   ...over,
 })
 
@@ -213,6 +217,81 @@ t('totals: lines, orders, accounts, qty, $ and the late slice', totals, {
 const sub = openOrderSubtotals(sorted)
 t('subtotal per account', sub.byAccount.get('SCHE INC'), { orders: 2, lines: 4, amount: 5298 })
 t('subtotal per order', sub.byOrder.get('SCHE INC|SO-100'), { lines: 3, amount: 4798 })
+
+/* ---- open orders, by SKU ------------------------------------------------ */
+
+const skuBook: OpenOrderLine[] = [
+  // MPR-65 at Scheels on two orders (three lines), one of them late.
+  line({ order_id: 'SO-100', line_num: 1, backlog_qty: 2, backlog_amount: 3998, order_date: '2026-09-01', desired_ship_date: '2026-11-20', promise_date: '2026-12-01' }),
+  line({ order_id: 'SO-100', line_num: 2, backlog_qty: 1, backlog_amount: 1999, order_date: '2026-09-01', desired_ship_date: '2026-10-15', promise_date: null, is_past_want: true }),
+  line({ order_id: 'SO-104', line_num: 1, backlog_qty: 3, backlog_amount: 5997, order_date: '2026-10-20', desired_ship_date: null, promise_date: '2026-11-10', is_past_promise: true }),
+  // A second SKU at Scheels, and the first SKU again at another account.
+  line({ order_id: 'SO-100', line_num: 3, part_key: 'P2', part_id: 'MESA-300', part_description: 'Mesa 300 PRC', product_family: 'Mesa', chambering: '300 PRC', backlog_qty: 1, backlog_amount: 1500 }),
+  line({ customer_key: 'BIGS SKY', customer_id: 'BIGS SKY', customer_name: 'Big Sky', assigned_sales_rep_id: 'JIM HALL', assigned_sales_rep_name: 'Jim', order_id: 'SO-7', backlog_qty: 4, backlog_amount: 7996 }),
+  // An RMA line of the first SKU: counted only when the filter lets it through.
+  line({ order_id: 'SO-101', line_num: 1, is_rma: true, customer_po_number: 'RMA 77', backlog_qty: 1, backlog_amount: 0 }),
+  // Two credit lines with no part: one row for the account.
+  line({ order_id: 'SO-100', line_num: 9, part_key: '(Unknown)', part_id: null, part_description: null, chambering: null, is_non_part: true, backlog_qty: 0, backlog_amount: -200 }),
+  line({ order_id: 'SO-104', line_num: 9, part_key: '(Unknown)', part_id: null, part_description: null, chambering: null, is_non_part: true, backlog_qty: 0, backlog_amount: -50 }),
+]
+const skuLines = filterOpenOrders(skuBook, DEFAULT_OPEN_ORDER_FILTERS)
+const bySku = rollupOpenOrdersBySku(skuLines)
+t('by SKU: one row per account and SKU, in first-seen order', bySku.map((r) => r.key), [
+  'SCHE INC|P1',
+  'SCHE INC|P2',
+  'BIGS SKY|P1',
+  'SCHE INC|(Unknown)',
+])
+const mpr = bySku[0]!
+t(
+  'by SKU: qty, $, lines and distinct orders add up',
+  [mpr.backlog_qty, mpr.backlog_amount, mpr.open_line_count, mpr.order_count],
+  [6, 11994, 3, 2],
+)
+t(
+  'by SKU: earliest want and promise, latest order; a missing date never wins',
+  [mpr.earliest_desired_ship_date, mpr.earliest_promise_date, mpr.latest_order_date],
+  ['2026-10-15', '2026-11-10', '2026-10-20'],
+)
+t('by SKU: late when any line is', [mpr.is_past_want, mpr.is_past_promise], [true, true])
+t('by SKU: a row with no late line is not late', [bySku[1]!.is_past_want, bySku[1]!.is_past_promise], [false, false])
+t(
+  'by SKU: the row names its account, rep, part and chambering',
+  [bySku[2]!.customer_name, bySku[2]!.assigned_sales_rep_name, bySku[1]!.part_id, bySku[1]!.chambering],
+  ['Big Sky', 'Jim', 'MESA-300', '300 PRC'],
+)
+t(
+  "by SKU: an account's credit lines land on one row",
+  [bySku[3]!.open_line_count, bySku[3]!.backlog_amount, bySku[3]!.part_id],
+  [2, -250, null],
+)
+t(
+  'by SKU: the filters cut the lines first — RMA joins its SKU only when shown',
+  rollupOpenOrdersBySku(filterOpenOrders(skuBook, { ...DEFAULT_OPEN_ORDER_FILTERS, hideRma: false }))[0]!
+    .backlog_qty,
+  7,
+)
+t(
+  "by SKU: past want date only keeps just the late line's share",
+  rollupOpenOrdersBySku(filterOpenOrders(skuBook, { ...DEFAULT_OPEN_ORDER_FILTERS, pastWantOnly: true })).map(
+    (r) => [r.key, r.backlog_qty],
+  ),
+  [['SCHE INC|P1', 1]],
+)
+t("by SKU: the totals are the lines' totals, plus distinct SKUs", openSkuTotals(bySku), {
+  ...openOrderTotals(skuLines),
+  skus: 3,
+})
+t('by SKU: both cuts total the same $ and qty', [openSkuTotals(bySku).amount, openSkuTotals(bySku).qty], [
+  skuLines.reduce((a, r) => a + r.backlog_amount, 0),
+  skuLines.reduce((a, r) => a + r.backlog_qty, 0),
+])
+t('by SKU: no lines, no rows', [rollupOpenOrdersBySku([]).length, openSkuTotals([]).skus], [0, 0])
+t(
+  'mapping: chambering, null when the view has none yet',
+  [mapOpenOrderLine({ customer_key: 'X', order_id: 'SO-1', chambering: '6.5 PRC' }).chambering, mapOpenOrderLine({ customer_key: 'X', order_id: 'SO-1' }).chambering],
+  ['6.5 PRC', null],
+)
 
 t(
   'options: distinct, sorted by label, blanks dropped',
