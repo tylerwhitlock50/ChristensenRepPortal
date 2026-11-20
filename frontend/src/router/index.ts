@@ -109,6 +109,16 @@ const router = createRouter({
       meta: { title: 'Find an order' },
     },
     {
+      // Documents the office publishes to reps: price lists, program flyers,
+      // training. Always on, like Intel: a read-only reference surface. What
+      // a rep sees is RLS's call (everyone's files, their agency's, their
+      // accounts'), so there is no role gate here.
+      path: '/resources',
+      name: 'resources',
+      component: () => import('@/pages/ResourcesView.vue'),
+      meta: { title: 'Resources' },
+    },
+    {
       path: '/accounts',
       name: 'accounts',
       component: () => import('@/pages/AccountsView.vue'),
@@ -303,6 +313,12 @@ const router = createRouter({
           name: 'admin-price-lists',
           component: () => import('@/pages/admin/AdminPriceListsView.vue'),
           meta: { title: 'Price Lists' },
+        },
+        {
+          path: 'resources',
+          name: 'admin-resources',
+          component: () => import('@/pages/admin/AdminResourcesView.vue'),
+          meta: { title: 'Resources' },
         },
         {
           path: 'activity',

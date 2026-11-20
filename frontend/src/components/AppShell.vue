@@ -111,6 +111,9 @@ type NavItem = {
   label: string
   icon: string
   badge?: Badge
+  /** Header nav only. The phone bottom bar is full; these sit in the
+   *  account menu there instead. */
+  headerOnly?: boolean
 }
 
 /* Data-first nav: Overview, Sales Intel, Accounts always; the capture
@@ -132,6 +135,10 @@ const nav = computed<NavItem[]>(() => {
     // "Where's my order?" is the most common call a rep takes; it earns a
     // permanent tab rather than living inside one account's page.
     { to: { name: 'lookup' }, label: 'Find', icon: 'lookup' },
+    // Price lists, flyers and program documents. A rep comes here a few
+    // times a month, not a few times a day: a header tab on a laptop, the
+    // account menu on a phone, where the bottom bar has no room.
+    { to: { name: 'resources' }, label: 'Resources', icon: 'resources', headerOnly: true },
   ]
   // A principal runs reps, not just accounts: their agency sits next to
   // their own morning briefing. Admins find it under Admin → Agencies.
@@ -199,6 +206,9 @@ const wide = computed(
     route.path.startsWith('/intel') ||
     route.path.startsWith('/agency'),
 )
+
+/* The phone bottom bar: everything but the header-only entries. */
+const barNav = computed(() => nav.value.filter((item) => !item.headerOnly))
 
 /* The account menu's role line. The stored 'order_entry' is called inside
    sales everywhere a person reads it. (Spelled out here rather than imported
@@ -348,6 +358,15 @@ async function signOut() {
                   </template>
                 </p>
               </div>
+              <!-- Phones only: the header nav carries it from md up. -->
+              <RouterLink
+                :to="{ name: 'resources' }"
+                role="menuitem"
+                class="tap-target font-label hover:bg-canvas border-line flex w-full items-center border-b px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase md:hidden"
+                @click="menuOpen = false"
+              >
+                Resources
+              </RouterLink>
               <RouterLink
                 :to="{ name: 'help' }"
                 role="menuitem"
@@ -449,7 +468,7 @@ async function signOut() {
     >
       <div class="mx-auto flex max-w-5xl">
         <RouterLink
-          v-for="item in nav"
+          v-for="item in barNav"
           :key="item.label"
           :to="item.to"
           class="font-label relative flex min-h-[66px] flex-1 flex-col items-center justify-center gap-1 border-t-2 border-transparent text-xs font-semibold tracking-[0.1em] text-[#8E8A80] uppercase"

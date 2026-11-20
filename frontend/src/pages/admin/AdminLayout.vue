@@ -26,6 +26,8 @@ const tabs = computed(() => {
     // Always visible, not gated on feature.orders: the downloadable-sheet
     // half serves the always-on Intel page either way.
     { to: { name: 'admin-price-lists' }, label: 'Price Lists' },
+    // What reps download under Resources: price lists, flyers, program docs.
+    { to: { name: 'admin-resources' }, label: 'Resources' },
     { to: { name: 'admin-activity' }, label: 'Activity' },
     { to: { name: 'admin-usage' }, label: 'Usage' },
     { to: { name: 'admin-support' }, label: 'Support' },

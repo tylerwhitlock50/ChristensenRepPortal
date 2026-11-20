@@ -145,6 +145,16 @@ export const qk = {
       ['price-lists', 'effective', customerType] as const,
   },
   /**
+   * Resources (20261120120000): the documents published to reps. One list,
+   * scoped by RLS to the caller (everyone's files, their agency's, their
+   * accounts'), so like the intel keys it carries no user id: the cache is
+   * cleared on every sign-in change and view-as switch.
+   */
+  resources: {
+    root: () => ['resources'] as const,
+    list: () => ['resources', 'list'] as const,
+  },
+  /**
    * Portal-written orders (20260817000200). List reads are scoped by user
    * id for the same shared-truck-iPad reason as `tasks`; the queue is the
    * entry/admin view over everyone's post-draft orders.
