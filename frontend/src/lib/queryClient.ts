@@ -65,6 +65,13 @@ export const qk = {
     territoryYoy: () => ['intel', 'territory-yoy'] as const,
     territoryRecentOrders: () => ['intel', 'territory-recent-orders'] as const,
     territorySku: () => ['intel', 'territory-sku'] as const,
+    /**
+     * v_sku_sales_by_account across the book, from `sinceYear` on — the
+     * Accounts table's "by family / by SKU" download. Read on demand and
+     * deliberately NOT an ERP key (see isErpQueryKey): an admin's is ~30k
+     * rows, too much to hold for a day or write to a phone.
+     */
+    bookSku: (sinceYear: number) => ['intel', 'book-sku', sinceYear] as const,
     ats: () => ['intel', 'ats'] as const,
     global: (months: number) => ['intel', 'global', months] as const,
     /** public.account_signals across the book — the nightly behaviour scores. */
