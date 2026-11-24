@@ -233,5 +233,10 @@ export function describeError(error: unknown): string {
   }
   // Inside sales changed something outside orders (lib/readOnlyRole.ts).
   if (isReadOnlyRoleError(e)) return READ_ONLY_ROLE_MESSAGE
+  // The Data API's agreement door (20261124090000): a new version of the
+  // Terms or the Privacy Policy took effect while this screen was open.
+  if (/legal_agreement_required/.test(e.message ?? '')) {
+    return 'The Terms of Use or the Privacy Policy changed. Reload the portal to read and agree to the new version.'
+  }
   return e.message || 'Something went wrong.'
 }

@@ -30,6 +30,7 @@ import AsyncState from '@/components/ui/AsyncState.vue'
 import ExportMenu from '@/components/ui/ExportMenu.vue'
 import ViewAsCard from '@/components/admin/ViewAsCard.vue'
 import BroadcastEmailCard from '@/components/admin/BroadcastEmailCard.vue'
+import LegalAgreementsCard from '@/components/admin/LegalAgreementsCard.vue'
 import { ROLES, type Role } from '@/types/domain'
 import { count, daysAgo, humanize } from '@/lib/format'
 import {
@@ -867,6 +868,10 @@ async function setActive(active: boolean) {
         </p>
       </AsyncState>
     </AppCard>
+
+    <!-- Who has agreed to the current Terms of Use and Privacy Policy, and
+         the agreement log as a file (20261124090000). -->
+    <LegalAgreementsCard :profiles="profiles.data.value ?? []" />
 
     <!-- The grid -->
     <AppCard>

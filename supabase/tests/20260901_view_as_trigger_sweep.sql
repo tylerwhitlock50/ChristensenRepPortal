@@ -25,9 +25,12 @@ begin
     -- a call refused while an admin is viewing as a rep is still logged.
     -- usage_events (20261116130000) is a log like login_events; log_usage()
     -- itself writes nothing while viewing as a rep.
+    -- legal_acceptances (20261124090000) is the signed-in person's own
+    -- agreement record: an admin asked to agree mid-view-as agrees for
+    -- themselves (accept_legal_documents() stamps auth.uid()).
     and p.tablename not in ('impersonation', 'impersonation_events',
                             'login_events', 'job_runs', 'mcp_tool_calls',
-                            'usage_events')
+                            'usage_events', 'legal_acceptances')
     and not exists (
       select 1
       from pg_trigger t

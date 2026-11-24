@@ -258,6 +258,26 @@ custom scopes yet, so there is no per-connection "this one may draft"
 choice; the consent screen says what the connection will be able to do for
 that person. `mcp_tokens.scopes` stays unused.
 
+### Terms of Use and Privacy Policy
+
+Nothing is read for someone who has not agreed to the current Terms of Use
+and Privacy Policy (`mcp/legal.ts`, migration
+`20261124090000_legal_agreements.sql`). On `tools/call` the endpoint asks
+`legal_status()` as the caller, once per HTTP request; until
+`all_accepted` is true every tool answers with an `isError` result telling
+the person to open the portal and agree. `initialize` and `tools/list` still
+answer, so the connector stays connected. There is no tool to agree, and
+`accept_legal_documents()` refuses an MCP session outright: only the
+person, in the portal. A database without the migration has nothing to
+agree to (the function is missing: the gate is open); every other failure
+fails closed. A new version of either document closes the gate again until
+the person agrees to it in the portal. The database holds the same line for
+every MCP session (`postgrest_pre_request()` refuses the minted JWT's reads
+outside `legal_status`), so an `mcp` function deployed before this gate
+still cannot read for someone who has not agreed; redeploy it with the
+migration anyway, for the plain-English refusal:
+`supabase functions deploy mcp --no-verify-jwt`.
+
 ### With a token (the older way)
 
 From **account menu → Connect Claude** (`/connect`). The page mints a token,
@@ -701,6 +721,7 @@ mcp/
 ├── orderTools.ts   the ten gated order-drafting tools + toolsFor()
 ├── orderDocuments.ts  document names and types (copy of the portal's, parity-tested)
 ├── prompts.ts      the three MCP prompts
+├── legal.ts        tools/call waits for the Terms of Use / Privacy Policy agreement
 └── README.md       this file
 ../_shared/mcpAuth.ts     which credential, resolution, JWT minting
 ../_shared/oauthToken.ts  OAuth: token verification and the RFC 9728 helpers (pure)

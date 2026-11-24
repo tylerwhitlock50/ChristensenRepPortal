@@ -188,6 +188,15 @@ export const qk = {
     /** Reports tab (20260816120000): channel and rep-group rollups. */
     channels: () => ['admin', 'channels'] as const,
     repGroupPerformance: () => ['admin', 'rep-group-performance'] as const,
+    /** Users page: who has agreed to the current Terms / Privacy Policy. */
+    legalStatus: () => ['admin', 'legal-status'] as const,
+  },
+  /**
+   * The Terms of Use and Privacy Policy in force (legal_current_documents()).
+   * Not an ERP key and not persisted: it is read where it is shown.
+   */
+  legal: {
+    current: () => ['legal', 'current'] as const,
   },
 } as const
 

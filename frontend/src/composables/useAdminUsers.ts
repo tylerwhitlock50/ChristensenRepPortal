@@ -65,6 +65,8 @@ export function useUpdateProfile() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.admin.users() })
+      // A new or re-activated profile has an agreement status too.
+      void qc.invalidateQueries({ queryKey: qk.admin.legalStatus() })
       void qc.invalidateQueries({ queryKey: qk.admin.activity() })
     },
   })
@@ -126,6 +128,8 @@ export function useCreateUser() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.admin.users() })
+      // A new or re-activated profile has an agreement status too.
+      void qc.invalidateQueries({ queryKey: qk.admin.legalStatus() })
       void qc.invalidateQueries({ queryKey: qk.admin.unmappedReps() })
       void qc.invalidateQueries({ queryKey: qk.admin.activity() })
       void qc.invalidateQueries({ queryKey: qk.admin.execution() })
@@ -269,6 +273,8 @@ export function useAdminUpdateUser() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.admin.users() })
+      // A new or re-activated profile has an agreement status too.
+      void qc.invalidateQueries({ queryKey: qk.admin.legalStatus() })
       void qc.invalidateQueries({ queryKey: qk.admin.activity() })
     },
   })

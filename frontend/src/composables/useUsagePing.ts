@@ -78,7 +78,10 @@ export function useUsagePing() {
   let inFlight = false
 
   function maybePing(reason: 'open' | 'signed-in') {
-    if (!session.ready || !session.isSignedIn || session.isViewingAs) return
+    // An open by someone who has not agreed to the current Terms and Privacy
+    // Policy is not use of the portal (they cannot get past the agreement
+    // screen); it is counted once they have.
+    if (!session.ready || !session.isSignedIn || session.isViewingAs || !session.legalAccepted) return
     const userId = session.user?.id
     if (!userId || inFlight) return
     const now = Date.now()
@@ -108,7 +111,14 @@ export function useUsagePing() {
   }
 
   watch(
-    () => [session.ready, session.isSignedIn, session.isViewingAs, session.user?.id] as const,
+    () =>
+      [
+        session.ready,
+        session.isSignedIn,
+        session.isViewingAs,
+        session.user?.id,
+        session.legalAccepted,
+      ] as const,
     ([ready, signedIn]) => {
       if (!ready) return
       if (!signedIn) {

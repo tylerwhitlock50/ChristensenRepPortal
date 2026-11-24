@@ -357,6 +357,14 @@ async function signOut() {
                 Help &amp; support
               </RouterLink>
               <RouterLink
+                :to="{ name: 'terms' }"
+                role="menuitem"
+                class="tap-target font-label border-line hover:bg-canvas flex w-full items-center border-t px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase"
+                @click="menuOpen = false"
+              >
+                Terms &amp; privacy
+              </RouterLink>
+              <RouterLink
                 :to="{ name: 'connect' }"
                 role="menuitem"
                 class="tap-target font-label border-line hover:bg-canvas flex w-full items-center border-t px-3 text-left text-[13px] font-semibold tracking-[0.12em] uppercase"

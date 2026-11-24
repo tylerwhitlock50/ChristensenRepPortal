@@ -6,6 +6,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import { useSessionStore } from '@/stores/session'
 import { useUsagePing } from '@/composables/useUsagePing'
 import { useUsageTracking } from '@/composables/useUsageTracking'
+import { useLegalGate } from '@/composables/useLegalGate'
 
 const route = useRoute()
 const session = useSessionStore()
@@ -14,6 +15,9 @@ const session = useSessionStore()
 useUsagePing()
 // …and which screens they look at once it is open (Admin → Usage).
 useUsageTracking()
+// A screen already open when the Terms / Privacy Policy status changes goes
+// to the agreement screen (the router guard covers every navigation).
+useLegalGate()
 
 // Its own chunk, fetched after the shell paints: nothing on first load
 // needs it, and it pulls in date math and the task/action writers. If the
@@ -102,9 +106,10 @@ function reload() {
     </div>
   </div>
 
-  <!-- Public routes (login, reset, 404) render full-bleed, and so does a
-       `bare` one (the OAuth consent screen: signed in, but no navigation to
-       wander off into mid-approval); everything else is chrome-wrapped. -->
+  <!-- Public routes (login, reset, 404, /terms, /privacy) render
+       full-bleed, and so does a `bare` one (the OAuth consent screen and the
+       agreement screen: signed in, but no navigation to wander off into
+       mid-decision); everything else is chrome-wrapped. -->
   <RouterView v-else-if="route.meta.public || route.meta.bare" />
   <AppShell v-else>
     <!-- Keyed on the acting identity so a page that stays mounted across a
