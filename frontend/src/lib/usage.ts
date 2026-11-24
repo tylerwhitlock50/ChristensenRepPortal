@@ -41,17 +41,20 @@ export function deviceFor(width: number): UsageDevice {
 interface RouteLike {
   name?: unknown
   params?: Record<string, unknown>
-  meta?: { public?: unknown }
+  meta?: { public?: unknown; untracked?: unknown }
 }
 
 const param = (v: unknown): string => (Array.isArray(v) ? String(v[0] ?? '') : String(v ?? ''))
 
 /**
  * The page view a navigation stands for, or null when it is not one: the
- * sign-in screens and unnamed routes are not use of the portal.
+ * sign-in screens, the Terms / Privacy agreement screen (meta.untracked)
+ * and unnamed routes are not use of the portal.
  */
 export function pageViewFor(route: RouteLike): UsageEvent | null {
-  if (typeof route.name !== 'string' || !route.name || route.meta?.public) return null
+  if (typeof route.name !== 'string' || !route.name || route.meta?.public || route.meta?.untracked) {
+    return null
+  }
   const customerKey = param(route.params?.customerKey)
   const orderId = /^order-/.test(route.name) ? param(route.params?.id) : ''
   return {

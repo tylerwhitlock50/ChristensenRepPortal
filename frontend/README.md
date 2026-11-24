@@ -33,6 +33,14 @@ npm run build                # vue-tsc -b && vite build
   treat it as security.
 - **Never aggregate ERP facts in the browser** (TECH_STACK §3.3). Revenue
   rollups belong in `public.v_*` views.
+- **Nobody uses the portal without agreeing to the current Terms of Use and
+  Privacy Policy.** The router guard sends every signed-in page to
+  `/agreements` until `session.legalAccepted` (migration
+  `20261124090000_legal_agreements.sql`, `lib/legal.ts`); usage tracking and
+  the app-open ping wait for it too. A new route needs nothing to be covered:
+  only `meta.public` routes and the agreement screen itself are reachable
+  before agreeing. The text lives in the database, not here: publish a new
+  version with a migration (`supabase/README.md`).
 - **Field UI floor:** 44px touch targets (`.tap-target`), no hover-only
   affordances, no horizontal page scroll, state changes confirmed inline rather
   than in a modal.

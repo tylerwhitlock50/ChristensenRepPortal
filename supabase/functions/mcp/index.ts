@@ -67,6 +67,7 @@ import {
   withOrdering,
 } from './orderTools.ts'
 import { getPrompt, listPrompts, PromptError } from './prompts.ts'
+import { type LegalGate, readLegalGate } from './legal.ts'
 import { BODY_TOO_LARGE_MESSAGE, declaredTooLarge, readBodyCapped } from './requestBody.ts'
 
 const SERVER_NAME = 'christensen-rep-portal'
@@ -191,7 +192,7 @@ interface Surface {
 
 async function dispatch(
   message: RpcMessage,
-  ctx: { db: Db; caller: Caller; surface: () => Promise<Surface> },
+  ctx: { db: Db; caller: Caller; surface: () => Promise<Surface>; legal: () => Promise<LegalGate> },
 ): Promise<unknown | null> {
   const id = message.id ?? null
   const method = message.method ?? ''
@@ -256,6 +257,14 @@ async function dispatch(
           RPC.INVALID_PARAMS,
           `Unknown tool "${name}". Available: ${[...byName.keys()].join(', ')}.`,
         )
+      }
+
+      // Nothing is read for someone who has not agreed to the current Terms
+      // of Use and Privacy Policy (mcp/legal.ts). A tool result, not an RPC
+      // error, so the model tells the person what to do.
+      const legal = await ctx.legal()
+      if (!legal.ok) {
+        return rpcResult(id, { content: [{ type: 'text', text: legal.message }], isError: true })
       }
 
       try {
@@ -447,10 +456,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return surfacePromise
   }
 
+  // Has the caller agreed to the current Terms of Use and Privacy Policy?
+  // At most once per HTTP request, and only when a tool is called.
+  let legalPromise: Promise<LegalGate> | null = null
+  const legal = () => {
+    legalPromise ??= readLegalGate(db, (Deno.env.get('PORTAL_URL') ?? '').trim().replace(/\/+$/, ''))
+    return legalPromise
+  }
+
   const replies: unknown[] = []
   for (const message of messages) {
     try {
-      const reply = await dispatch(message, { db, caller, surface })
+      const reply = await dispatch(message, { db, caller, surface, legal })
       if (reply !== null) replies.push(reply)
     } catch (error) {
       console.error('mcp dispatch failed', error)

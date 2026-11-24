@@ -41,6 +41,13 @@ update public.profiles set full_name = 'Usage Rep'
 update public.profiles set full_name = 'Quiet Rep'
   where user_id = (select id from t_user where label = 'quiet');
 
+-- Since 20261124090000 nothing is logged for someone who has not agreed to
+-- the current Terms of Use and Privacy Policy (that rule has its own tests in
+-- 20261124_legal_agreements.sql): everyone here has agreed.
+insert into public.legal_acceptances (user_id, document_id, doc_key, version, content_sha256)
+select u.id, c.id, c.doc_key, c.version, c.content_sha256
+from t_user u cross join public.legal_current_documents() c;
+
 create or replace function pg_temp.be(p_user uuid) returns void
 language plpgsql as $$
 begin

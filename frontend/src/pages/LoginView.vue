@@ -220,6 +220,14 @@ async function submitReset() {
           get in, call your admin.
         </p>
 
+        <p class="text-muted mt-3 text-sm leading-relaxed">
+          Use of the portal is subject to the
+          <RouterLink :to="{ name: 'terms' }" class="text-ink-2 underline underline-offset-2">Terms of Use</RouterLink>
+          and the
+          <RouterLink :to="{ name: 'privacy' }" class="text-ink-2 underline underline-offset-2">Privacy Policy</RouterLink>.
+          You'll be asked to agree to both after you sign in.
+        </p>
+
         <div class="border-line mt-auto flex items-center gap-2.5 border-t pt-4">
           <span class="bg-accent block h-4 w-[3px]" aria-hidden="true" />
           <span class="font-label text-muted text-xs font-semibold tracking-[0.16em] uppercase">

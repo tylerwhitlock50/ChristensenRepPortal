@@ -15,6 +15,14 @@ import {
   type OfflineIdentity,
 } from '@/lib/queryPersist'
 import { forgetQueueLanding } from '@/lib/queueLanding'
+import {
+  agreedOnThisDevice,
+  isMissingLegalStatusFunction,
+  NO_LEGAL_REQUIREMENT,
+  parseLegalStatus,
+  rememberLegalStatus,
+  type LegalStatus,
+} from '@/lib/legalStatus'
 import { fetchActingContext, type ActingContext } from '@/composables/useViewAs'
 import type { Tables } from '@/types/database.types'
 import type { Role } from '@/types/domain'
@@ -49,6 +57,21 @@ export const useSessionStore = defineStore('session', () => {
   const profile = ref<Profile | null>(null)
   /** Null until loaded, and whenever the migration is not applied. */
   const acting = ref<ActingContext | null>(null)
+  /**
+   * Whether the signed-in person has agreed to the current Terms of Use and
+   * Privacy Policy (legal_status(), 20261124090000). Always about the REAL
+   * user: an admin viewing as a rep is asked about their own agreement.
+   * Null until read, and after a read that failed with nothing read before.
+   */
+  const legal = ref<LegalStatus | null>(null)
+  /** The last legal_status() read that failed, for the agreement screen. */
+  const legalError = ref<unknown>(null)
+  /**
+   * The offline open cannot ask the database. Set there from what this device
+   * remembers (lib/legal.ts agreedOnThisDevice): had this person agreed to
+   * everything current the last time the portal could check?
+   */
+  const legalAgreedOffline = ref(false)
   /** False until the initial getSession() has resolved — guards must wait. */
   const ready = ref(false)
   /**
@@ -136,6 +159,18 @@ export const useSessionStore = defineStore('session', () => {
 
   /** Open on saved data with the sign-in unconfirmed: read-only until it is. */
   const isOffline = computed(() => offlineSince.value !== null)
+
+  /**
+   * May use the portal at all: has agreed to the current Terms of Use and
+   * Privacy Policy. The router guard sends anyone else to the agreement
+   * screen (router/index.ts), usage tracking waits for it, and the MCP
+   * endpoint asks the same question of the database.
+   */
+  const legalAccepted = computed(() => {
+    if (!session.value) return false
+    if (isOffline.value) return legalAgreedOffline.value
+    return legal.value?.all_accepted === true
+  })
 
   /**
    * View-as is read-only, and the database enforces it (a trigger on every
@@ -234,6 +269,84 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * Re-read whether the signed-in person has agreed to the current legal
+   * documents. Never throws. A failed read keeps what was known (a re-read
+   * on coming back to the foreground must not throw someone out mid-visit
+   * over a dropped request); with nothing known, the guard shows the
+   * agreement screen, which says what went wrong and offers a retry. A
+   * database without the migration has nothing to agree to.
+   */
+  /**
+   * Answers arrive out of order: a re-read started when the app came back to
+   * the foreground can land after the person pressed Agree. Each read takes
+   * a ticket; an answer older than the one on screen, or older than an
+   * agreement that has landed since it started, is dropped.
+   */
+  let legalTicket = 0
+  let legalShownTicket = 0
+
+  async function loadLegalStatus(): Promise<LegalStatus | null> {
+    const userId = session.value?.user.id
+    if (!userId) {
+      legal.value = null
+      legalError.value = null
+      return null
+    }
+    const ticket = ++legalTicket
+    const stale = () => session.value?.user.id !== userId || ticket < legalShownTicket
+    try {
+      const { data, error } = await db.rpc('legal_status')
+      if (error) throw error
+      const parsed = parseLegalStatus(data)
+      if (!parsed) throw new Error('The agreement status came back unreadable.')
+      // Signed out, someone else signed in, or a newer answer is showing.
+      if (stale()) return legal.value
+      legalShownTicket = ticket
+      legal.value = parsed
+      legalError.value = null
+      rememberLegalStatus(userId, parsed)
+    } catch (e) {
+      if (stale()) return legal.value
+      // Only the function itself being absent means "nothing to agree to"
+      // (the migration is not applied). A legal_status() that exists and
+      // fails is a broken gate: it stays shut (MCP's rule, mcp/legal.ts).
+      if (isMissingLegalStatusFunction(e)) {
+        legalShownTicket = ticket
+        legal.value = NO_LEGAL_REQUIREMENT
+        legalError.value = null
+      } else {
+        if (!isNoConnection(e)) console.warn('[legal_status]', e)
+        legalError.value = e
+      }
+    }
+    return legal.value
+  }
+
+  /**
+   * Agree to these documents (their legal_documents ids, as shown on the
+   * agreement screen). The database stamps who, when and from where, and
+   * refuses a version that is no longer current. Throws on a refusal.
+   */
+  async function acceptLegal(documentIds: number[]): Promise<LegalStatus> {
+    const userId = session.value?.user.id
+    if (!userId) throw new Error('Not signed in.')
+    const { data, error } = await db.rpc('accept_legal_documents', {
+      p_document_ids: documentIds,
+    })
+    if (error) throw error
+    const parsed = parseLegalStatus(data)
+    if (!parsed) throw new Error('The agreement status came back unreadable.')
+    if (session.value?.user.id === userId) {
+      // Newer than any read still in flight.
+      legalShownTicket = ++legalTicket
+      legal.value = parsed
+      legalError.value = null
+      rememberLegalStatus(userId, parsed)
+    }
+    return parsed
+  }
+
+  /**
    * Switch to seeing the portal as `userId`, or (null) stop.
    *
    * The cache reset is the whole client-side implementation. Query keys are
@@ -293,6 +406,8 @@ export const useSessionStore = defineStore('session', () => {
     session.value = stored
     profile.value = saved.profile
     acting.value = null
+    // No database to ask: what this device saw last time it could check.
+    legalAgreedOffline.value = agreedOnThisDevice(stored.user.id)
     // Queries wait instead of failing one by one: no request until the
     // sign-in is real again (goOnline). TanStack would flip itself back
     // online on the browser's 'online' event, before anything is verified,
@@ -393,7 +508,14 @@ export const useSessionStore = defineStore('session', () => {
         leaveOffline()
         return
       }
-      await loadActingContext()
+      // Before leaving offline: legalAccepted switches from what the device
+      // remembered to what the database says at the same moment.
+      await Promise.all([loadActingContext(), loadLegalStatus()])
+      // No answer about the agreement yet (the request was dropped): stay on
+      // the saved copy and what the device remembers, and try again on the
+      // next reconnect, as for the profile above. An answer the server did
+      // give (an error included) is acted on, as on an online open.
+      if (!legal.value && isNoConnection(legalError.value)) return
       leaveOffline()
       await syncSavedCache({ restore: false })
     } finally {
@@ -407,6 +529,7 @@ export const useSessionStore = defineStore('session', () => {
     session.value = null
     profile.value = null
     acting.value = null
+    legal.value = null
     const wiped = wipePersistedCache()
     queryClient.clear()
     await wiped
@@ -504,6 +627,8 @@ export const useSessionStore = defineStore('session', () => {
           // admin who reloads the page mid-view-as must not be waved through
           // to /admin for the frame it takes this to resolve.
           loadActingContext(),
+          // Same reason: the guard reads legalAccepted before any page.
+          loadLegalStatus(),
         ]).then(() => true as const)
         // The token is still good but the database isn't answering (no
         // signal; postgrest-js retries the read for ~7 s): same fallback.
@@ -557,6 +682,7 @@ export const useSessionStore = defineStore('session', () => {
         session.value = null
         profile.value = null
         acting.value = null
+        legal.value = null
         if (isOffline.value) leaveOffline()
         // Signed out in another tab, or the refresh token was revoked. The
         // saved copy goes first, so the clear below can't be saved over it.
@@ -574,6 +700,8 @@ export const useSessionStore = defineStore('session', () => {
       // A different user signed in without a reload — same leak, same fix.
       if (previousUserId && previousUserId !== next.user.id) {
         acting.value = null
+        // The last person's agreement is not this person's.
+        legal.value = null
         void wipePersistedCache()
         queryClient.clear()
       }
@@ -588,6 +716,9 @@ export const useSessionStore = defineStore('session', () => {
           !sameUser || isRealAdmin.value || isViewingAs.value
             ? loadActingContext()
             : null,
+          // Cheap, and how a version published mid-visit reaches an open
+          // app: the next time it comes to the foreground (useLegalGate).
+          loadLegalStatus(),
         ]).then(() => syncSavedCache({ restore: false }))
       }
     })
@@ -624,7 +755,9 @@ export const useSessionStore = defineStore('session', () => {
     // storage), and signing back in to the rep's view unannounced would be
     // the worst version of this feature. Loading it means the banner is up
     // on the first frame.
-    await loadActingContext()
+    // Before returning: the sign-in screen navigates next, and the guard
+    // decides from this whether that is the page asked for or the agreement.
+    await Promise.all([loadActingContext(), loadLegalStatus()])
     void syncSavedCache({ restore: false })
 
     return p
@@ -714,6 +847,8 @@ export const useSessionStore = defineStore('session', () => {
     session.value = null
     profile.value = null
     acting.value = null
+    legal.value = null
+    legalError.value = null
     if (isOffline.value) leaveOffline()
     // Inside sales' "landed on the queue" flag is per tab, and sign-out does
     // not end the tab: without this, tomorrow's sign-in in the same tab or
@@ -753,10 +888,15 @@ export const useSessionStore = defineStore('session', () => {
     offlineSince,
     offlineHasCopy,
     isOffline,
+    legal,
+    legalError,
+    legalAccepted,
     displayName,
     init,
     loadProfile,
     loadActingContext,
+    loadLegalStatus,
+    acceptLegal,
     setViewAs,
     signIn,
     signOut,

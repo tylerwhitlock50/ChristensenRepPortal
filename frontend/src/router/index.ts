@@ -14,6 +14,7 @@ import {
 import { ensureOnMcpOrderList } from '@/composables/useMcpOrderUsers'
 import { isMcpOrdersUserAllowed, ordersSectionOpen } from '@/lib/ordersGate'
 import { landedOnQueueThisTab, rememberQueueLanding } from '@/lib/queueLanding'
+import { safeRedirect } from '@/lib/legalStatus'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -48,6 +49,8 @@ declare module 'vue-router' {
      * Overview instead of a page of buttons the database refuses.
      */
     notForReadOnlyRole?: boolean
+    /** Not a page view in Admin › Usage (the agreement screen). */
+    untracked?: boolean
     title?: string
   }
 }
@@ -69,6 +72,32 @@ const router = createRouter({
       name: 'reset-password',
       component: () => import('@/pages/ResetPasswordView.vue'),
       meta: { public: true, title: 'Set a new password' },
+    },
+    {
+      // The Terms of Use and the Privacy Policy, readable by anyone at any
+      // time: linked from the sign-in screen, the agreement screen and the
+      // account menu (lib/legal.ts, 20261124090000).
+      path: '/terms',
+      name: 'terms',
+      component: () => import('@/pages/LegalDocumentView.vue'),
+      props: { docKey: 'terms' },
+      meta: { public: true, title: 'Terms of Use' },
+    },
+    {
+      path: '/privacy',
+      name: 'privacy',
+      component: () => import('@/pages/LegalDocumentView.vue'),
+      props: { docKey: 'privacy' },
+      meta: { public: true, title: 'Privacy Policy' },
+    },
+    {
+      // The click-wrap. Signed in, no navigation: until the person agrees to
+      // the current Terms of Use and Privacy Policy, the guard below sends
+      // every other signed-in page here, carrying the page they asked for.
+      path: '/agreements',
+      name: 'agreements',
+      component: () => import('@/pages/AgreementsView.vue'),
+      meta: { title: 'Terms & Privacy', bare: true, untracked: true },
     },
     {
       // The morning briefing IS the app's front door (data-first restructure):
@@ -443,6 +472,18 @@ router.beforeEach(async (to, from) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
 
+  // Nobody uses the portal without agreeing to the current Terms of Use and
+  // Privacy Policy: admins, principals and inside sales too, and before any
+  // of the role and feature checks below, so the page they asked for rides
+  // along and those checks still apply once they have agreed. A screen that
+  // is already open when the status changes is moved by useLegalGate().
+  if (to.name === 'agreements') {
+    return session.legalAccepted ? safeRedirect(to.query.redirect) : true
+  }
+  if (!session.legalAccepted) {
+    return { name: 'agreements', query: { redirect: to.fullPath } }
+  }
+
   if (to.meta.adminOnly && !session.isAdmin) {
     return { name: 'overview' }
   }
@@ -467,7 +508,10 @@ router.beforeEach(async (to, from) => {
   // did. Signing out clears the flag, so the next sign-in in this tab lands
   // on the queue again. Redirect only when the Orders section is open to
   // them: otherwise the queue route would bounce straight back here and loop.
-  const arriving = from === START_LOCATION || from.name === 'login'
+  // Out of the agreement screen counts too: it sits between the sign-in and
+  // the first page.
+  const arriving =
+    from === START_LOCATION || from.name === 'login' || from.name === 'agreements'
   if (to.name === 'overview' && session.isOrderEntry && arriving && !landedOnQueueThisTab()) {
     try {
       const settings = await settingsForGuard()

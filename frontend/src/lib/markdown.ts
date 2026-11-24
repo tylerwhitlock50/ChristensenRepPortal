@@ -45,7 +45,10 @@ export function renderMarkdown(source: string): string {
   const lines = (source ?? '').replace(/\r\n?/g, '\n').split('\n')
   const html: string[] = []
   let paragraph: string[] = []
-  let list: { tag: 'ul' | 'ol'; items: string[] } | null = null
+  // `start`: an ordered list shows the number its first item was written
+  // with, so "7. …" after a paragraph reads 7, not 1 (legal text numbers
+  // its clauses and refers to them by number).
+  let list: { tag: 'ul' | 'ol'; items: string[]; start?: number } | null = null
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -55,8 +58,9 @@ export function renderMarkdown(source: string): string {
   }
   const flushList = () => {
     if (list) {
+      const start = list.tag === 'ol' && list.start !== undefined && list.start !== 1 ? ` start="${list.start}"` : ''
       html.push(
-        `<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join('')}</${list.tag}>`,
+        `<${list.tag}${start}>${list.items.map((i) => `<li>${inline(i)}</li>`).join('')}</${list.tag}>`,
       )
       list = null
     }
@@ -69,11 +73,12 @@ export function renderMarkdown(source: string): string {
       flushList()
       continue
     }
-    const heading = /^(#{1,3})\s+(.*)$/.exec(line)
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line)
     if (heading) {
       flushParagraph()
       flushList()
       // # and ## both render as h3 inside a card; the page owns h1/h2.
+      // ### and deeper render as h4.
       const level = heading[1].length >= 3 ? 4 : 3
       html.push(`<h${level}>${inline(heading[2])}</h${level}>`)
       continue
@@ -88,14 +93,14 @@ export function renderMarkdown(source: string): string {
       list.items.push(bullet[1])
       continue
     }
-    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line)
+    const numbered = /^\s*(\d{1,6})[.)]\s+(.*)$/.exec(line)
     if (numbered) {
       flushParagraph()
       if (!list || list.tag !== 'ol') {
         flushList()
-        list = { tag: 'ol', items: [] }
+        list = { tag: 'ol', items: [], start: Number(numbered[1]) }
       }
-      list.items.push(numbered[1])
+      list.items.push(numbered[2])
       continue
     }
     flushList()
